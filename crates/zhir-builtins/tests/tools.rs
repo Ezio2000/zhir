@@ -24,7 +24,10 @@ async fn invoke(
     let name = tool.spec().name.clone();
     let registry = RuntimeToolRegistry::from_tools([tool])?;
     registry
-        .open_catalog(Default::default())
+        .open_catalog(zhir_core::tool::CatalogContext {
+            run: zhir_core::run::RunContext::new("port-test", 0),
+            cancellation: Default::default(),
+        })
         .await?
         .bind(&RuntimeToolCall {
             id: "call".into(),
@@ -32,7 +35,7 @@ async fn invoke(
             input: RuntimeToolInput::Structured(input),
         })?
         .invoke(RuntimeToolContext {
-            run: RunContext::default(),
+            run: RunContext::new("builtin-test", 0),
             cancellation: Cancellation::default(),
             progress: None,
         })
@@ -162,13 +165,13 @@ impl Model for Child {
 async fn child_agents_are_idempotent_and_owned_tasks_cancel() {
     use zhir_builtins::agent::{AgentBackend, InMemoryAgentBackend};
     let runtime = zhir_kernel::Runtime::builder(Arc::new(Child {
-        caps: Capabilities::default(),
+        caps: test_capabilities(),
         block: false,
     }))
     .build()
     .unwrap();
     let backend = InMemoryAgentBackend::new(runtime, "child instructions");
-    let owner = RunContext::default();
+    let owner = RunContext::new("builtin-test", 0);
     let first = backend
         .start_or_get("key".into(), "work".into(), owner.clone())
         .await
@@ -186,7 +189,7 @@ async fn child_agents_are_idempotent_and_owned_tasks_cancel() {
     );
     assert!(
         backend
-            .get(first.id.clone(), RunContext::default())
+            .get(first.id.clone(), RunContext::new("different-owner", 0))
             .await
             .is_err()
     );
@@ -195,7 +198,7 @@ async fn child_agents_are_idempotent_and_owned_tasks_cancel() {
         "completed"
     );
     let runtime = zhir_kernel::Runtime::builder(Arc::new(Child {
-        caps: Capabilities::default(),
+        caps: test_capabilities(),
         block: true,
     }))
     .build()
@@ -213,15 +216,13 @@ async fn child_agents_are_idempotent_and_owned_tasks_cancel() {
 #[tokio::test]
 async fn custom_tools_do_not_require_builtins_at_runtime() {
     let model = Arc::new(Child {
-        caps: Capabilities::default(),
+        caps: test_capabilities(),
         block: false,
     });
     let mut invocation = zhir_kernel::Runtime::builder(model)
         .build()
         .unwrap()
-        .start(zhir_core::run::RunRequest::new(vec![Message::user(
-            "hello",
-        )]))
+        .start(zhir_kernel::RunRequest::new(vec![Message::user("hello")]))
         .unwrap();
     assert!(
         invocation
@@ -232,4 +233,28 @@ async fn custom_tools_do_not_require_builtins_at_runtime() {
             .state
             .terminal()
     );
+}
+
+#[cfg(feature = "agent")]
+fn test_capabilities() -> Capabilities {
+    Capabilities {
+        input_modalities: vec!["text".into()],
+        output_modalities: vec!["text".into()],
+        structured_runtime_tools: true,
+        freeform_runtime_tools: false,
+        provider_tools: false,
+        parallel_runtime_tools: true,
+        parallel_control: true,
+        streaming: true,
+        usage: true,
+        structured_output: false,
+        json_mode: false,
+        seed: false,
+        tool_choices: vec![
+            "auto".into(),
+            "none".into(),
+            "required".into(),
+            "runtime_tool".into(),
+        ],
+    }
 }

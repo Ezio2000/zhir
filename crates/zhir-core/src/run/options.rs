@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Effective parameters frozen when a run starts and persisted with every checkpoint.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunOptions {
     pub runtime_tools: crate::tool::RuntimeToolSelection,

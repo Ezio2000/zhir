@@ -14,6 +14,7 @@
 #[cfg(feature = "anthropic")]
 pub mod anthropic;
 pub mod artifacts;
+pub mod capabilities;
 #[cfg(any(
     feature = "openai-chat",
     feature = "openai-responses",

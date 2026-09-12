@@ -19,7 +19,7 @@ use zhir::{
         FunctionDeltaSink, FunctionModel, TransformModel,
         decorators::{ObservedModel, RetryingModel},
     },
-    run::{EventData, RunContext, State, SuspensionSelector},
+    run::{EventData, State, SuspensionSelector},
     runs::{DriveError, drive},
     runtime_tools::{FunctionTool, RuntimeToolRegistry, TypedTool},
     storage::RunStore,
@@ -43,7 +43,7 @@ fn request() -> ModelRequest {
 }
 fn context() -> ModelContext {
     ModelContext {
-        run: Default::default(),
+        run: zhir::kernel::defaults::context(),
         cancellation: Default::default(),
         deltas: None,
     }
@@ -103,7 +103,7 @@ async fn typed_tools_transforms_observers_and_recording_ports_compose_across_64_
         RuntimeToolRegistry::from_tools([Arc::new(tool) as Arc<dyn RuntimeTool>]).unwrap(),
     );
     let inner = Arc::new(FunctionModel::new(
-        Capabilities::default(),
+        zhir_testing::model_capabilities(),
         |request, context| async move {
             assert_eq!(
                 request.options.extra["prepared"],
@@ -165,14 +165,12 @@ async fn typed_tools_transforms_observers_and_recording_ports_compose_across_64_
         let runtime = &runtime;
         let store = &store;
         async move {
-            let mut run = RunContext::default();
+            let mut run = zhir::kernel::defaults::context();
             run.metadata.insert("value".into(), value.into());
             let mut sequence = 0;
             let checkpoint = drive(
                 runtime
-                    .start(
-                        zhir_core::run::RunRequest::new(vec![Message::user("double")]).context(run),
-                    )
+                    .start(zhir::RunRequest::new(vec![Message::user("double")]).context(run))
                     .unwrap(),
                 |event| {
                     assert!(event.sequence > sequence);
@@ -228,9 +226,9 @@ async fn scripted_failures_sink_failures_and_exhaustion_remain_explicit() {
         ]));
         let model = RetryingModel::new(
             scripted.clone(),
-            zhir_core::retry::RetryPolicy::new(3)
+            zhir_policies::RetryPolicy::new(3)
                 .unwrap()
-                .backoff(zhir_core::retry::Backoff::fixed(Duration::ZERO)),
+                .backoff(zhir_policies::Backoff::fixed(Duration::ZERO)),
         )
         .unwrap();
         let sink = Arc::new(RecordingSink::default());
@@ -265,9 +263,9 @@ async fn scripted_failures_sink_failures_and_exhaustion_remain_explicit() {
     assert!(
         RetryingModel::new(
             scripted.clone(),
-            zhir_core::retry::RetryPolicy::new(3)
+            zhir_policies::RetryPolicy::new(3)
                 .unwrap()
-                .backoff(zhir_core::retry::Backoff::fixed(Duration::ZERO))
+                .backoff(zhir_policies::Backoff::fixed(Duration::ZERO))
         )
         .unwrap()
         .invoke(request(), ctx)
@@ -280,14 +278,14 @@ async fn scripted_failures_sink_failures_and_exhaustion_remain_explicit() {
 #[tokio::test]
 async fn request_preparation_can_resolve_artifacts_without_changing_context() {
     let inner = Arc::new(RecordingModel::new(Arc::new(FunctionModel::new(
-        Capabilities::default(),
+        zhir_testing::model_capabilities(),
         |request, ctx| async move {
             assert_eq!(request.messages, vec![Message::user("resolved document")]);
             assert_eq!(ctx.run.metadata["tag"], "original");
             Ok(ModelResponse::text("done"))
         },
     ))));
-    let mut capabilities = Capabilities::default();
+    let mut capabilities = zhir_testing::model_capabilities();
     capabilities.input_modalities.push("file".into());
     let model = TransformModel::new(inner.clone(), |mut request, ctx| async move {
         ctx.cancellation.check()?;
@@ -316,10 +314,13 @@ async fn request_preparation_can_resolve_artifacts_without_changing_context() {
 async fn function_and_transform_validation_cancel_before_or_after_callbacks() {
     let calls = Arc::new(AtomicUsize::new(0));
     let called = calls.clone();
-    let inner = Arc::new(FunctionModel::new(Capabilities::default(), move |_, _| {
-        called.fetch_add(1, Ordering::SeqCst);
-        async { Ok(ModelResponse::text("ok")) }
-    }));
+    let inner = Arc::new(FunctionModel::new(
+        zhir_testing::model_capabilities(),
+        move |_, _| {
+            called.fetch_add(1, Ordering::SeqCst);
+            async { Ok(ModelResponse::text("ok")) }
+        },
+    ));
     let ctx = context();
     ctx.cancellation.cancel();
     assert!(matches!(
@@ -348,7 +349,7 @@ async fn function_and_transform_validation_cancel_before_or_after_callbacks() {
         assert!(model.invoke(request(), context()).await.is_err());
     }
     assert_eq!(calls.load(Ordering::SeqCst), 0);
-    let model = FunctionModel::new(Capabilities::default(), |_, ctx| async move {
+    let model = FunctionModel::new(zhir_testing::model_capabilities(), |_, ctx| async move {
         ctx.cancellation.cancel();
         Ok(ModelResponse::text("late"))
     });
@@ -356,7 +357,7 @@ async fn function_and_transform_validation_cancel_before_or_after_callbacks() {
         model.invoke(request(), context()).await,
         Err(Error::Cancelled)
     ));
-    let malformed = FunctionModel::new(Capabilities::default(), |_, _| async {
+    let malformed = FunctionModel::new(zhir_testing::model_capabilities(), |_, _| async {
         let mut response = tool_response("tool", json!({}));
         if let Output::RuntimeToolCall { call } = &mut response.output[0] {
             call.id.clear();
@@ -367,15 +368,16 @@ async fn function_and_transform_validation_cancel_before_or_after_callbacks() {
 }
 #[tokio::test]
 async fn drive_preserves_observer_failure_and_actual_settlement() {
-    let model = Arc::new(FunctionModel::new(Capabilities::default(), |_, _| async {
-        std::future::pending::<Result<ModelResponse>>().await
-    }));
+    let model = Arc::new(FunctionModel::new(
+        zhir_testing::model_capabilities(),
+        |_, _| async { std::future::pending::<Result<ModelResponse>>().await },
+    ));
     let runtime = Runtime::builder(model).build().unwrap();
     let error = tokio::time::timeout(
         Duration::from_secs(2),
         drive(
             runtime
-                .start(zhir_core::run::RunRequest::new(vec![Message::user("wait")]))
+                .start(zhir::RunRequest::new(vec![Message::user("wait")]))
                 .unwrap(),
             |event| async move {
                 if matches!(event.data, EventData::ModelStarted) {
@@ -399,7 +401,7 @@ async fn drive_preserves_observer_failure_and_actual_settlement() {
     .unwrap();
     let failed = drive(
         runtime
-            .start(zhir_core::run::RunRequest::new(vec![Message::user("fail")]))
+            .start(zhir::RunRequest::new(vec![Message::user("fail")]))
             .unwrap(),
         |_| async { Ok(()) },
     )
@@ -411,7 +413,7 @@ async fn drive_preserves_observer_failure_and_actual_settlement() {
     )])))
     .build()
     .unwrap();
-    let late=drive(runtime.start(zhir_core::run::RunRequest::new(vec![Message::user("finish")])).unwrap(),|event|async move {
+    let late=drive(runtime.start(zhir::RunRequest::new(vec![Message::user("finish")])).unwrap(),|event|async move {
         if matches!(event.data,EventData::CheckpointCommitted {ref state,..} if state=="completed") {Err(Error::Invalid("late observer".into()))} else {Ok(())}
     }).await.unwrap_err();
     assert!(
@@ -426,7 +428,7 @@ async fn output_decoding_is_strict_and_leaves_checkpoint_intact() {
     .build()
     .unwrap();
     let original = runtime
-        .start(zhir_core::run::RunRequest::new(vec![Message::user("json")]))
+        .start(zhir::RunRequest::new(vec![Message::user("json")]))
         .unwrap()
         .result()
         .await
@@ -495,7 +497,7 @@ async fn ticket_resume_uses_configured_store_and_does_not_retry_stale_heads() {
         .build()
         .unwrap();
     let checkpoint = runtime
-        .start(zhir_core::run::RunRequest::new(vec![Message::user("wait")]))
+        .start(zhir::RunRequest::new(vec![Message::user("wait")]))
         .unwrap()
         .result()
         .await
@@ -542,7 +544,7 @@ async fn ticket_resume_uses_configured_store_and_does_not_retry_stale_heads() {
 async fn recording_model_keeps_cancelled_calls_without_inventing_an_outcome() {
     let entered = Arc::new(tokio::sync::Notify::new());
     let signal = entered.clone();
-    let inner = FunctionModel::new(Capabilities::default(), move |_, _| {
+    let inner = FunctionModel::new(zhir_testing::model_capabilities(), move |_, _| {
         let signal = signal.clone();
         async move {
             signal.notify_one();
@@ -564,7 +566,7 @@ async fn recording_model_keeps_cancelled_calls_without_inventing_an_outcome() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn run_requests_isolate_all_options_and_persist_effective_values_across_96_runs() {
     use zhir::{
-        RunOptions, RunRequest,
+        RunRequest,
         model::{ModelOptions, ProviderToolSpec, ResponseFormat, ToolChoice},
         run::Limits,
     };
@@ -574,12 +576,12 @@ async fn run_requests_isolate_all_options_and_persist_effective_values_across_96
             json_mode: true,
             seed: true,
             tool_choices: vec!["auto".into(), "provider_tool".into()],
-            ..Default::default()
+            ..zhir_testing::model_capabilities()
         },
         |_, _| async { Ok(ModelResponse::text("done")) },
     ))));
     let store = Arc::new(RecordingStore::new(Arc::new(MemoryRunStore::new())));
-    let defaults = RunOptions::default()
+    let defaults = zhir::kernel::defaults::run_options()
         .stream(true)
         .options(ModelOptions {
             temperature: Some(0.2),
@@ -596,7 +598,7 @@ async fn run_requests_isolate_all_options_and_persist_effective_values_across_96
         let runtime = &runtime;
         let defaults = &defaults;
         async move {
-            let mut context = RunContext::default();
+            let mut context = zhir::kernel::defaults::context();
             context.metadata.insert("index".into(), json!(index));
             let request = RunRequest::new([Message::user("run")]).context(context);
             let request = match index % 3 {
@@ -609,10 +611,10 @@ async fn run_requests_isolate_all_options_and_persist_effective_values_across_96
                         ..Default::default()
                     }),
                 _ => request.run_options(
-                    RunOptions::default()
+                    zhir::kernel::defaults::run_options()
                         .limits(Limits {
                             max_planning_steps: 2,
-                            ..Default::default()
+                            ..zhir::kernel::defaults::limits()
                         })
                         .provider_tools(vec![ProviderToolSpec {
                             provider: "consumer.example".into(),
@@ -709,7 +711,7 @@ async fn frozen_options_survive_continue_and_ticket_resume_with_different_runtim
         ])
         .with_capabilities(Capabilities {
             seed: true,
-            ..Default::default()
+            ..zhir_testing::model_capabilities()
         }),
     );
     let store = Arc::new(RecordingStore::new(Arc::new(MemoryRunStore::new())));

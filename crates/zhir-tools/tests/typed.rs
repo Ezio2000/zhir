@@ -38,7 +38,7 @@ struct Output {
 }
 fn context() -> RuntimeToolContext {
     RuntimeToolContext {
-        run: Default::default(),
+        run: zhir_core::run::RunContext::new("port-test", 0),
         cancellation: Default::default(),
         progress: None,
     }
@@ -80,7 +80,13 @@ async fn generated_schemas_follow_input_and_output_serde_contracts() {
     assert!(output["properties"].get("unused_input_name").is_none());
     let registry =
         RuntimeToolRegistry::from_tools([Arc::new(tool) as Arc<dyn RuntimeTool>]).unwrap();
-    let catalog = registry.open_catalog(Default::default()).await.unwrap();
+    let catalog = registry
+        .open_catalog(zhir_core::tool::CatalogContext {
+            run: zhir_core::run::RunContext::new("port-test", 0),
+            cancellation: Default::default(),
+        })
+        .await
+        .unwrap();
     let request = call(json!({"customer_id":"宁筠", "address":{"city":"杭州"}}));
     let result = catalog
         .bind(&request)
@@ -120,7 +126,10 @@ async fn typed_tools_keep_output_validation_and_error_lifecycle() {
         .unwrap();
     let catalog = RuntimeToolRegistry::from_tools([Arc::new(tool) as Arc<dyn RuntimeTool>])
         .unwrap()
-        .open_catalog(Default::default())
+        .open_catalog(zhir_core::tool::CatalogContext {
+            run: zhir_core::run::RunContext::new("port-test", 0),
+            cancellation: Default::default(),
+        })
         .await
         .unwrap();
     let bound = catalog
@@ -211,7 +220,10 @@ async fn typed_replies_preserve_media_and_validate_success_accepted_and_waiting_
             .unwrap();
             let catalog = RuntimeToolRegistry::from_tools([Arc::new(tool) as Arc<dyn RuntimeTool>])
                 .unwrap()
-                .open_catalog(Default::default())
+                .open_catalog(zhir_core::tool::CatalogContext {
+                    run: zhir_core::run::RunContext::new("port-test", 0),
+                    cancellation: Default::default(),
+                })
                 .await
                 .unwrap();
             let result = catalog

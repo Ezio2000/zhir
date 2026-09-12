@@ -33,7 +33,7 @@ fn request(stream: bool) -> ModelRequest {
 }
 fn context() -> ModelContext {
     ModelContext {
-        run: Default::default(),
+        run: zhir::kernel::defaults::context(),
         cancellation: Default::default(),
         deltas: None,
     }
@@ -104,9 +104,9 @@ async fn contextual_factories_are_fallible_per_attempt_and_protocol_independent(
         input.options.extra.insert("marker".into(), json!("caller"));
         RetryingModel::new(
             Arc::new(model),
-            zhir_core::retry::RetryPolicy::new(3)
+            zhir_policies::RetryPolicy::new(3)
                 .unwrap()
-                .backoff(zhir_core::retry::Backoff::fixed(Duration::ZERO)),
+                .backoff(zhir_policies::Backoff::fixed(Duration::ZERO)),
         )
         .unwrap()
         .invoke(input, ctx)

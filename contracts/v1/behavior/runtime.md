@@ -54,3 +54,7 @@
 The original behavior matrix has 77 cases under `conformance/cases/`; parameter
 freezing and ticket races are additionally covered by Rust integration tests.
 The SDK's Rust APIs, wire format and database layout have no legacy compatibility path.
+
+Effective run options contain complete numeric limits; missing numeric fields are
+invalid wire data. Runtime defaults are applied by kernel before the first commit,
+never by checkpoint decoding. Capabilities are explicit model declarations.

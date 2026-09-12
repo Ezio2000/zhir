@@ -1,10 +1,6 @@
 use std::time::Duration;
 use tokio::time::Instant;
-use zhir_core::{
-    Cancellation, Result,
-    error::Error,
-    run::{RunContext, now_ms},
-};
+use zhir_core::{Cancellation, Result, error::Error, run::RunContext};
 pub(crate) fn deadline(run: &RunContext) -> Result<Option<Instant>> {
     run.deadline_at_ms
         .map(|at| {
@@ -40,4 +36,12 @@ pub(crate) async fn wait(
             .min(Instant::now() + Duration::from_millis(10));
         tokio::time::sleep_until(wake).await;
     }
+}
+
+pub(crate) fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
 }

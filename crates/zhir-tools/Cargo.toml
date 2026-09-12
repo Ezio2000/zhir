@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 zhir-core.workspace = true
+zhir-policies.workspace = true
 tokio.workspace = true
 jsonschema.workspace = true
 serde.workspace = true

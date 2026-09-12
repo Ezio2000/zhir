@@ -1,6 +1,6 @@
 # Architecture
 
-zhir is one Cargo workspace with seven SDK crates and one consumer test-support
+zhir is one Cargo workspace with eight SDK crates and one consumer test-support
 crate. Core defines values and asynchronous ports; kernel owns the execution state
 machine. Models, tools and storage implement those ports independently.
 
@@ -8,6 +8,7 @@ machine. Models, tools and storage implement those ports independently.
 zhir/
 ├── crates/
 │   ├── zhir-core/       # Values, model/tool/storage ports and native wire DTOs
+│   ├── zhir-policies/   # Shared retry budgets and backoff calculations
 │   ├── zhir-kernel/     # Runtime, scheduling, controls, commits and trace checks
 │   ├── zhir-models/     # Model composition, protocol codecs and extension sessions
 │   ├── zhir-tools/      # Tool registration, binding, schemas and decorators
@@ -24,8 +25,13 @@ zhir/
 ## Ownership and dependencies
 
 - Core has no Tokio, HTTP client, database or other zhir dependency. Its optional
-  schema feature generates contract documents during development.
-- Kernel, models, tools and storage each depend only on core among the zhir crates.
+  schema feature generates contract documents during development. Core retains
+  value validation and consistency rules, not retry implementations, catalog
+  wrappers, error presentation or runtime presets.
+- Policies depends only on core and owns shared strategy implementations, without an executor.
+- Kernel and storage depend only on core among the zhir crates. Models and tools
+  depend on core and policies. These are production boundaries; development
+  dependencies may use kernel to exercise runtime-produced values.
 - Builtins depend on core and tools; the optional agent feature also uses kernel.
 - The facade selects components through Cargo features and adds convenience APIs
   over existing ports. It introduces no additional scheduler or commit path.
@@ -45,12 +51,15 @@ the SDK does not infer execution ownership from names or status strings.
 
 ## Execution and recovery
 
+Kernel owns RunRequest/ResumeRequest builders, run identity/time creation, default
+limits and default RunOptions. Core RunContext takes explicit identity and time.
+Persisted numeric limits are required; deserialization does not fill runtime defaults.
 Runtime holds shared resources and defaults for new runs. Start resolves explicit
 RunRequest overrides into RunOptions and freezes them in the initial Checkpoint.
 Continue and resume retain those options even when resources are rebuilt with
 different defaults. RuntimeToolSelection is part of these frozen options. CatalogContext
 passes run metadata and cancellation to each source. CompositeRuntimeTools opens source
-snapshots once; kernel applies the pure selection view for declarations and binding.
+snapshots once; kernel owns the selected catalog used for declarations and binding.
 Stores and trace validation reject parameter drift.
 
 Each start, continue or resume creates one lazy, single-use Invocation. Controls
@@ -60,8 +69,10 @@ Full model-delta observation is caller-owned and does not share checkpoint atomi
 Invocation returns RunCompletion, a settled view of the same committed checkpoint.
 RunOutcome exposes completion, suspension tickets, failures and limits. Structured
 resume/catalog/validation/context/artifact errors retain actionable causes.
-ContextKey<T> provides typed access to serialized metadata. RetryPolicy holds pure
-backoff calculations; models/tools own waits and execution eligibility.
+ContextKey<T> provides typed access to serialized metadata. RetryPolicy in policies
+holds backoff calculations; models/tools own waits and execution eligibility.
+Core error values retain structured causes; kernel maps execution failures into
+model-visible tool results or terminal checkpoints.
 
 ResumeRequest accepts a snapshot or a SuspensionTicket. A ticket loads the
 configured store and matches the exact run, checkpoint, revision and suspension.
@@ -96,6 +107,10 @@ Consumers configure artifact resources and own collection of uncommitted artifac
 
 Wire DTOs are independent of database layouts. Generated schemas validate shape;
 core/kernel additionally validate history, fields and transitions.
+
+Capabilities are explicit core values without an assumed default model. Models
+owns named capability presets and protocol-specific declarations; testing owns
+fixture capabilities. Selected endpoints may override protocol presets.
 
 Models owns protocol envelopes and per-invocation extension sessions. A fallible
 factory receives read-only protocol, request and run context. HTTP/SSE transport,

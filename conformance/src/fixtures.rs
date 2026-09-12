@@ -51,7 +51,7 @@ impl CaseModel {
                     "video".into(),
                     "file".into(),
                 ],
-                ..Capabilities::default()
+                ..case_capabilities()
             },
         }
     }
@@ -360,7 +360,7 @@ pub fn seed(value: &Value) -> Result<Arc<Checkpoint>> {
     let revision = value["revision"].as_u64().unwrap();
     let id = value["id"].as_str().unwrap().to_owned();
     Ok(Arc::new(Checkpoint {
-        options: Default::default(),
+        options: zhir_kernel::defaults::run_options(),
         id: id.clone(),
         parent_id: if revision > 0 {
             Some(format!("{id}-parent"))
@@ -376,4 +376,27 @@ pub fn seed(value: &Value) -> Result<Arc<Checkpoint>> {
             action: "fixture".into(),
         },
     }))
+}
+
+fn case_capabilities() -> Capabilities {
+    Capabilities {
+        input_modalities: vec!["text".into()],
+        output_modalities: vec!["text".into()],
+        structured_runtime_tools: true,
+        freeform_runtime_tools: false,
+        provider_tools: false,
+        parallel_runtime_tools: true,
+        parallel_control: true,
+        streaming: true,
+        usage: true,
+        structured_output: false,
+        json_mode: false,
+        seed: false,
+        tool_choices: vec![
+            "auto".into(),
+            "none".into(),
+            "required".into(),
+            "runtime_tool".into(),
+        ],
+    }
 }

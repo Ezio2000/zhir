@@ -55,7 +55,7 @@ impl HttpModel {
             structured_output: true,
             json_mode: true,
             seed: protocol == Protocol::Chat,
-            ..Capabilities::default()
+            ..crate::capabilities::text_tool_calling()
         };
         if protocol == Protocol::Chat {
             capabilities.input_modalities.push("audio".into());

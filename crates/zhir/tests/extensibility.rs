@@ -23,7 +23,6 @@ use zhir::{
     models::{
         HttpModel, ModelConfig, Protocol, ProtocolExtension, anthropic, openai, transport::SseEvent,
     },
-    run::RunContext,
     tool::{
         Execution, InputSpec, RuntimeToolCall, RuntimeToolInput, RuntimeToolOutcome,
         RuntimeToolSpec,
@@ -42,7 +41,7 @@ fn request() -> ModelRequest {
 }
 fn context() -> ModelContext {
     ModelContext {
-        run: RunContext::default(),
+        run: zhir::kernel::defaults::context(),
         cancellation: Cancellation::default(),
         deltas: None,
     }
@@ -857,12 +856,13 @@ impl Model for ConsumerModel {
 #[tokio::test]
 async fn user_model_new_events_and_content_survive_kernel_and_wire() {
     use futures::StreamExt;
-    let runtime = zhir::Runtime::builder(Arc::new(ConsumerModel(Capabilities::default())))
-        .defaults(|run| run.stream(true))
-        .build()
-        .unwrap();
+    let runtime =
+        zhir::Runtime::builder(Arc::new(ConsumerModel(zhir_testing::model_capabilities())))
+            .defaults(|run| run.stream(true))
+            .build()
+            .unwrap();
     let mut invocation = runtime
-        .start(zhir_core::run::RunRequest::new(vec![Message::user("go")]))
+        .start(zhir::RunRequest::new(vec![Message::user("go")]))
         .unwrap();
     let mut events = invocation.events().unwrap();
     let mut found = false;

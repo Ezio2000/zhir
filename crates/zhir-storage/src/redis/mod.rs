@@ -101,7 +101,7 @@ impl RedisRunStore {
         let deadline = commit
             .deadline
             .map(|d| {
-                zhir_core::run::now_ms().saturating_add(
+                now_ms().saturating_add(
                     d.saturating_duration_since(std::time::Instant::now())
                         .as_millis() as u64,
                 )
@@ -188,4 +188,12 @@ impl RunStore for RedisRunStore {
             Ok(Some(Arc::new(core.with_history(history)?)))
         })
     }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
 }

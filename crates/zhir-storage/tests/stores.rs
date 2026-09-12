@@ -1,23 +1,23 @@
 use std::sync::Arc;
 use zhir_core::{
     message::Message,
-    run::{Checkpoint, Fact, History, Metrics, RunContext, State, new_id},
+    run::{Checkpoint, Fact, History, Metrics, State},
     storage::{Commit, HistoryDelta, RunStore},
     wire,
 };
 fn initial() -> Commit {
     let messages = vec![Message::user("initial")];
     let checkpoint = Arc::new(Checkpoint {
-        options: zhir_core::run::RunOptions::default().stream(true).options(
+        options: zhir_kernel::defaults::run_options().stream(true).options(
             zhir_core::model::ModelOptions {
                 seed: Some(23),
                 ..Default::default()
             },
         ),
-        id: new_id(),
+        id: uuid::Uuid::new_v4().to_string(),
         parent_id: None,
         revision: 0,
-        context: RunContext::default(),
+        context: zhir_kernel::defaults::context(),
         history: History::new(messages.clone()).unwrap(),
         state: State::Planning {
             provider_turn_pending: false,
@@ -31,7 +31,7 @@ fn append(previous: &Commit, text: &str) -> Commit {
     let messages = vec![Message::external(text)];
     let mut next = previous.checkpoint.as_ref().clone();
     next.parent_id = Some(next.id.clone());
-    next.id = new_id();
+    next.id = uuid::Uuid::new_v4().to_string();
     next.revision += 1;
     next.history = next.history.append(messages.clone()).unwrap();
     next.fact = Fact::ConversationInsert {
@@ -81,7 +81,7 @@ async fn exercise(store: Arc<dyn RunStore>) {
     let messages = vec![Message::system("summary")];
     let mut rewritten = recovered.as_ref().clone();
     rewritten.parent_id = Some(rewritten.id.clone());
-    rewritten.id = new_id();
+    rewritten.id = uuid::Uuid::new_v4().to_string();
     rewritten.revision += 1;
     rewritten.history = History::new(messages.clone()).unwrap();
     rewritten.fact = Fact::HistoryRewrite {

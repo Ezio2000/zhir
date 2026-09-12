@@ -10,10 +10,10 @@ use zhir_core::{
 
 pub struct RetryingTool {
     inner: Arc<dyn RuntimeTool>,
-    policy: zhir_core::retry::RetryPolicy,
+    policy: zhir_policies::RetryPolicy,
 }
 impl RetryingTool {
-    pub fn new(inner: Arc<dyn RuntimeTool>, policy: zhir_core::retry::RetryPolicy) -> Result<Self> {
+    pub fn new(inner: Arc<dyn RuntimeTool>, policy: zhir_policies::RetryPolicy) -> Result<Self> {
         if policy.max_attempts() > 1 && !inner.spec().execution.idempotent {
             return Err(Error::Invalid("retries require an idempotent tool".into()));
         }

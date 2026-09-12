@@ -1,6 +1,6 @@
 //! Pure per-call retry budgets and caller-owned backoff calculations.
-use crate::{Result, error::Error};
 use std::{sync::Arc, time::Duration};
+use zhir_core::{Result, error::Error};
 
 #[derive(Clone)]
 pub struct Backoff(Arc<dyn Fn(usize) -> Duration + Send + Sync>);

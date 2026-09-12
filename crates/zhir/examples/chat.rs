@@ -17,7 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut run = Runtime::builder(Arc::new(model))
         .store(store.clone())
         .build()?
-        .start(zhir_core::run::RunRequest::new(vec![Message::user(
+        .start(zhir::RunRequest::new(vec![Message::user(
             std::env::args().nth(1).unwrap_or_else(|| "Hello".into()),
         )]))?;
     let checkpoint = run.result().await?.into_checkpoint();

@@ -91,10 +91,10 @@ impl DeltaSink for Tracker {
 }
 pub struct RetryingModel {
     inner: Arc<dyn Model>,
-    policy: zhir_core::retry::RetryPolicy,
+    policy: zhir_policies::RetryPolicy,
 }
 impl RetryingModel {
-    pub fn new(inner: Arc<dyn Model>, policy: zhir_core::retry::RetryPolicy) -> Result<Self> {
+    pub fn new(inner: Arc<dyn Model>, policy: zhir_policies::RetryPolicy) -> Result<Self> {
         Ok(Self { inner, policy })
     }
 }

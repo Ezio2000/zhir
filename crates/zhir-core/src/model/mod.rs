@@ -53,30 +53,6 @@ pub struct Capabilities {
     pub seed: bool,
     pub tool_choices: Vec<String>,
 }
-impl Default for Capabilities {
-    fn default() -> Self {
-        Self {
-            input_modalities: vec!["text".into()],
-            output_modalities: vec!["text".into()],
-            structured_runtime_tools: true,
-            freeform_runtime_tools: false,
-            provider_tools: false,
-            parallel_runtime_tools: true,
-            parallel_control: true,
-            streaming: true,
-            usage: true,
-            structured_output: false,
-            json_mode: false,
-            seed: false,
-            tool_choices: vec![
-                "auto".into(),
-                "none".into(),
-                "required".into(),
-                "runtime_tool".into(),
-            ],
-        }
-    }
-}
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

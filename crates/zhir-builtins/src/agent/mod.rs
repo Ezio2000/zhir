@@ -10,7 +10,7 @@ use zhir_core::{
     BoxFuture, Result,
     error::Error,
     message::{Content, Message},
-    run::{Checkpoint, RunContext, State, new_id},
+    run::{Checkpoint, RunContext, State},
     tool::{RuntimeTool, RuntimeToolResult},
 };
 use zhir_kernel::{Runtime, control::ControlHandle};
@@ -119,14 +119,13 @@ impl AgentBackend for InMemoryAgentBackend {
                 }
                 return Ok(record.snapshot.borrow().clone());
             }
-            let id = new_id();
             let context = RunContext {
-                run_id: id.clone(),
                 parent_run_id: Some(requester.run_id.clone()),
                 parent_runtime_tool_call_id: Some(key),
                 deadline_at_ms: requester.deadline_at_ms,
-                ..RunContext::default()
+                ..zhir_kernel::defaults::context()
             };
+            let id = context.run_id.clone();
             let mut messages = Vec::new();
             if !self.system_prompt.is_empty() {
                 messages.push(Message::system(&self.system_prompt));
@@ -134,7 +133,7 @@ impl AgentBackend for InMemoryAgentBackend {
             messages.push(Message::user(&prompt));
             let mut invocation = self
                 .runtime
-                .start(zhir_core::run::RunRequest::new(messages).context(context))?;
+                .start(zhir_kernel::RunRequest::new(messages).context(context))?;
             let control = invocation.control();
             let snapshot = AgentSnapshot {
                 id: id.clone(),

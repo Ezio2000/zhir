@@ -17,7 +17,8 @@ use zhir_core::{
     tool::{ApprovalPolicy, BatchPolicy, RuntimeToolCatalogProvider},
 };
 
-pub use zhir_core::run::{ResumeRequest, RunOptions, RunRequest, SuspensionTicket};
+use crate::{ResumeRequest, RunRequest};
+pub use zhir_core::run::{RunOptions, SuspensionTicket};
 
 pub(crate) struct Config {
     pub model: Arc<dyn Model>,
@@ -34,7 +35,7 @@ pub struct RuntimeBuilder {
 impl RuntimeBuilder {
     pub fn new(model: Arc<dyn Model>) -> Self {
         Self {
-            defaults: RunOptions::default(),
+            defaults: crate::defaults::run_options(),
             config: Config {
                 model,
                 runtime_tools: Arc::new(EmptyTools),

@@ -14,7 +14,6 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 sha2.workspace = true
-uuid.workspace = true
 schemars = { version = "1", optional = true }
 
 [features]

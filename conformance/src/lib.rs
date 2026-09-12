@@ -125,9 +125,9 @@ pub async fn run_case(case: &Value) -> Result<()> {
         let request = &invocation["request"];
         let expected = &invocation["expected"];
         let created = match request["kind"].as_str() {
-            Some("start") => runtime.start(zhir_core::run::RunRequest::new(
-                decode::<Vec<Message>>(&request["messages"])?,
-            )),
+            Some("start") => runtime.start(zhir_kernel::RunRequest::new(decode::<Vec<Message>>(
+                &request["messages"],
+            )?)),
             Some("continue") => runtime.continue_from(
                 last.clone()
                     .ok_or_else(|| Error::Invalid("no checkpoint to continue".into()))?,

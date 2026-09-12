@@ -1,3 +1,4 @@
+use crate::environment::{new_id, now_ms};
 use crate::{
     control::Control,
     defaults::Ephemeral,
@@ -18,7 +19,7 @@ use zhir_core::{
     model::{ModelContext, ModelRequest},
     run::{
         ActiveState, Checkpoint, EventData, Fact, History, LimitReason, Metrics, State, Suspension,
-        new_id, now_ms, validate_history,
+        validate_history,
     },
     storage::{Commit, HistoryDelta, RunStore},
     tool::{
@@ -110,7 +111,7 @@ pub(crate) async fn execute(
                 if let Err(error) = engine
                     .advance(
                         State::Failed {
-                            error: error.failure(),
+                            error: crate::failure::failure(&error),
                         },
                         fact,
                         HistoryDelta::Unchanged,
@@ -432,8 +433,9 @@ impl Engine {
                     cancellation: cancellation.clone(),
                 };
                 let selection = self.options.runtime_tools.clone();
-                let future =
-                    Box::pin(async move { selection.select(tools.open_catalog(context).await?) });
+                let future = Box::pin(async move {
+                    crate::catalog::select_catalog(&selection, tools.open_catalog(context).await?)
+                });
                 let defer = !matches!(
                     current.state,
                     State::Planning {
@@ -644,7 +646,8 @@ impl Engine {
                     bindings.push(Some(binding));
                 }
                 Err(error) => {
-                    results[index] = Some(RuntimeToolResult::failure(error.failure()));
+                    results[index] =
+                        Some(RuntimeToolResult::failure(crate::failure::failure(&error)));
                     bindings.push(None);
                 }
             }
@@ -854,9 +857,9 @@ async fn run_tool(
     let result = match invoked {
         Ok(r) => match r.validate() {
             Ok(()) => r,
-            Err(e) => RuntimeToolResult::failure(e.failure()),
+            Err(e) => RuntimeToolResult::failure(crate::failure::failure(&e)),
         },
-        Err(e) => RuntimeToolResult::failure(e.failure()),
+        Err(e) => RuntimeToolResult::failure(crate::failure::failure(&e)),
     };
     emitter.emit(EventData::RuntimeToolFinished {
         call_id: call.id,

@@ -27,4 +27,6 @@ mysql = ["dep:sqlx", "sqlx/mysql", "sqlx/any"]
 redis = ["dep:redis"]
 
 [dev-dependencies]
+uuid.workspace = true
+zhir-kernel.workspace = true
 tempfile.workspace = true

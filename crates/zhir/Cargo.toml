@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 zhir-core.workspace = true
+zhir-policies = { workspace = true, optional = true }
 zhir-kernel.workspace = true
 zhir-tools = { workspace = true, optional = true }
 zhir-builtins = { workspace = true, optional = true }
@@ -26,9 +27,10 @@ jsonschema = { workspace = true, optional = true }
 [features]
 default = []
 typed-output = ["dep:schemars", "dep:jsonschema"]
-tools = ["dep:zhir-tools"]
+policies = ["dep:zhir-policies"]
+tools = ["dep:zhir-tools", "policies"]
 typed-tools = ["tools", "zhir-tools/typed"]
-models = ["dep:zhir-models"]
+models = ["dep:zhir-models", "policies"]
 filesystem = ["tools", "dep:zhir-builtins", "zhir-builtins/filesystem"]
 shell = ["tools", "dep:zhir-builtins", "zhir-builtins/shell"]
 interaction = ["tools", "dep:zhir-builtins", "zhir-builtins/interaction"]
@@ -43,6 +45,7 @@ mysql = ["dep:zhir-storage", "zhir-storage/mysql"]
 redis = ["dep:zhir-storage", "zhir-storage/redis"]
 
 [dev-dependencies]
+uuid.workspace = true
 tokio = { workspace = true, features = ["fs"] }
 schemars.workspace = true
 zhir-testing = { workspace = true, features = ["http"] }

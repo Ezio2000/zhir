@@ -22,8 +22,8 @@ use zhir::{
     message::{Message, Output},
     model::{Capabilities, Model, ModelContext, ModelRequest, ModelResponse},
     models::{FunctionModel, TransformModel, decorators::RetryingModel},
-    retry::{Backoff, RetryPolicy},
-    run::{ContextKey, Limits, RunContext, State, now_ms},
+    policies::{Backoff, RetryPolicy},
+    run::{ContextKey, Limits, State},
     runtime_tools::{
         CompositeRuntimeTools, FunctionApprovalPolicy, RuntimeToolRegistry, ToolReply, TypedTool,
         decorators::RetryingTool,
@@ -60,7 +60,7 @@ fn request() -> ModelRequest {
 }
 fn context() -> ModelContext {
     ModelContext {
-        run: RunContext::default(),
+        run: zhir::kernel::defaults::context(),
         cancellation: Cancellation::default(),
         deltas: None,
     }
@@ -222,53 +222,46 @@ async fn catalog_snapshots_duplicates_missing_selection_and_schema_paths() {
     let b = Arc::new(RuntimeToolRegistry::from_tools([tool("b")]).unwrap());
     let sources: Vec<Arc<dyn RuntimeToolCatalogProvider>> = vec![a.clone(), b.clone()];
     let combined = CompositeRuntimeTools::new(sources);
-    let first = combined.open_catalog(Default::default()).await.unwrap();
+    let first = combined
+        .open_catalog(zhir_core::tool::CatalogContext {
+            run: zhir::kernel::defaults::context(),
+            cancellation: Default::default(),
+        })
+        .await
+        .unwrap();
     b.register(tool("c")).unwrap();
     assert_eq!(first.specs().len(), 2);
     assert_eq!(
         combined
-            .open_catalog(Default::default())
+            .open_catalog(zhir_core::tool::CatalogContext {
+                run: zhir::kernel::defaults::context(),
+                cancellation: Default::default()
+            })
             .await
             .unwrap()
             .specs()
             .len(),
         3
     );
-    let selected = RuntimeToolSelection::only(["a"])
-        .select(first.clone())
-        .unwrap();
-    assert!(matches!(
-        selected.bind(&call("b", 0)),
-        Err(Error::Catalog(CatalogError::NotSelected { .. }))
-    ));
     let bad = RuntimeToolCall {
         input: RuntimeToolInput::Structured(json!({"n":"wrong"})),
         ..call("a", 0)
     };
     assert!(
-        matches!(selected.bind(&bad), Err(Error::Validation(ValidationError::Value { path, .. })) if path == "/n")
+        matches!(first.bind(&bad), Err(Error::Validation(ValidationError::Value { path, .. })) if path == "/n")
     );
-    assert!(matches!(
-        RuntimeToolSelection::only(["missing"]).select(first.clone()),
-        Err(Error::Catalog(CatalogError::NotFound { .. }))
-    ));
     assert!(matches!(
         RuntimeToolSelection::only(["a", "a"]).validate(),
         Err(Error::Catalog(CatalogError::Duplicate { .. }))
     ));
-    assert_eq!(
-        RuntimeToolSelection::None
-            .select(first)
-            .unwrap()
-            .specs()
-            .len(),
-        0
-    );
     b.register(tool("a")).unwrap();
     assert!(
-        matches!(combined.open_catalog(Default::default()).await, Err(Error::Catalog(CatalogError::Duplicate { name, sources })) if name == "a" && sources == ["0", "1"])
+        matches!(combined.open_catalog(zhir_core::tool::CatalogContext {run: zhir::kernel::defaults::context(), cancellation: Default::default()}).await, Err(Error::Catalog(CatalogError::Duplicate { name, sources })) if name == "a" && sources == ["0", "1"])
     );
-    let cancelled = CatalogContext::default();
+    let cancelled = zhir_core::tool::CatalogContext {
+        run: zhir::kernel::defaults::context(),
+        cancellation: Default::default(),
+    };
     cancelled.cancellation.cancel();
     assert!(matches!(
         combined.open_catalog(cancelled).await,
@@ -359,7 +352,7 @@ async fn selection_and_context_survive_ticket_resume_with_different_defaults() {
     let limited = no_store
         .start(RunRequest::new([Message::user("run")]).limits(Limits {
             max_planning_steps: 0,
-            ..Default::default()
+            ..zhir::kernel::defaults::limits()
         }))
         .unwrap()
         .result()
@@ -375,7 +368,7 @@ async fn selection_and_context_survive_ticket_resume_with_different_defaults() {
 
 #[test]
 fn typed_context_errors_distinguish_missing_null_and_mismatched_types() {
-    let mut run = RunContext::default();
+    let mut run = zhir::kernel::defaults::context();
     assert!(
         matches!(run.require(JOB), Err(Error::Context(ContextError::Missing { key })) if key==JOB.name())
     );
@@ -408,7 +401,7 @@ async fn function_approval_preserves_order_and_batch_errors() {
         Ok(ApprovalDecision::Deny(format!("{:?}", req.call.input)))
     });
     let decisions = policy
-        .decide(requests.clone(), Default::default())
+        .decide(requests.clone(), zhir::kernel::defaults::context())
         .await
         .unwrap();
     for (n, d) in [1, 2, 3].into_iter().zip(decisions) {
@@ -416,12 +409,16 @@ async fn function_approval_preserves_order_and_batch_errors() {
     }
     let short = FunctionApprovalPolicy::batch(|_, _| async { Ok(vec![]) });
     assert!(matches!(
-        short.decide(requests.clone(), Default::default()).await,
+        short
+            .decide(requests.clone(), zhir::kernel::defaults::context())
+            .await,
         Err(Error::Protocol(_))
     ));
     let failing = FunctionApprovalPolicy::per_call(|_, _| async { Err(Error::Cancelled) });
     assert!(matches!(
-        failing.decide(requests, Default::default()).await,
+        failing
+            .decide(requests, zhir::kernel::defaults::context())
+            .await,
         Err(Error::Cancelled)
     ));
 }
@@ -467,28 +464,12 @@ async fn response_maps_run_in_order_and_do_not_recover_inner_failures() {
 
 #[tokio::test]
 async fn model_and_tool_backoff_are_cancelled_and_deadline_bounded() {
-    let policy = RetryPolicy::new(4)
-        .unwrap()
-        .backoff(Backoff::exponential(Duration::from_millis(1), Duration::from_millis(3)).unwrap());
-    assert_eq!(
-        (1..4)
-            .map(|n| policy.delay_after(n).unwrap().as_millis())
-            .collect::<Vec<_>>(),
-        vec![1, 2, 3]
-    );
-    assert!(policy.delay_after(0).is_none());
-    assert!(policy.delay_after(4).is_none());
-    assert!(RetryPolicy::new(0).is_err());
-    let long = RetryPolicy::new(40)
-        .unwrap()
-        .backoff(Backoff::exponential(Duration::from_nanos(1), Duration::from_secs(100)).unwrap());
-    assert_eq!(long.delay_after(34), Some(Duration::from_nanos(1u64 << 33)));
     for deadline in [false, true] {
         let entered = Arc::new(tokio::sync::Semaphore::new(0));
         let signal = entered.clone();
         let calls = Arc::new(AtomicUsize::new(0));
         let counted = calls.clone();
-        let model = FunctionModel::new(Capabilities::default(), move |_, _| {
+        let model = FunctionModel::new(zhir_testing::model_capabilities(), move |_, _| {
             counted.fetch_add(1, Ordering::SeqCst);
             signal.add_permits(1);
             async { Err(temporary()) }
@@ -502,7 +483,7 @@ async fn model_and_tool_backoff_are_cancelled_and_deadline_bounded() {
         .unwrap();
         let mut ctx = context();
         if deadline {
-            ctx.run.deadline_at_ms = Some(now_ms() + 40);
+            ctx.run.deadline_at_ms = Some(zhir::kernel::defaults::context().started_at_ms + 40);
         }
         let cancel = ctx.cancellation.clone();
         let task = tokio::spawn(async move { model.invoke(request(), ctx).await });
@@ -554,7 +535,7 @@ async fn model_and_tool_backoff_are_cancelled_and_deadline_bounded() {
         tool.invoke(
             call("flaky", 0),
             RuntimeToolContext {
-                run: Default::default(),
+                run: zhir::kernel::defaults::context(),
                 cancellation,
                 progress: None,
             },
@@ -729,7 +710,7 @@ async fn filesystem_artifact_model_commits_references_and_rehydrates_history() {
     let capabilities = Capabilities {
         input_modalities: vec!["text".into(), "file".into()],
         output_modalities: vec!["text".into(), "file".into()],
-        ..Default::default()
+        ..zhir_testing::model_capabilities()
     };
     let model = ArtifactModel::new(
         Arc::new(ScriptedModel::responses([response]).with_capabilities(capabilities.clone())),

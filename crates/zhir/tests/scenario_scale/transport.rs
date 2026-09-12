@@ -398,9 +398,9 @@ async fn wire_case(
         model = Arc::new(
             RetryingModel::new(
                 model,
-                zhir_core::retry::RetryPolicy::new(3)
+                zhir_policies::RetryPolicy::new(3)
                     .unwrap()
-                    .backoff(zhir_core::retry::Backoff::fixed(Duration::from_millis(1))),
+                    .backoff(zhir_policies::Backoff::fixed(Duration::from_millis(1))),
             )
             .unwrap(),
         );
@@ -421,7 +421,7 @@ async fn wire_case(
             .invoke(
                 empty_request(false),
                 zhir::model::ModelContext {
-                    run: Default::default(),
+                    run: zhir::kernel::defaults::context(),
                     cancellation: Default::default(),
                     deltas: None,
                 },
@@ -449,13 +449,13 @@ async fn wire_case(
                     max_runtime_tool_calls: 0,
                     max_progress_events: if slow { 16 } else { 16384 },
                     elapsed_ms: Some(10_000),
-                    ..Default::default()
+                    ..zhir::kernel::defaults::limits()
                 })
             })
             .build()
             .unwrap();
         let mut invocation = runtime
-            .start(zhir_core::run::RunRequest::new(vec![Message::user(
+            .start(zhir::RunRequest::new(vec![Message::user(
                 "exercise fixture",
             )]))
             .unwrap();
@@ -529,26 +529,35 @@ async fn wire_case(
                 );
             }
         } else {
-            let failure = error.as_ref().map(Error::failure).or_else(|| {
-                checkpoint.as_ref().and_then(|c| {
-                    if let State::Failed { error } = &c.state {
-                        Some(error.clone())
-                    } else {
-                        None
-                    }
+            let failure = error
+                .as_ref()
+                .and_then(|e| match e {
+                    Error::Model(f) | Error::RuntimeTool(f) => Some(f.clone()),
+                    _ => None,
                 })
-            });
+                .or_else(|| {
+                    checkpoint.as_ref().and_then(|c| {
+                        if let State::Failed { error } = &c.state {
+                            Some(error.clone())
+                        } else {
+                            None
+                        }
+                    })
+                });
             checks.insert(
                 "expected_failure_code",
-                failure.as_ref().is_some_and(|f| {
-                    f.code
-                        == match family {
-                            "cancel_stream" => "cancelled",
-                            "visible_error_no_retry" => "consumer_busy",
-                            "observer_failure" => "observer_write",
-                            _ => "protocol",
-                        }
-                }),
+                if family == "cancel_stream" {
+                    matches!(error, Some(Error::Cancelled))
+                } else {
+                    failure.as_ref().is_some_and(|f| {
+                        f.code
+                            == match family {
+                                "visible_error_no_retry" => "consumer_busy",
+                                "observer_failure" => "observer_write",
+                                _ => "protocol",
+                            }
+                    })
+                },
             );
             if family == "truncated_stream" {
                 checks.insert(
@@ -757,7 +766,7 @@ async fn messages_groups_tool_results_without_extensions() {
         let server = server(vec![reply]).await;
         let plain = http(Protocol::Messages, &server.url, "fixture", "fixture").unwrap();
         let context = || zhir::model::ModelContext {
-            run: Default::default(),
+            run: zhir::kernel::defaults::context(),
             cancellation: Default::default(),
             deltas: None,
         };
@@ -884,7 +893,7 @@ async fn rpc_case(index: usize, client: reqwest::Client) -> Value {
         client,
         capabilities: zhir::model::Capabilities {
             usage: false,
-            ..Default::default()
+            ..zhir_testing::model_capabilities()
         },
     });
     let runtime = Runtime::builder(model)
@@ -895,7 +904,7 @@ async fn rpc_case(index: usize, client: reqwest::Client) -> Value {
         .unwrap();
     let (result, events) = drain(
         runtime
-            .start(zhir_core::run::RunRequest::new(vec![Message::user(
+            .start(zhir::RunRequest::new(vec![Message::user(
                 "look up the fixture record",
             )]))
             .unwrap(),

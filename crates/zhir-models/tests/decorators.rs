@@ -31,7 +31,7 @@ impl Flaky {
             failures,
             retryable,
             emit,
-            capabilities: Capabilities::default(),
+            capabilities: zhir_models::capabilities::text_tool_calling(),
         })
     }
 }
@@ -79,7 +79,7 @@ fn request() -> ModelRequest {
 }
 fn context() -> ModelContext {
     ModelContext {
-        run: RunContext::default(),
+        run: RunContext::new("model-test", 0),
         cancellation: Cancellation::default(),
         deltas: None,
     }
@@ -90,9 +90,9 @@ async fn retries_only_retryable_failures_before_stream_output() {
         let inner = Flaky::new(1, retryable, emit);
         let model = RetryingModel::new(
             inner.clone(),
-            zhir_core::retry::RetryPolicy::new(3)
+            zhir_policies::RetryPolicy::new(3)
                 .unwrap()
-                .backoff(zhir_core::retry::Backoff::fixed(Duration::ZERO)),
+                .backoff(zhir_policies::Backoff::fixed(Duration::ZERO)),
         )
         .unwrap();
         let result = model.invoke(request(), context()).await;
@@ -142,7 +142,7 @@ impl Emitting {
         Arc::new(Self {
             calls: AtomicUsize::new(0),
             completed: AtomicUsize::new(0),
-            capabilities: Capabilities::default(),
+            capabilities: zhir_models::capabilities::text_tool_calling(),
         })
     }
 }
@@ -280,9 +280,9 @@ async fn observer_errors_after_side_effects_never_retry_in_either_nesting_order(
                     Arc::new(ObservedModel::new(inner.clone(), move |_, _| {
                         Ok(captured.clone())
                     })),
-                    zhir_core::retry::RetryPolicy::new(3)
+                    zhir_policies::RetryPolicy::new(3)
                         .unwrap()
-                        .backoff(zhir_core::retry::Backoff::fixed(Duration::ZERO)),
+                        .backoff(zhir_policies::Backoff::fixed(Duration::ZERO)),
                 )
                 .unwrap(),
             )
@@ -291,9 +291,9 @@ async fn observer_errors_after_side_effects_never_retry_in_either_nesting_order(
                 Arc::new(
                     RetryingModel::new(
                         inner.clone(),
-                        zhir_core::retry::RetryPolicy::new(3)
+                        zhir_policies::RetryPolicy::new(3)
                             .unwrap()
-                            .backoff(zhir_core::retry::Backoff::fixed(Duration::ZERO)),
+                            .backoff(zhir_policies::Backoff::fixed(Duration::ZERO)),
                     )
                     .unwrap(),
                 ),
@@ -325,9 +325,9 @@ async fn observer_factory_scope_tracks_wrapper_invocations_across_retries() {
             Arc::new(
                 RetryingModel::new(
                     Arc::new(ObservedModel::new(inner.clone(), factory)),
-                    zhir_core::retry::RetryPolicy::new(3)
+                    zhir_policies::RetryPolicy::new(3)
                         .unwrap()
-                        .backoff(zhir_core::retry::Backoff::fixed(Duration::ZERO)),
+                        .backoff(zhir_policies::Backoff::fixed(Duration::ZERO)),
                 )
                 .unwrap(),
             )
@@ -336,9 +336,9 @@ async fn observer_factory_scope_tracks_wrapper_invocations_across_retries() {
                 Arc::new(
                     RetryingModel::new(
                         inner.clone(),
-                        zhir_core::retry::RetryPolicy::new(3)
+                        zhir_policies::RetryPolicy::new(3)
                             .unwrap()
-                            .backoff(zhir_core::retry::Backoff::fixed(Duration::ZERO)),
+                            .backoff(zhir_policies::Backoff::fixed(Duration::ZERO)),
                     )
                     .unwrap(),
                 ),

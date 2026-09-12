@@ -1,3 +1,4 @@
+use crate::environment::new_id;
 use crate::{
     control::{Control, ControlHandle},
     runtime::{Config, Request},
@@ -16,7 +17,7 @@ use zhir_core::{
     BoxFuture, Result,
     error::Error,
     model::{DeltaSink, ModelDelta},
-    run::{Checkpoint, Event, EventData, RunCompletion, new_id},
+    run::{Checkpoint, Event, EventData, RunCompletion},
     tool::ProgressSink,
 };
 
