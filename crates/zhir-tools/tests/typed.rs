@@ -243,7 +243,11 @@ async fn typed_replies_preserve_media_and_validate_success_accepted_and_waiting_
             let result = result.unwrap();
             assert_eq!(
                 result.outcome.kind(),
-                ["success", "accepted", "waiting"][kind]
+                [
+                    zhir_core::tool::RuntimeToolOutcomeKind::Success,
+                    zhir_core::tool::RuntimeToolOutcomeKind::Accepted,
+                    zhir_core::tool::RuntimeToolOutcomeKind::Waiting
+                ][kind]
             );
             assert_eq!(result.outcome.structured(), Some(&json!({"value":"ok"})));
             assert!(matches!(

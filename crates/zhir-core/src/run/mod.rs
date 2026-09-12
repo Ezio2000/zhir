@@ -1,16 +1,17 @@
 mod completion;
 mod context;
 mod history;
+mod pending;
 pub use completion::{RunCompletion, RunOutcome};
 pub use context::ContextKey;
+pub use pending::PendingCalls;
 mod options;
 mod ticket;
 use crate::{
     BoxFuture, Result,
     error::{Error, Failure},
-    message::{Content, Message, Output},
+    message::{Content, Message},
     model::{ModelDelta, Usage},
-    tool::RuntimeToolCall,
 };
 pub use history::{History, append_digest as append_history_digest};
 pub use options::RunOptions;
@@ -106,7 +107,7 @@ pub enum ActiveState {
         provider_turn_pending: bool,
     },
     RuntimeToolsPending {
-        calls: Vec<RuntimeToolCall>,
+        calls: PendingCalls,
         provider_turn_pending: bool,
     },
 }
@@ -140,6 +141,34 @@ impl ActiveState {
     }
 }
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StateKind {
+    Planning,
+    RuntimeToolsPending,
+    Suspended,
+    Completed,
+    Failed,
+    Limited,
+}
+impl StateKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Planning => "planning",
+            Self::RuntimeToolsPending => "runtime_tools_pending",
+            Self::Suspended => "suspended",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Limited => "limited",
+        }
+    }
+}
+impl std::fmt::Display for StateKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum State {
@@ -147,7 +176,7 @@ pub enum State {
         provider_turn_pending: bool,
     },
     RuntimeToolsPending {
-        calls: Vec<RuntimeToolCall>,
+        calls: PendingCalls,
         provider_turn_pending: bool,
     },
     Suspended {
@@ -165,14 +194,14 @@ pub enum State {
     },
 }
 impl State {
-    pub fn kind(&self) -> &'static str {
+    pub fn kind(&self) -> StateKind {
         match self {
-            Self::Planning { .. } => "planning",
-            Self::RuntimeToolsPending { .. } => "runtime_tools_pending",
-            Self::Suspended { .. } => "suspended",
-            Self::Completed { .. } => "completed",
-            Self::Failed { .. } => "failed",
-            Self::Limited { .. } => "limited",
+            Self::Planning { .. } => StateKind::Planning,
+            Self::RuntimeToolsPending { .. } => StateKind::RuntimeToolsPending,
+            Self::Suspended { .. } => StateKind::Suspended,
+            Self::Completed { .. } => StateKind::Completed,
+            Self::Failed { .. } => StateKind::Failed,
+            Self::Limited { .. } => StateKind::Limited,
         }
     }
     pub fn active(&self) -> Option<ActiveState> {
@@ -186,7 +215,7 @@ impl State {
                 calls,
                 provider_turn_pending,
             } => Some(ActiveState::RuntimeToolsPending {
-                calls: calls.clone(),
+                calls: *calls,
                 provider_turn_pending: *provider_turn_pending,
             }),
             _ => None,
@@ -210,18 +239,7 @@ impl State {
             _ => self.active(),
         };
         if let Some(ActiveState::RuntimeToolsPending { calls, .. }) = active {
-            if calls.is_empty() {
-                return Err(Error::Invalid(
-                    "runtime_tools_pending requires calls".into(),
-                ));
-            }
-            let mut ids = std::collections::HashSet::new();
-            for c in calls {
-                c.validate()?;
-                if !ids.insert(c.id) {
-                    return Err(Error::Invalid("duplicate pending call".into()));
-                }
-            }
+            calls.validate()?;
         }
         if let Self::Completed { content } = self {
             for c in content {
@@ -277,6 +295,28 @@ pub struct Metrics {
     pub usage: Usage,
 }
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlAction {
+    Failed,
+    Limited,
+    Suspended,
+}
+impl ControlAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Failed => "failed",
+            Self::Limited => "limited",
+            Self::Suspended => "suspended",
+        }
+    }
+}
+impl std::fmt::Display for ControlAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Fact {
@@ -284,11 +324,11 @@ pub enum Fact {
     Resumed,
     ModelTurn {
         runtime_tool_call_ids: Vec<String>,
-        result: String,
+        result: StateKind,
     },
     RuntimeToolBatch {
         call_ids: Vec<String>,
-        outcomes: Vec<String>,
+        outcomes: Vec<crate::tool::RuntimeToolOutcomeKind>,
         parallel: bool,
     },
     ConversationInsert {
@@ -298,7 +338,7 @@ pub enum Fact {
         reason: String,
     },
     Control {
-        action: String,
+        action: ControlAction,
     },
 }
 impl Fact {
@@ -347,56 +387,19 @@ impl Checkpoint {
     }
 }
 pub fn validate_history(history: &History, active: Option<&ActiveState>) -> Result<()> {
-    if history.is_empty() {
-        return Err(Error::Invalid("empty history".into()));
-    }
-    let mut pending: Vec<RuntimeToolCall> = vec![];
-    for msg in history.messages() {
-        msg.validate()?;
-        match msg {
-            Message::Assistant { output, .. } => {
-                if !pending.is_empty() {
-                    return Err(Error::Invalid("assistant interrupts pending tools".into()));
-                }
-                pending = output
-                    .into_iter()
-                    .filter_map(|o| {
-                        if let Output::RuntimeToolCall { call } = o {
-                            Some(call)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-            }
-            Message::RuntimeTool { call_id, name, .. } => {
-                if pending
-                    .first()
-                    .is_none_or(|c| c.id != call_id || c.name != name)
-                {
-                    return Err(Error::Invalid(
-                        "tool message does not match pending order".into(),
-                    ));
-                }
-                pending.remove(0);
-            }
-            _ if !pending.is_empty() => {
-                return Err(Error::Invalid("message interrupts pending tools".into()));
-            }
-            _ => {}
-        }
-    }
+    let pending = history.pending()?;
     match active {
-        Some(ActiveState::RuntimeToolsPending { calls, .. }) if *calls == pending => Ok(()),
+        Some(ActiveState::RuntimeToolsPending { calls, .. }) if Some(*calls) == pending => Ok(()),
         Some(ActiveState::RuntimeToolsPending { .. }) => {
             Err(Error::Invalid("pending state differs from history".into()))
         }
-        Some(ActiveState::Planning { .. }) if !pending.is_empty() => Err(Error::Invalid(
+        Some(ActiveState::Planning { .. }) if pending.is_some() => Err(Error::Invalid(
             "planning history has unresolved tools".into(),
         )),
         _ => Ok(()),
     }
 }
+
 #[derive(Debug, Clone)]
 pub struct HistoryRewrite {
     pub messages: Vec<Message>,
@@ -417,7 +420,7 @@ pub enum EventData {
     },
     ApprovalDecided {
         call_id: String,
-        decision: String,
+        decision: crate::tool::ApprovalDecisionKind,
     },
     RuntimeToolCancelRequested {
         call_id: String,
@@ -434,12 +437,12 @@ pub enum EventData {
     },
     RuntimeToolFinished {
         call_id: String,
-        outcome: String,
+        outcome: crate::tool::RuntimeToolOutcomeKind,
     },
     CheckpointCommitted {
         checkpoint_id: String,
         revision: u64,
-        state: String,
+        state: StateKind,
         fact: Fact,
     },
 }

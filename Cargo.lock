@@ -2955,6 +2955,7 @@ dependencies = [
  "fancy-regex 0.16.2",
  "globset",
  "nix",
+ "schemars",
  "serde",
  "serde_json",
  "sha2",

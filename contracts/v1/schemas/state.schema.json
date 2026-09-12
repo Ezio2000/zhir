@@ -23,10 +23,7 @@
           "additionalProperties": false,
           "properties": {
             "calls": {
-              "items": {
-                "$ref": "#/$defs/RuntimeToolCall"
-              },
-              "type": "array"
+              "$ref": "#/$defs/PendingCalls"
             },
             "kind": {
               "const": "runtime_tools_pending",
@@ -251,61 +248,32 @@
         }
       ]
     },
-    "RuntimeToolCall": {
+    "PendingCalls": {
       "additionalProperties": false,
+      "description": "A remaining range of runtime calls in one assistant history message.\nCall payloads live in history once; checkpoints persist only this cursor.",
       "properties": {
-        "id": {
-          "type": "string"
+        "end": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
         },
-        "input": {
-          "$ref": "#/$defs/RuntimeToolInput"
+        "message_index": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
         },
-        "name": {
-          "type": "string"
+        "next": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
         }
       },
       "required": [
-        "id",
-        "name",
-        "input"
+        "message_index",
+        "next",
+        "end"
       ],
       "type": "object"
-    },
-    "RuntimeToolInput": {
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "kind": {
-              "const": "structured",
-              "type": "string"
-            },
-            "value": true
-          },
-          "required": [
-            "kind",
-            "value"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "kind": {
-              "const": "freeform",
-              "type": "string"
-            },
-            "value": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "value"
-          ],
-          "type": "object"
-        }
-      ]
     },
     "Suspension": {
       "additionalProperties": false,
@@ -358,10 +326,7 @@
       "additionalProperties": false,
       "properties": {
         "calls": {
-          "items": {
-            "$ref": "#/$defs/RuntimeToolCall"
-          },
-          "type": "array"
+          "$ref": "#/$defs/PendingCalls"
         },
         "kind": {
           "const": "runtime_tools_pending",

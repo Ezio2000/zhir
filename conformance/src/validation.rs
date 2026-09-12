@@ -134,7 +134,7 @@ mod tests {
                     let Fact::ModelTurn { result, .. } = &mut after.fact else {
                         unreachable!()
                     };
-                    *result = "planning".into();
+                    *result = zhir_core::run::StateKind::Planning;
                 }
                 "completed_content" => {
                     after.state = State::Completed {

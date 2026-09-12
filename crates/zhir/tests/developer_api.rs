@@ -414,7 +414,7 @@ async fn drive_preserves_observer_failure_and_actual_settlement() {
     .build()
     .unwrap();
     let late=drive(runtime.start(zhir::RunRequest::new(vec![Message::user("finish")])).unwrap(),|event|async move {
-        if matches!(event.data,EventData::CheckpointCommitted {ref state,..} if state=="completed") {Err(Error::Invalid("late observer".into()))} else {Ok(())}
+        if matches!(event.data,EventData::CheckpointCommitted {ref state,..} if *state==zhir_core::run::StateKind::Completed) {Err(Error::Invalid("late observer".into()))} else {Ok(())}
     }).await.unwrap_err();
     assert!(
         matches!(late,DriveError::Observer {settled:Ok(ref c),..} if matches!(c.outcome(),zhir::RunOutcome::Completed(_)))

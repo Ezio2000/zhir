@@ -14,6 +14,7 @@ use zhir_core::{
 };
 use zhir_tools::function;
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_READ_LINES: usize = 2000;
 #[derive(Clone)]
 struct Workspace {
     root: PathBuf,
@@ -91,13 +92,15 @@ where
     .await
     .map_err(|e| failure("filesystem", e))?
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ReadArgs {
     path: String,
     #[serde(default = "one")]
+    #[schemars(range(min = 1))]
     offset: usize,
     #[serde(default = "two_hundred")]
+    #[schemars(range(min = 1, max = MAX_READ_LINES))]
     limit: usize,
 }
 fn one() -> usize {
@@ -112,27 +115,21 @@ fn thousand() -> usize {
 pub fn read_file(root: impl Into<PathBuf>) -> Result<Arc<dyn RuntimeTool>> {
     let workspace = Workspace::new(root)?;
     let tool = function::structured(
-        spec(
-            "read_file",
-            "Read UTF-8 lines and the file digest.",
-            json!({"type":"object","required":["path"],"properties":{"path":{"type":"string"},"offset":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1,"maximum":2000}},"additionalProperties":false}),
-            true,
-        ),
+        spec::<ReadArgs>("read_file", "Read UTF-8 lines and the file digest.", true),
         move |a: ReadArgs, context| {
             let w = workspace.clone();
-            async move {
-                blocking(context,move |_| {if a.offset==0 || a.limit==0 || a.limit>2000 {return Err(Error::Invalid("invalid line range".into()));}let path=w.path(&a.path,false)?;let bytes=read(&path)?;let text=utf8(&bytes)?;let lines=text.lines().collect::<Vec<_>>();let selected=lines.iter().skip(a.offset-1).take(a.limit).copied().collect::<Vec<_>>().join("\n");Ok(json!({"path":w.display(&path),"content":selected,"offset":a.offset,"total_lines":lines.len(),"truncated":lines.len()>a.offset-1+a.limit,"sha256":digest(&bytes)}))}).await
-            }
+            async move { blocking(context, move |_| read_content(&w, a)).await }
         },
     )?;
     Ok(Arc::new(tool))
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ListArgs {
     #[serde(default = "dot")]
     path: String,
     #[serde(default = "thousand")]
+    #[schemars(range(min = 1, max = 10000))]
     limit: usize,
 }
 fn dot() -> String {
@@ -141,27 +138,21 @@ fn dot() -> String {
 pub fn list_files(root: impl Into<PathBuf>) -> Result<Arc<dyn RuntimeTool>> {
     let workspace = Workspace::new(root)?;
     Ok(Arc::new(function::structured(
-        spec(
-            "list_files",
-            "List directory entries.",
-            json!({"type":"object","properties":{"path":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":10000}},"additionalProperties":false}),
-            true,
-        ),
+        spec::<ListArgs>("list_files", "List directory entries.", true),
         move |a: ListArgs, context| {
             let w = workspace.clone();
-            async move {
-                blocking(context,move |ctx| {let root=w.path(&a.path,false)?;let mut entries=std::fs::read_dir(root).map_err(|e|failure("filesystem",e))?.collect::<std::io::Result<Vec<_>>>().map_err(|e|failure("filesystem",e))?;entries.sort_by_key(|e|e.file_name());let truncated=entries.len()>a.limit;let mut output=Vec::new();for entry in entries.into_iter().take(a.limit) {ctx.cancellation.check()?;let ty=entry.file_type().map_err(|e|failure("filesystem",e))?;output.push(json!({"path":w.display(&entry.path()),"kind":if ty.is_dir() {"directory"} else if ty.is_symlink() {"symlink"} else {"file"}}));}Ok(json!({"entries":output,"truncated":truncated}))}).await
-            }
+            async move { blocking(context, move |ctx| list_content(&w, a, &ctx)).await }
         },
     )?))
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct GlobArgs {
     pattern: String,
     #[serde(default = "dot")]
     path: String,
     #[serde(default = "thousand")]
+    #[schemars(range(min = 1, max = 10000))]
     limit: usize,
     #[serde(default)]
     include_hidden: bool,
@@ -169,12 +160,7 @@ struct GlobArgs {
 pub fn glob(root: impl Into<PathBuf>) -> Result<Arc<dyn RuntimeTool>> {
     let workspace = Workspace::new(root)?;
     Ok(Arc::new(function::structured(
-        spec(
-            "glob",
-            "Find workspace paths by glob.",
-            json!({"type":"object","required":["pattern"],"properties":{"pattern":{"type":"string"},"path":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":10000},"include_hidden":{"type":"boolean"}},"additionalProperties":false}),
-            true,
-        ),
+        spec::<GlobArgs>("glob", "Find workspace paths by glob.", true),
         move |a: GlobArgs, context| {
             let w = workspace.clone();
             async move {
@@ -215,120 +201,226 @@ pub fn glob(root: impl Into<PathBuf>) -> Result<Arc<dyn RuntimeTool>> {
         },
     )?))
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct GrepArgs {
     pattern: String,
     #[serde(default = "dot")]
     path: String,
     #[serde(default = "two_hundred")]
+    #[schemars(range(min = 1, max = 10000))]
     limit: usize,
     #[serde(default)]
     ignore_case: bool,
     #[serde(default)]
     literal: bool,
     #[serde(default)]
+    #[schemars(range(max = 100))]
     context: usize,
-    #[serde(default = "files_mode")]
-    output_mode: String,
+    #[serde(default)]
+    output_mode: GrepOutputMode,
     glob: Option<String>,
 }
-fn files_mode() -> String {
-    "files_with_matches".into()
+#[derive(Debug, Clone, Copy, Default, Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum GrepOutputMode {
+    Content,
+    #[default]
+    FilesWithMatches,
+    Count,
 }
 pub fn grep(root: impl Into<PathBuf>) -> Result<Arc<dyn RuntimeTool>> {
     let workspace = Workspace::new(root)?;
     Ok(Arc::new(function::structured(
-        spec(
+        spec::<GrepArgs>(
             "grep",
             "Search UTF-8 files, returning content, paths or counts.",
-            json!({"type":"object","required":["pattern"],"properties":{"pattern":{"type":"string"},"path":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":10000},"ignore_case":{"type":"boolean"},"literal":{"type":"boolean"},"context":{"type":"integer","minimum":0,"maximum":100},"output_mode":{"enum":["content","files_with_matches","count"]},"glob":{"type":"string"}},"additionalProperties":false}),
             true,
         ),
-        move |a: GrepArgs, context| {
-            let w = workspace.clone();
+        move |args: GrepArgs, context| {
+            let workspace = workspace.clone();
             async move {
                 blocking(context, move |ctx| {
-                    let root = w.path(&a.path, false)?;
-                    let pattern = if a.literal {
-                        fancy_regex::escape(&a.pattern).into_owned()
-                    } else {
-                        a.pattern.clone()
-                    };
-                    let pattern = if a.ignore_case { format!("(?i){pattern}") } else { pattern };
-                    let regex = fancy_regex::RegexBuilder::new(&pattern)
-                        .backtrack_limit(100_000).build()
-                        .map_err(|e| Error::Invalid(e.to_string()))?;
-                    let glob = a.glob.map(|s| globset::Glob::new(&s)
-                        .map(|g| g.compile_matcher())
-                        .map_err(|e| Error::Invalid(e.to_string()))).transpose()?;
-                    let mut results = Vec::new();
-                    let mut searched = 0;
-                    let mut skipped = 0;
-                    let mut truncated = false;
-                    'files: for entry in walkdir::WalkDir::new(&root).sort_by_file_name() {
-                        ctx.cancellation.check()?;
-                        let entry = entry.map_err(|e| failure("filesystem", e))?;
-                        if !entry.file_type().is_file() { continue; }
-                        if glob.as_ref().is_some_and(|g| !g.is_match(entry.path().strip_prefix(&w.root).unwrap_or(entry.path()))) {
-                            continue;
-                        }
-                        let bytes = match read(entry.path()) {
-                            Ok(bytes) => bytes,
-                            Err(_) => { skipped += 1; continue; }
-                        };
-                        let text = match utf8(&bytes) {
-                            Ok(text) => text,
-                            Err(_) => { skipped += 1; continue; }
-                        };
-                        searched += 1;
-                        let lines = text.lines().collect::<Vec<_>>();
-                        let mut matches = Vec::new();
-                        for (index, line) in lines.iter().enumerate() {
-                            ctx.cancellation.check()?;
-                            if regex.is_match(line).map_err(|e| failure("regex_limit", e))? {
-                                matches.push(index);
-                            }
-                        }
-                        if matches.is_empty() { continue; }
-                        let path = w.display(entry.path());
-                        match a.output_mode.as_str() {
-                            "files_with_matches" => results.push(json!(path)),
-                            "count" => results.push(json!({"path":path,"count":matches.len()})),
-                            "content" => {
-                                for i in matches {
-                                    results.push(json!({"path":path,"line":i+1,"text":lines[i],"before":lines[i.saturating_sub(a.context)..i],"after":lines[i+1..(i+1+a.context).min(lines.len())]}));
-                                    if results.len() > a.limit {
-                                        truncated = true;
-                                        break 'files;
-                                    }
-                                }
-                            }
-                            _ => return Err(Error::Invalid("unknown output mode".into())),
-                        }
-                        if results.len() > a.limit {
-                            truncated = true;
-                            break;
-                        }
-                    }
-                    results.truncate(a.limit);
-                    Ok(json!({"output_mode":a.output_mode,"results":results,"truncated":truncated,"files_searched":searched,"files_skipped":skipped}))
-                }).await
+                    GrepSearch::new(workspace, args)?.run(&ctx)
+                })
+                .await
             }
         },
     )?))
 }
-#[derive(Deserialize)]
+struct GrepSearch {
+    workspace: Workspace,
+    args: GrepArgs,
+    regex: fancy_regex::Regex,
+    glob: Option<globset::GlobMatcher>,
+}
+impl GrepSearch {
+    fn new(workspace: Workspace, args: GrepArgs) -> Result<Self> {
+        let pattern = if args.literal {
+            fancy_regex::escape(&args.pattern).into_owned()
+        } else {
+            args.pattern.clone()
+        };
+        let pattern = if args.ignore_case {
+            format!("(?i){pattern}")
+        } else {
+            pattern
+        };
+        let regex = fancy_regex::RegexBuilder::new(&pattern)
+            .backtrack_limit(100_000)
+            .build()
+            .map_err(|e| Error::Invalid(e.to_string()))?;
+        let glob = args
+            .glob
+            .as_ref()
+            .map(|s| {
+                globset::Glob::new(s)
+                    .map(|g| g.compile_matcher())
+                    .map_err(|e| Error::Invalid(e.to_string()))
+            })
+            .transpose()?;
+        Ok(Self {
+            workspace,
+            args,
+            regex,
+            glob,
+        })
+    }
+    fn run(self, ctx: &RuntimeToolContext) -> Result<Value> {
+        let root = self.workspace.path(&self.args.path, false)?;
+        let mut results = Vec::new();
+        let mut searched = 0;
+        let mut skipped = 0;
+        let mut truncated = false;
+        for entry in walkdir::WalkDir::new(root).sort_by_file_name() {
+            ctx.cancellation.check()?;
+            let entry = entry.map_err(|e| failure("filesystem", e))?;
+            if !entry.file_type().is_file() || !self.accepts(entry.path()) {
+                continue;
+            }
+            let Ok(bytes) = read(entry.path()) else {
+                skipped += 1;
+                continue;
+            };
+            let Ok(text) = utf8(&bytes) else {
+                skipped += 1;
+                continue;
+            };
+            searched += 1;
+            let path = self.workspace.display(entry.path());
+            if self.scan_file(text, &path, &mut results, ctx)? {
+                truncated = true;
+                break;
+            }
+        }
+        Ok(
+            json!({"output_mode":self.args.output_mode,"results":results,"truncated":truncated,
+            "files_searched":searched,"files_skipped":skipped}),
+        )
+    }
+    fn accepts(&self, path: &Path) -> bool {
+        self.glob
+            .as_ref()
+            .is_none_or(|g| g.is_match(path.strip_prefix(&self.workspace.root).unwrap_or(path)))
+    }
+    fn matches(&self, line: &str, ctx: &RuntimeToolContext) -> Result<bool> {
+        ctx.cancellation.check()?;
+        self.regex
+            .is_match(line)
+            .map_err(|e| failure("regex_limit", e))
+    }
+    fn scan_file(
+        &self,
+        text: &str,
+        path: &str,
+        results: &mut Vec<Value>,
+        ctx: &RuntimeToolContext,
+    ) -> Result<bool> {
+        match self.args.output_mode {
+            GrepOutputMode::Content => self.scan_content(text, path, results, ctx),
+            GrepOutputMode::FilesWithMatches => {
+                for line in text.lines() {
+                    if self.matches(line, ctx)? {
+                        return Ok(self.push(results, json!(path)));
+                    }
+                }
+                Ok(false)
+            }
+            GrepOutputMode::Count => {
+                let mut count = 0;
+                for line in text.lines() {
+                    count += usize::from(self.matches(line, ctx)?);
+                }
+                Ok(count > 0 && self.push(results, json!({"path":path,"count":count})))
+            }
+        }
+    }
+    fn push(&self, results: &mut Vec<Value>, value: Value) -> bool {
+        if results.len() == self.args.limit {
+            return true;
+        }
+        results.push(value);
+        false
+    }
+    fn scan_content(
+        &self,
+        text: &str,
+        path: &str,
+        results: &mut Vec<Value>,
+        ctx: &RuntimeToolContext,
+    ) -> Result<bool> {
+        let mut before = std::collections::VecDeque::new();
+        let mut lines = text.lines().enumerate();
+        while let Some((index, line)) = lines.next() {
+            if self.matches(line, ctx)? {
+                if results.len() == self.args.limit {
+                    return Ok(true);
+                }
+                let after: Vec<_> = lines
+                    .clone()
+                    .take(self.args.context)
+                    .map(|(_, line)| line)
+                    .collect();
+                results.push(
+                    json!({"path":path,"line":index+1,"text":line,"before":before,"after":after}),
+                );
+            }
+            if self.args.context > 0 {
+                if before.len() == self.args.context {
+                    before.pop_front();
+                }
+                before.push_back(line);
+            }
+        }
+        Ok(false)
+    }
+}
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+enum ExpectedDigest {
+    Existing(String),
+    Absent,
+}
+impl ExpectedDigest {
+    fn as_deref(&self) -> Option<&str> {
+        match self {
+            Self::Existing(value) => Some(value),
+            Self::Absent => None,
+        }
+    }
+}
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct WriteArgs {
     path: String,
     content: String,
-    expected_sha256: Option<String>,
+    expected_sha256: ExpectedDigest,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct EditArgs {
     path: String,
+    #[schemars(length(min = 1))]
     old_string: String,
     new_string: String,
     expected_sha256: String,
@@ -383,34 +475,28 @@ fn replace_file(
 pub fn write_file(root: impl Into<PathBuf>) -> Result<Arc<dyn RuntimeTool>> {
     let workspace = Workspace::new(root)?;
     Ok(Arc::new(function::structured(
-        spec(
+        spec::<WriteArgs>(
             "write_file",
             "Create or replace a UTF-8 file using its expected digest.",
-            json!({"type":"object","required":["path","content","expected_sha256"],"properties":{"path":{"type":"string"},"content":{"type":"string"},"expected_sha256":{"type":["string","null"]}},"additionalProperties":false}),
             false,
         ),
         move |a: WriteArgs, context| {
             let w = workspace.clone();
-            async move {
-                blocking(context,move |ctx| {let path=w.path(&a.path,true)?;let previous=replace_file(&path,a.content.as_bytes(),a.expected_sha256.as_deref(),&ctx)?;Ok(json!({"path":w.display(&path),"operation":if previous.is_some() {"replace"} else {"create"},"previous_sha256":previous,"sha256":digest(a.content.as_bytes()),"bytes_written":a.content.len()}))}).await
-            }
+            async move { blocking(context, move |ctx| write_content(&w, a, &ctx)).await }
         },
     )?))
 }
 pub fn edit_file(root: impl Into<PathBuf>) -> Result<Arc<dyn RuntimeTool>> {
     let workspace = Workspace::new(root)?;
     Ok(Arc::new(function::structured(
-        spec(
+        spec::<EditArgs>(
             "edit_file",
             "Replace matching text using the current file digest.",
-            json!({"type":"object","required":["path","old_string","new_string","expected_sha256"],"properties":{"path":{"type":"string"},"old_string":{"type":"string","minLength":1},"new_string":{"type":"string"},"expected_sha256":{"type":"string"},"replace_all":{"type":"boolean"}},"additionalProperties":false}),
             false,
         ),
         move |a: EditArgs, context| {
             let w = workspace.clone();
-            async move {
-                blocking(context,move |ctx| {let path=w.path(&a.path,false)?;let bytes=read(&path)?;let text=utf8(&bytes)?;if a.old_string.is_empty() {return Err(Error::Invalid("empty match text".into()));}let count=text.matches(&a.old_string).count();if count==0 || (count>1 && !a.replace_all) {return Err(failure("ambiguous_edit","expected one match, or replace_all"));}let content=if a.replace_all {text.replace(&a.old_string,&a.new_string)} else {text.replacen(&a.old_string,&a.new_string,1)};replace_file(&path,content.as_bytes(),Some(&a.expected_sha256),&ctx)?;Ok(json!({"path":w.display(&path),"replacements":count,"previous_sha256":a.expected_sha256,"sha256":digest(content.as_bytes()),"bytes_written":content.len()}))}).await
-            }
+            async move { blocking(context, move |ctx| edit_content(&w, a, &ctx)).await }
         },
     )?))
 }
@@ -424,4 +510,77 @@ pub fn tools(root: impl Into<PathBuf>) -> Result<Vec<Arc<dyn RuntimeTool>>> {
         write_file(&root)?,
         edit_file(&root)?,
     ])
+}
+fn read_content(w: &Workspace, a: ReadArgs) -> Result<Value> {
+    if a.offset == 0 || a.limit == 0 || a.limit > MAX_READ_LINES {
+        return Err(Error::Invalid("invalid line range".into()));
+    }
+    let path = w.path(&a.path, false)?;
+    let bytes = read(&path)?;
+    let text = utf8(&bytes)?;
+    let lines = text.lines();
+    let total_lines = lines.clone().count();
+    let selected = lines
+        .skip(a.offset - 1)
+        .take(a.limit)
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(
+        json!({"path":w.display(&path),"content":selected,"offset":a.offset,"total_lines":total_lines,"truncated":total_lines.saturating_sub(a.offset-1)>a.limit,"sha256":digest(&bytes)}),
+    )
+}
+
+fn list_content(w: &Workspace, a: ListArgs, ctx: &RuntimeToolContext) -> Result<Value> {
+    let root = w.path(&a.path, false)?;
+    let mut entries = std::fs::read_dir(root)
+        .map_err(|e| failure("filesystem", e))?
+        .collect::<std::io::Result<Vec<_>>>()
+        .map_err(|e| failure("filesystem", e))?;
+    entries.sort_by_key(|e| e.file_name());
+    let truncated = entries.len() > a.limit;
+    let mut output = Vec::new();
+    for entry in entries.into_iter().take(a.limit) {
+        ctx.cancellation.check()?;
+        let ty = entry.file_type().map_err(|e| failure("filesystem", e))?;
+        output.push(json!({"path":w.display(&entry.path()),"kind":if ty.is_dir() {"directory"} else if ty.is_symlink() {"symlink"} else {"file"}}));
+    }
+    Ok(json!({"entries":output,"truncated":truncated}))
+}
+
+fn write_content(w: &Workspace, a: WriteArgs, ctx: &RuntimeToolContext) -> Result<Value> {
+    let path = w.path(&a.path, true)?;
+    let previous = replace_file(
+        &path,
+        a.content.as_bytes(),
+        a.expected_sha256.as_deref(),
+        ctx,
+    )?;
+    Ok(
+        json!({"path":w.display(&path),"operation":if previous.is_some() {"replace"} else {"create"},"previous_sha256":previous,"sha256":digest(a.content.as_bytes()),"bytes_written":a.content.len()}),
+    )
+}
+
+fn edit_content(w: &Workspace, a: EditArgs, ctx: &RuntimeToolContext) -> Result<Value> {
+    let path = w.path(&a.path, false)?;
+    let bytes = read(&path)?;
+    let text = utf8(&bytes)?;
+    if a.old_string.is_empty() {
+        return Err(Error::Invalid("empty match text".into()));
+    }
+    let count = text.matches(&a.old_string).count();
+    if count == 0 || (count > 1 && !a.replace_all) {
+        return Err(failure(
+            "ambiguous_edit",
+            "expected one match, or replace_all",
+        ));
+    }
+    let content = if a.replace_all {
+        text.replace(&a.old_string, &a.new_string)
+    } else {
+        text.replacen(&a.old_string, &a.new_string, 1)
+    };
+    replace_file(&path, content.as_bytes(), Some(&a.expected_sha256), ctx)?;
+    Ok(
+        json!({"path":w.display(&path),"replacements":count,"previous_sha256":a.expected_sha256,"sha256":digest(content.as_bytes()),"bytes_written":content.len()}),
+    )
 }

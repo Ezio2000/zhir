@@ -23,10 +23,7 @@
           "additionalProperties": false,
           "properties": {
             "calls": {
-              "items": {
-                "$ref": "#/$defs/RuntimeToolCall"
-              },
-              "type": "array"
+              "$ref": "#/$defs/PendingCalls"
             },
             "kind": {
               "const": "runtime_tools_pending",
@@ -221,6 +218,14 @@
         }
       ]
     },
+    "ControlAction": {
+      "enum": [
+        "failed",
+        "limited",
+        "suspended"
+      ],
+      "type": "string"
+    },
     "Fact": {
       "oneOf": [
         {
@@ -257,7 +262,7 @@
               "type": "string"
             },
             "result": {
-              "type": "string"
+              "$ref": "#/$defs/StateKind"
             },
             "runtime_tool_call_ids": {
               "items": {
@@ -288,7 +293,7 @@
             },
             "outcomes": {
               "items": {
-                "type": "string"
+                "$ref": "#/$defs/RuntimeToolOutcomeKind"
               },
               "type": "array"
             },
@@ -342,7 +347,7 @@
           "additionalProperties": false,
           "properties": {
             "action": {
-              "type": "string"
+              "$ref": "#/$defs/ControlAction"
             },
             "kind": {
               "const": "control",
@@ -746,6 +751,33 @@
         }
       ]
     },
+    "PendingCalls": {
+      "additionalProperties": false,
+      "description": "A remaining range of runtime calls in one assistant history message.\nCall payloads live in history once; checkpoints persist only this cursor.",
+      "properties": {
+        "end": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "message_index": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "next": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "message_index",
+        "next",
+        "end"
+      ],
+      "type": "object"
+    },
     "ProviderToolCall": {
       "additionalProperties": false,
       "properties": {
@@ -1085,6 +1117,15 @@
         }
       ]
     },
+    "RuntimeToolOutcomeKind": {
+      "enum": [
+        "success",
+        "failure",
+        "accepted",
+        "waiting"
+      ],
+      "type": "string"
+    },
     "RuntimeToolSelection": {
       "oneOf": [
         {
@@ -1158,10 +1199,7 @@
           "additionalProperties": false,
           "properties": {
             "calls": {
-              "items": {
-                "$ref": "#/$defs/RuntimeToolCall"
-              },
-              "type": "array"
+              "$ref": "#/$defs/PendingCalls"
             },
             "kind": {
               "const": "runtime_tools_pending",
@@ -1254,6 +1292,17 @@
           "type": "object"
         }
       ]
+    },
+    "StateKind": {
+      "enum": [
+        "planning",
+        "runtime_tools_pending",
+        "suspended",
+        "completed",
+        "failed",
+        "limited"
+      ],
+      "type": "string"
     },
     "Suspension": {
       "additionalProperties": false,

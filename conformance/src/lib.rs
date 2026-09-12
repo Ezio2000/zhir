@@ -315,8 +315,13 @@ fn observe(
         _ => c.state.active(),
     };
     value["pending_call_ids"] = json!(match active {
-        Some(zhir_core::run::ActiveState::RuntimeToolsPending { calls, .. }) =>
-            calls.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
+        Some(zhir_core::run::ActiveState::RuntimeToolsPending { calls, .. }) => c
+            .history
+            .resolve_pending(calls)
+            .expect("validated pending cursor")
+            .iter()
+            .map(|c| c.id.clone())
+            .collect::<Vec<_>>(),
         _ => vec![],
     });
     if let State::Limited { reason } = &c.state {

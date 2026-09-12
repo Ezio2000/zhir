@@ -2,6 +2,11 @@
 
 1. Lifecycle is exactly Planning, RuntimeToolsPending, Suspended, Completed, Failed or
    Limited. Suspended stores an active resume target; terminal states cannot resume.
+   RuntimeToolsPending stores PendingCalls { message_index, next, end }, referencing
+   the runtime-call ordinals in one assistant history message. The range is nonempty
+   and must equal that history's unresolved suffix. Advancing a batch moves next;
+   exhausting the range enters Planning. Payloads occur once in history, including
+   in durable checkpoint envelopes and suspended resume targets.
 2. Start rejects empty or unresolved-tool history before execution. Continue accepts
    active checkpoints; resume accepts suspended checkpoints and checks any supplied selector.
    Start resolves RunRequest overrides against runtime defaults and persists effective
@@ -25,6 +30,8 @@
 7. Batch policies select a nonempty bounded prefix. Parallel calls must be explicitly
    parallel, read-only and idempotent. Concurrency is bounded and results commit in
    model order in one atomic batch, independent of physical completion order.
+   BatchPolicy receives immutable specifications indexed by tool name. Binding and
+   approval results retain their association with each selected call through settlement.
 8. RuntimeTool failures become model-visible outcomes. Waiting has one model-visible outcome
    and a separate host suspension. The first waiting result in model order wins.
 9. At a boundary the precedence is deadline, completed terminal result, tool waiting,
@@ -45,6 +52,8 @@
 14. Stores atomically check revision, parent, history delta, frozen options and checkpoint identity.
     Exact retries are idempotent. Failures leave the previous checkpoint authoritative.
     Normal appends do not read, encode or rewrite existing history.
+    Immutable history caches tool-order validation during append. Invalid order or a
+    pending cursor inconsistent with history fails checkpoint validation and commit.
 15. Portable DTOs use native v1 shapes with explicit tags. Unknown versions/shapes and
     invalid discriminators fail. Unsigned integer fields reject fractional lexical
     representations; floating options reject nonfinite or unsafe integer conversions.

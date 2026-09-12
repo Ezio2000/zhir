@@ -34,6 +34,9 @@ registry.register(Arc::new(tool))?;
 
 输入类型的 Deserialize 规则决定输入 Schema，输出类型的 Serialize 规则决定输出
 Schema。生成标准 Draft 2020-12，保留嵌套定义和引用；注册表仍执行输入/输出校验。
+内置文件、Shell、问答和子 Agent 工具也从 Rust 参数类型派生输入 Schema。
+grep 的输出模式是封闭枚举；路径模式在当前文件首次命中后停止匹配，内容模式只多探测
+一个命中以确定 truncated，并保留指定的前后文；计数模式扫描全部行。
 改变字段不需要再改一份手写 JSON。Rust 的默认值由 Serde 提供，绑定过程不修改请求 JSON。
 
 结构化参数必须是 JSON 对象。回调返回 `Result<ToolReply<O>>`；O 决定结构化结果的
@@ -282,6 +285,20 @@ RuntimeToolCall、RuntimeTool 结果和外部回复一起保留。没有足够�
 只在无 provider continuation 的 Planning 状态执行。`with_dependencies` 接收 checkpoint
 与计划保留的起始消息下标，返回协议需要的更早下标；窗口自动向前扩展到完整用户轮次。
 返回更晚下标报错。它不猜测令牌数，也不解析供应商的跨轮次依赖。
+
+待执行工具状态中的 `calls` 是 `PendingCalls { message_index, next, end }` 游标。
+message_index 是 assistant 消息在历史中的下标，next/end 是该消息内 RuntimeToolCall
+序列的半开区间，忽略同一消息中的普通内容和 provider 调用。通过
+`checkpoint.history.resolve_pending(calls)?` 借用剩余调用；完整参数保存在历史中，
+每个批次的 checkpoint 不重复保存它们。恢复会验证游标与历史顺序一致。
+`History::appended_since(&previous)` 验证前缀并只返回新增消息，可用于增量观察。
+
+`State::kind()` 返回 `StateKind`，`RuntimeToolOutcome::kind()` 返回
+`RuntimeToolOutcomeKind`；Fact 和 EventData 直接保存相应枚举。控制事实使用
+`ControlAction`，审批事件使用 `ApprovalDecisionKind`，子 Agent 快照使用 `AgentStatus`。
+在 Rust 中匹配枚举；需要文本标签时显式调用 kind 的 `as_str()` 或序列化。
+自定义 `BatchPolicy::select` 的规格参数为 `&BTreeMap<String, RuntimeToolSpec>`，
+可按调用名称查找规格。
 
 ## 共享模型并发与工具目录视图
 

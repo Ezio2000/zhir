@@ -1,3 +1,4 @@
+mod batch;
 use crate::environment::{new_id, now_ms};
 use crate::{
     control::Control,
@@ -5,7 +6,6 @@ use crate::{
     invocation::{Emitter, EngineResult, Progress, RunError},
     runtime::{Config, Request},
 };
-use futures::{StreamExt, stream};
 use std::{
     collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},
@@ -18,13 +18,13 @@ use zhir_core::{
     message::{Message, Output, visible_content},
     model::{ModelContext, ModelRequest},
     run::{
-        ActiveState, Checkpoint, EventData, Fact, History, LimitReason, Metrics, State, Suspension,
-        validate_history,
+        ActiveState, Checkpoint, ControlAction, EventData, Fact, History, LimitReason, Metrics,
+        PendingCalls, State, Suspension, validate_history,
     },
     storage::{Commit, HistoryDelta, RunStore},
     tool::{
-        ApprovalDecision, ApprovalRequest, RuntimeToolBinding, RuntimeToolCall, RuntimeToolCatalog,
-        RuntimeToolContext, RuntimeToolResult,
+        RuntimeToolBinding, RuntimeToolCall, RuntimeToolCatalog, RuntimeToolContext,
+        RuntimeToolResult,
     },
 };
 
@@ -33,7 +33,7 @@ struct Engine {
     config: Arc<Config>,
     options: zhir_core::run::RunOptions,
     store: Arc<dyn RunStore>,
-    catalog: Option<Arc<dyn RuntimeToolCatalog>>,
+    catalog: Option<Arc<crate::catalog::SelectedCatalog>>,
     last: Option<Arc<Checkpoint>>,
     controls: mpsc::UnboundedReceiver<Control>,
     emitter: Emitter,
@@ -106,7 +106,7 @@ pub(crate) async fn execute(
             ) && engine.last.as_ref().is_some_and(|c| !c.state.terminal())
             {
                 let fact = Fact::Control {
-                    action: "failed".into(),
+                    action: ControlAction::Failed,
                 };
                 if let Err(error) = engine
                     .advance(
@@ -221,7 +221,7 @@ impl Engine {
         self.emitter.emit(EventData::CheckpointCommitted {
             checkpoint_id: checkpoint.id.clone(),
             revision: checkpoint.revision,
-            state: checkpoint.state.kind().into(),
+            state: checkpoint.state.kind(),
             fact: checkpoint.fact.clone(),
         });
         Ok(())
@@ -274,7 +274,7 @@ impl Engine {
         self.advance(
             State::Limited { reason },
             Fact::Control {
-                action: "limited".into(),
+                action: ControlAction::Limited,
             },
             HistoryDelta::Unchanged,
             None,
@@ -293,7 +293,7 @@ impl Engine {
                 suspension,
             },
             Fact::Control {
-                action: "suspended".into(),
+                action: ControlAction::Suspended,
             },
             HistoryDelta::Unchanged,
             None,
@@ -455,10 +455,7 @@ impl Engine {
                 State::RuntimeToolsPending {
                     calls,
                     provider_turn_pending,
-                } => {
-                    self.runtime_tools(calls.clone(), *provider_turn_pending)
-                        .await?
-                }
+                } => self.runtime_tools(*calls, *provider_turn_pending).await?,
                 _ => unreachable!("active state dispatch"),
             }
         }
@@ -561,7 +558,11 @@ impl Engine {
             }
         } else if !calls.is_empty() {
             State::RuntimeToolsPending {
-                calls: calls.clone(),
+                calls: PendingCalls {
+                    message_index: checkpoint.history.len(),
+                    next: 0,
+                    end: calls.len(),
+                },
                 provider_turn_pending: response.provider_turn_pending,
             }
         } else if response.provider_turn_pending || !self.inserts.is_empty() {
@@ -575,7 +576,7 @@ impl Engine {
         };
         let fact = Fact::ModelTurn {
             runtime_tool_call_ids: calls.iter().map(|c| c.id.clone()).collect(),
-            result: state.kind().into(),
+            result: state.kind(),
         };
         self.advance(
             state,
@@ -588,11 +589,7 @@ impl Engine {
         )
         .await
     }
-    async fn runtime_tools(
-        &mut self,
-        pending: Vec<RuntimeToolCall>,
-        provider_pending: bool,
-    ) -> Result<()> {
+    async fn runtime_tools(&mut self, pending: PendingCalls, provider_pending: bool) -> Result<()> {
         let current = self.current();
         let remaining = self
             .options
@@ -608,197 +605,14 @@ impl Engine {
             .max_runtime_tool_batch_size
             .min(remaining.try_into().unwrap_or(usize::MAX))
             .min(pending.len());
-        let catalog = self.catalog.as_ref().expect("opened catalog").clone();
-        let specs = catalog.specs();
-        let batch = self.config.batch.select(&pending[..cap], &specs)?;
-        if batch.calls.is_empty()
-            || batch.calls.len() > cap
-            || pending[..batch.calls.len()] != batch.calls
-            || (!batch.parallel && batch.calls.len() != 1)
-        {
-            return Err(Error::Protocol(
-                "batch policy must select a nonempty bounded prefix".into(),
-            ));
-        }
-        if batch.parallel
-            && batch.calls.iter().any(|c| {
-                !specs
-                    .iter()
-                    .any(|s| s.name == c.name && s.execution.parallel_safe())
-            })
-        {
-            return Err(Error::Protocol(
-                "parallel batch contains an ineligible tool".into(),
-            ));
-        }
-        let mut bindings = Vec::new();
-        let mut results = vec![None; batch.calls.len()];
-        let mut requests = Vec::new();
-        let mut valid = Vec::new();
-        for (index, call) in batch.calls.iter().enumerate() {
-            match catalog.bind(call) {
-                Ok(binding) => {
-                    requests.push(ApprovalRequest {
-                        call: call.clone(),
-                        spec: binding.spec().clone(),
-                    });
-                    valid.push(index);
-                    bindings.push(Some(binding));
-                }
-                Err(error) => {
-                    results[index] =
-                        Some(RuntimeToolResult::failure(crate::failure::failure(&error)));
-                    bindings.push(None);
-                }
-            }
-        }
-        if let Some(policy) = self.config.approval.clone()
-            && !requests.is_empty()
-        {
-            let context = current.context.clone();
-            let count = requests.len();
-            for request in &requests {
-                self.emitter.emit(EventData::ApprovalRequested {
-                    call_id: request.call.id.clone(),
-                });
-            }
-            let effect = self
-                .effect(
-                    Box::pin(async move { policy.decide(requests, context).await }),
-                    Cancellation::default(),
-                    true,
-                    true,
-                )
-                .await;
-            let Some(decisions) = self.interruption(effect).await? else {
-                return Ok(());
-            };
-            if decisions.len() != count {
-                return Err(Error::Protocol("approval count mismatch".into()));
-            }
-            for (index, decision) in valid.iter().zip(&decisions) {
-                self.emitter.emit(EventData::ApprovalDecided {
-                    call_id: batch.calls[*index].id.clone(),
-                    decision: match decision {
-                        ApprovalDecision::Allow => "allow",
-                        ApprovalDecision::Deny(_) => "deny",
-                        ApprovalDecision::Suspend(_) => "suspend",
-                    }
-                    .into(),
-                });
-            }
-            if let Some(s) = decisions.iter().find_map(|d| {
-                if let ApprovalDecision::Suspend(s) = d {
-                    Some(s.clone())
-                } else {
-                    None
-                }
-            }) {
-                return self.suspend(s).await;
-            }
-            for (index, decision) in valid.into_iter().zip(decisions) {
-                if let ApprovalDecision::Deny(message) = decision {
-                    results[index] =
-                        Some(RuntimeToolResult::failure(Failure::new("denied", message)));
-                    bindings[index] = None;
-                }
-            }
-        }
-        let mut work = Vec::new();
-        for (index, binding) in bindings.into_iter().enumerate() {
-            if let Some(binding) = binding {
-                work.push((index, batch.calls[index].clone(), binding));
-            }
-        }
-        let context = current.context.clone();
-        let emitter = self.emitter.clone();
-        let active = self.active.clone();
-        let concurrency = if batch.parallel {
-            self.options.limits.max_runtime_tool_concurrency
-        } else {
-            1
-        };
-        let progress_limit = self.options.limits.max_buffered_progress;
-        let futures: Vec<BoxFuture<'static, (usize, RuntimeToolResult)>> = work
-            .into_iter()
-            .map(|(index, call, binding)| {
-                Box::pin(run_tool(
-                    index,
-                    call,
-                    binding,
-                    context.clone(),
-                    emitter.clone(),
-                    active.clone(),
-                    progress_limit,
-                )) as BoxFuture<'static, (usize, RuntimeToolResult)>
-            })
-            .collect();
-        let future = Box::pin(async move {
-            let completed = stream::iter(futures)
-                .buffer_unordered(concurrency)
-                .collect::<Vec<_>>()
-                .await;
-            Ok(completed)
-        });
-        let effect = self
-            .effect(future, Cancellation::default(), false, true)
-            .await;
-        let Some(completed) = self.interruption(effect).await? else {
+        let mut batch = self.prepare_batch(current.history.resolve_pending(pending)?, cap)?;
+        if !self.approve_batch(&mut batch, &current).await? {
             return Ok(());
-        };
-        if self.expired() {
-            return self.limit(LimitReason::Deadline).await;
         }
-        for (index, result) in completed {
-            results[index] = Some(result);
+        if !self.execute_batch(&mut batch, &current).await? {
+            return Ok(());
         }
-        let results = results
-            .into_iter()
-            .map(|r| r.expect("every selected call settled"))
-            .collect::<Vec<_>>();
-        let rest = pending[batch.calls.len()..].to_vec();
-        let active = if rest.is_empty() {
-            ActiveState::Planning {
-                provider_turn_pending: provider_pending,
-            }
-        } else {
-            ActiveState::RuntimeToolsPending {
-                calls: rest,
-                provider_turn_pending: provider_pending,
-            }
-        };
-        while let Ok(control) = self.controls.try_recv() {
-            self.queue(control)?;
-        }
-        let suspension = results
-            .iter()
-            .find_map(|r| r.suspension.clone())
-            .or_else(|| self.pause.take());
-        let state = match suspension {
-            Some(suspension) => State::Suspended {
-                resume_to: active,
-                suspension,
-            },
-            None => active.into_state(),
-        };
-        let messages = batch
-            .calls
-            .iter()
-            .zip(&results)
-            .map(|(call, result)| Message::RuntimeTool {
-                call_id: call.id.clone(),
-                name: call.name.clone(),
-                outcome: result.outcome.clone(),
-            })
-            .collect();
-        let fact = Fact::RuntimeToolBatch {
-            call_ids: batch.calls.iter().map(|c| c.id.clone()).collect(),
-            outcomes: results.iter().map(|r| r.outcome.kind().into()).collect(),
-            parallel: batch.parallel,
-        };
-        let mut metrics = current.metrics.clone();
-        metrics.runtime_tool_calls += batch.calls.len() as u64;
-        self.advance(state, fact, HistoryDelta::Append(messages), Some(metrics))
+        self.commit_batch(batch, pending, provider_pending, &current)
             .await
     }
 }
@@ -863,7 +677,7 @@ async fn run_tool(
     };
     emitter.emit(EventData::RuntimeToolFinished {
         call_id: call.id,
-        outcome: result.outcome.kind().into(),
+        outcome: result.outcome.kind(),
     });
     (index, result)
 }

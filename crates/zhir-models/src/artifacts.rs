@@ -88,7 +88,7 @@ impl Model for ArtifactModel {
             }
             let mut value = serde_json::to_value(&response).map_err(json_error)?;
             let mut saved = BTreeMap::<String, ArtifactRef>::new();
-            let mut payloads = Vec::new();
+            let mut payloads = std::collections::HashSet::new();
             let mut claimed = std::collections::BTreeSet::new();
             for (output_index, output) in response.output.iter().enumerate() {
                 let contents: Vec<_> = match output {
@@ -159,7 +159,7 @@ impl Model for ArtifactModel {
                         }
                         *target = json!({"$zhir_artifact":reference});
                     }
-                    payloads.push(base64.as_str());
+                    payloads.insert(base64.as_str());
                 }
             }
             if !locations.is_empty() {
@@ -185,7 +185,7 @@ impl Model for ArtifactModel {
         })
     }
 }
-fn contains_payload(value: &Value, payloads: &[&str]) -> bool {
+fn contains_payload(value: &Value, payloads: &std::collections::HashSet<&str>) -> bool {
     match value {
         Value::String(value) => payloads.contains(&value.as_str()),
         Value::Array(values) => values.iter().any(|value| contains_payload(value, payloads)),

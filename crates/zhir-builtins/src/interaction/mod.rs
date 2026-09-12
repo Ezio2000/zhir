@@ -9,25 +9,28 @@ use zhir_core::{
     run::{Checkpoint, State},
     tool::{RuntimeTool, RuntimeToolResult},
 };
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Question {
+    #[schemars(length(min = 1))]
     pub id: String,
+    #[schemars(length(min = 1))]
     pub title: String,
     #[serde(default)]
     pub options: Vec<String>,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Args {
+    #[schemars(length(min = 1, max = 3))]
     questions: Vec<Question>,
 }
+const NAME: &str = "ask_question";
 pub fn ask_question() -> Result<Arc<dyn RuntimeTool>> {
     Ok(Arc::new(zhir_tools::function::structured(
-        spec(
-            "ask_question",
+        spec::<Args>(
+            NAME,
             "Ask the host questions and suspend until it responds.",
-            json!({"type":"object","required":["questions"],"properties":{"questions":{"type":"array","minItems":1,"maxItems":3,"items":{"type":"object","required":["id","title"],"properties":{"id":{"type":"string","minLength":1},"title":{"type":"string","minLength":1},"options":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}}},"additionalProperties":false}),
             false,
         ),
         |a: Args, context| async move {
@@ -46,7 +49,7 @@ pub fn ask_question() -> Result<Arc<dyn RuntimeTool>> {
             Ok(RuntimeToolResult::waiting(
                 wait,
                 json!({"questions":a.questions}),
-                "ask_question",
+                NAME,
             ))
         },
     )?))
@@ -57,7 +60,7 @@ pub fn response(checkpoint: &Checkpoint, answers: Value) -> Result<Message> {
             "question response requires suspension".into(),
         ));
     };
-    if suspension.source != "ask_question" {
+    if suspension.source != NAME {
         return Err(Error::Invalid(
             "checkpoint is not waiting for questions".into(),
         ));

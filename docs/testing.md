@@ -58,12 +58,19 @@ cargo test -p zhir --no-default-features --features models,typed-tools,typed-out
 cargo run -p zhir --no-default-features --example custom_tool --features models,typed-tools
 cargo run -p zhir --example resume --features interaction,memory
 cargo bench -p zhir-core --bench history
+cargo bench -p zhir-kernel --bench trace
+cargo test -p zhir-models --all-features --release --lib stream_append_scale -- --ignored --nocapture
 cargo package --workspace --allow-dirty --locked
 ```
 
 同版本反复打包遇到 Cargo 临时 registry 的旧源码缓存时，用全新的 `--target-dir` 重跑。
 包验证应确认生成的 archive 包含当前源码，并成功编译；工作区编译不能代替包验证。
 `conformance` 参与工作区验证但不发布。历史基准用于观察增长趋势，不作为性能保证。
+history 基准还测量逐个消费 pending 时的追加、校验及状态编码；trace 基准测量递增
+checkpoint 历史的离线验证；stream_append_scale 每组使用固定 64 字节片段、取三次中位数。
+这些入口报告规模与耗时，不以容易受机器负载影响的时间阈值作为普通测试断言。
+普通回归测试验证游标编码大小、跨 chunk 顺序与恢复、重建前缀的校验、原生重放顺序、
+流式 Unicode/工具参数/元数据、Schema 约束以及 grep 的提前停止和前后文。
 
 ## 真实数据库
 
@@ -77,6 +84,7 @@ cargo test -p zhir-storage --all-features --test stores -- --ignored
 
 CI 使用 MySQL 8.4 和 Redis 7 服务。测试覆盖历史追加与替换、读取恢复、提交幂等、
 冲突、截止时间和固化参数校验；Memory 和 SQLite 在普通工作区测试中覆盖。
+四种存储都覆盖分批工具游标、暂停恢复和非法游标提交拒绝。
 这些检查不等同于分布式故障注入或生产压测。
 
 ## 真实模型接入

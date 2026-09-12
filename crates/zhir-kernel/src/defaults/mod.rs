@@ -72,15 +72,14 @@ impl BatchPolicy for DefaultBatch {
     fn select(
         &self,
         candidates: &[RuntimeToolCall],
-        specs: &[RuntimeToolSpec],
+        specs: &std::collections::BTreeMap<String, RuntimeToolSpec>,
     ) -> Result<RuntimeToolBatch> {
         let first = candidates
             .first()
             .ok_or_else(|| Error::Invalid("empty batch candidates".into()))?;
         let safe = |c: &RuntimeToolCall| {
             specs
-                .iter()
-                .find(|s| s.name == c.name)
+                .get(&c.name)
                 .is_some_and(|s| s.execution.parallel_safe())
         };
         let calls = if safe(first) {

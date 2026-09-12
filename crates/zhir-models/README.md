@@ -14,6 +14,11 @@ normalized results with canonical replay and local media bindings. Extension
 factories receive ExtensionContext and return a fresh Result<ProtocolExtension>
 session for each invocation or retry attempt.
 
+Chat, Responses and Messages have separate codec and stream accumulator modules.
+Text fragments append in place. Provider replay uses an id index and retains native
+item order even when normalized calls are reordered; media pointers are deduplicated
+with a set while their ordered bindings remain part of canonical replay.
+
 ```toml
 [dependencies]
 zhir-models = { path = "../zhir/crates/zhir-models", features = ["openai-responses"] }

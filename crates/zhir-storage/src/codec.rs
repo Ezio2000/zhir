@@ -46,7 +46,7 @@ pub(crate) fn validate(commit: &Commit, previous: Option<&CheckpointCore>) -> Re
     if count != next.history_count || digest != next.history_digest {
         return Err(Error::Storage("history delta mismatch".into()));
     }
-    next.state.validate()
+    commit.checkpoint.validate()
 }
 pub(crate) fn storage_error(e: impl std::fmt::Display) -> Error {
     Error::Storage(e.to_string())

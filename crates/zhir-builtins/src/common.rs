@@ -1,17 +1,22 @@
-use serde_json::Value;
+use schemars::{JsonSchema, generate::SchemaSettings};
 #[cfg(any(feature = "filesystem", feature = "shell"))]
 use zhir_core::error::{Error, Failure};
 use zhir_core::tool::{Execution, InputSpec, RuntimeToolSpec};
-pub(crate) fn spec(
+pub(crate) fn spec<A: JsonSchema>(
     name: &str,
     description: &str,
-    schema: Value,
     read_only: bool,
 ) -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: name.into(),
         description: description.into(),
-        input: InputSpec::Structured { schema },
+        input: InputSpec::Structured {
+            schema: SchemaSettings::draft2020_12()
+                .for_deserialize()
+                .into_generator()
+                .into_root_schema_for::<A>()
+                .into(),
+        },
         output_schema: None,
         execution: Execution {
             parallel: read_only,

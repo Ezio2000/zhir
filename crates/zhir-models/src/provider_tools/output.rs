@@ -11,6 +11,7 @@ use zhir_core::{
 pub struct ProviderOutput {
     call: ProviderToolCall,
     replay: Replay,
+    media_paths: std::collections::HashSet<String>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -50,6 +51,7 @@ impl ProviderOutput {
                 output: Vec::new(),
                 data: Value::Null,
             },
+            media_paths: std::collections::HashSet::new(),
             replay: Replay {
                 items: Vec::new(),
                 media: Vec::new(),
@@ -98,7 +100,7 @@ impl ProviderOutput {
             ));
         }
         let pointer = format!("/items/{index}{pointer}");
-        if self.replay.media.iter().any(|b| b.pointer == pointer) {
+        if !self.media_paths.insert(pointer.clone()) {
             return Err(Error::Invalid("native media path is already bound".into()));
         }
         self.replay.media.push(MediaBinding {
