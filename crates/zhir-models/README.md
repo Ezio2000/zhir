@@ -1,7 +1,7 @@
 # zhir-models
 
-Model implementations and composition over the zhir-core Model port. No other
-zhir implementation crate is required.
+Model implementations and composition over the zhir-core Model port. Shared retry
+strategies come from zhir-policies; tools, storage and kernel are not dependencies.
 
 The default feature set provides FunctionModel, TransformModel, decorators,
 ConcurrencyLimitedModel, ArtifactModel and extension composition without an HTTP client.
@@ -22,5 +22,9 @@ zhir-models = { path = "../zhir/crates/zhir-models", features = ["openai-respons
 [Developer guide](../../docs/developer-api.md) · [Public API source](src/lib.rs)
 
 TransformModel supports ordered asynchronous response maps. RetryingModel uses
-RetryPolicy for fixed, exponential or custom backoff, bounded by cancellation and
+zhir_policies::RetryPolicy for fixed, exponential or custom backoff, bounded by cancellation and
 deadlines. Already emitted deltas prevent retries.
+
+Capabilities have no core default. `capabilities::text_tool_calling()` is an explicit
+text/structured-tool preset. HTTP adapters own protocol presets; use
+`with_capabilities` to describe the actual selected model.

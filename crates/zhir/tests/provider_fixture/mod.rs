@@ -130,7 +130,7 @@ impl zhir::model::DeltaSink for Deltas {
 }
 pub fn context(deltas: Arc<Deltas>) -> zhir::model::ModelContext {
     zhir::model::ModelContext {
-        run: Default::default(),
+        run: zhir::kernel::defaults::context(),
         cancellation: Default::default(),
         deltas: Some(deltas),
     }

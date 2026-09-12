@@ -1,14 +1,17 @@
 # zhir-core
 
-Owns messages, model/tool ports, immutable history, checkpoints and native v1 serialization. It has no async executor, HTTP client or database dependency. Enable `schema` only when generating JSON Schema contracts.
+Public values, extension traits, immutable history, checkpoints and native v1 wire
+contracts. Core contains shared validation and consistency rules. It has no executor,
+HTTP client, database, generated identities, runtime presets or zhir dependency.
+Enable `schema` when generating JSON Schema contracts.
 
-Part of the zhir Cargo workspace, version 0.1.0.
+RunOptions stores fully resolved parameters; numeric limits are required on decode.
+RunContext::new takes explicit identity and start time. Capabilities must be supplied
+explicitly. SuspensionTicket identifies a paused revision and ResumeTarget names its
+source. Runtime request builders and environment defaults belong to kernel.
 
-RunRequest/RunOptions describe per-run parameters; checkpoints persist effective
-options. SuspensionTicket identifies one paused revision; ResumeRequest carries a
-snapshot or ticket plus external messages/metadata. These are values only: loading,
-scheduling and resuming remain kernel responsibilities.
-
-ContextKey<T> gives typed JSON metadata access. RunCompletion/RunOutcome project a
-settled checkpoint. CatalogContext and RuntimeToolSelection define per-run catalog
-access. Structured errors and RetryPolicy remain executor-independent.
+ContextKey<T> provides typed JSON metadata access; it can insert metadata without
+creating a run. RunCompletion/RunOutcome project settled checkpoints. CatalogContext
+and RuntimeToolSelection carry catalog parameters; kernel implements selection.
+Structured errors, ApprovalPolicy and BatchPolicy contracts stay here; concrete
+retry strategies belong to zhir-policies.

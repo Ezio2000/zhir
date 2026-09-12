@@ -138,6 +138,10 @@ let model = TransformModel::new(inner, |mut request, context| async move {
 每次尝试准备一次，放在外侧时每次逻辑调用准备一次。资源解析、文件路径和异步 I/O
 均由用户函数提供，包装器不启动后台任务。
 
+Capabilities 必须显式声明。`zhir::models::capabilities::text_tool_calling()`
+提供文本与结构化工具预设；HTTP 模型自行提供协议预设，调用方用 `with_capabilities`
+声明实际模型能力。测试使用 `zhir_testing::model_capabilities()`，不从 core 继承能力假设。
+
 ## 运行参数与资源
 
 ```rust
@@ -154,11 +158,24 @@ let request = RunRequest::new([Message::user("run")])
 let checkpoint = runtime.start(request)?.result().await?.into_checkpoint();
 ```
 
+`RunRequest`、`ResumeRequest` 由 kernel 提供，SDK 顶层直接导出。
+`RunRequest::new` 创建运行 ID 和启动时间；`.context(RunContext::new(id, started_at_ms))`
+可显式指定上下文。`zhir::kernel::defaults::{context, limits, run_options}` 提供便利构造，
+core 的上下文构造不读取时钟、不生成 ID，也不提供运行限额默认值。单独配置限额可以写：
+
+```rust
+let limits = zhir::run::Limits {
+    max_runtime_tool_concurrency: 4,
+    ..zhir::kernel::defaults::limits()
+};
+```
+
 Runtime 保存共享模型、工具目录、存储和策略资源，以及新运行的参数默认值。
 RunRequest 只覆盖显式设置的整字段：runtime_tools、limits、model options、provider_tools、tool_choice、
 response_format、stream；不会递归合并 JSON，也不会修改共享 Runtime。
 `without_response_format()` 显式清空格式；`run_options(options)` 一次覆盖全部参数。
 
+限额反序列化要求完整的数值字段，缺失字段直接报错。
 有效 RunOptions 在 start 时固化到 Checkpoint，随 wire、数据库核心记录保存。
 continue 和 resume 都读取固化值，即便重新构造 Runtime 时使用不同默认值。
 Store 提交和轨迹校验拒绝中途更改参数；需要不同参数时开始新运行。
@@ -437,6 +454,8 @@ per_call 顺序调用并收集决定，batch 校验返回数量。暂停继续�
 错误直接传播，规则由调用方提供。
 
 ```rust
+use zhir::policies::{Backoff, RetryPolicy};
+
 let policy = RetryPolicy::new(4)?.backoff(Backoff::exponential(
     Duration::from_millis(100), Duration::from_secs(2),
 )?);
@@ -447,7 +466,8 @@ let tool = RetryingTool::new(tool, policy)?;
 次数包含首次调用。Backoff::fixed / exponential / custom 只计算等待时间；custom 接收
 从 1 开始的失败尝试次数。计数按每次调用独立。模型已发出增量后不会重试，工具仍要求
 幂等声明与可重试错误。退避响应取消和从运行上下文重建的单调截止时间；取消轮询间隔
-为 10ms，实际调度延迟取决于执行器。具体等待保留在 models/tools，core 不引入 Tokio。
+为 10ms，实际调度延迟取决于执行器。共享计算由 zhir-policies 提供，具体等待保留在 models/tools。
+单独依赖 zhir-policies 即可使用策略；通过 SDK 使用时启用 policies，models/tools 会自动启用它。
 
 ## 产物存储与匹配脚本
 

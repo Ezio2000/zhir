@@ -9,6 +9,7 @@ rust-version = "1.95"
 license = "MIT"
 
 [workspace.dependencies]
+zhir-policies = { path = "crates/zhir-policies", version = "=0.1.0" }
 zhir-core = { path = "crates/zhir-core", version = "=0.1.0" }
 zhir-kernel = { path = "crates/zhir-kernel", version = "=0.1.0" }
 zhir-tools = { path = "crates/zhir-tools", version = "=0.1.0" }

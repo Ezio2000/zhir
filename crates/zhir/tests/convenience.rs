@@ -24,7 +24,7 @@ use zhir::{
     output::JsonOutput,
     run::{Checkpoint, Fact, History, HistoryReducer, State},
     runtime_tools::{RuntimeToolRegistry, TypedTool},
-    tool::{Execution, RuntimeToolCall, RuntimeToolCatalogProvider, RuntimeToolInput},
+    tool::{Execution, RuntimeToolCall, RuntimeToolInput},
 };
 
 fn request() -> ModelRequest {
@@ -40,18 +40,18 @@ fn request() -> ModelRequest {
 }
 fn context() -> ModelContext {
     ModelContext {
-        run: Default::default(),
+        run: zhir::kernel::defaults::context(),
         cancellation: Default::default(),
         deltas: None,
     }
 }
 fn checkpoint(messages: Vec<Message>) -> Arc<Checkpoint> {
     Arc::new(Checkpoint {
-        options: Default::default(),
+        options: zhir::kernel::defaults::run_options(),
         id: "checkpoint".into(),
         parent_id: None,
         revision: 0,
-        context: Default::default(),
+        context: zhir::kernel::defaults::context(),
         history: History::new(messages).unwrap(),
         state: State::Planning {
             provider_turn_pending: false,
@@ -73,7 +73,7 @@ async fn output_contract_uses_one_schema_and_reports_validation_stage() {
     let model = Arc::new(FunctionModel::new(
         Capabilities {
             structured_output: true,
-            ..Default::default()
+            ..zhir_testing::model_capabilities()
         },
         |request, _| async move {
             assert!(
@@ -87,9 +87,7 @@ async fn output_contract_uses_one_schema_and_reports_validation_stage() {
         .build()
         .unwrap();
     let completed = runtime
-        .start(zhir_core::run::RunRequest::new(vec![Message::user(
-            "report",
-        )]))
+        .start(zhir::RunRequest::new(vec![Message::user("report")]))
         .unwrap()
         .result()
         .await
@@ -197,7 +195,7 @@ async fn history_windows_keep_runtime_results_external_replies_and_dependencies(
 async fn shared_limiter_bounds_128_calls_and_releases_failed_calls() {
     let active = Arc::new(AtomicUsize::new(0));
     let peak = Arc::new(AtomicUsize::new(0));
-    let model = Arc::new(FunctionModel::new(Capabilities::default(), {
+    let model = Arc::new(FunctionModel::new(zhir_testing::model_capabilities(), {
         let active = active.clone();
         let peak = peak.clone();
         move |_, _| {
@@ -224,7 +222,7 @@ async fn shared_limiter_bounds_128_calls_and_releases_failed_calls() {
 async fn queued_cancellation_deadline_and_dropped_future_release_permits() {
     let entered = Arc::new(AtomicUsize::new(0));
     let gate = Arc::new(tokio::sync::Semaphore::new(0));
-    let model = Arc::new(FunctionModel::new(Capabilities::default(), {
+    let model = Arc::new(FunctionModel::new(zhir_testing::model_capabilities(), {
         let entered = entered.clone();
         let gate = gate.clone();
         move |_, _| {
@@ -261,7 +259,7 @@ async fn queued_cancellation_deadline_and_dropped_future_release_permits() {
         Err(Error::Cancelled)
     ));
     let mut expired = context();
-    expired.run.deadline_at_ms = Some(zhir::run::now_ms() + 15);
+    expired.run.deadline_at_ms = Some(zhir::kernel::defaults::context().started_at_ms + 15);
     assert!(matches!(
         limited.invoke(request(), expired).await,
         Err(Error::Deadline)
@@ -291,56 +289,70 @@ fn typed(name: &str) -> Arc<dyn zhir::tool::RuntimeTool> {
     )
 }
 #[tokio::test]
-async fn selected_catalogs_bind_only_the_same_snapshot() {
+async fn selected_catalog_is_frozen_for_the_entire_run() {
     let registry = Arc::new(RuntimeToolRegistry::from_tools([typed("a")]).unwrap());
-    let selected = zhir::tool::RuntimeToolSelection::only(["a"]);
-    let first = selected
-        .select(registry.open_catalog(Default::default()).await.unwrap())
+    let calls = Arc::new(AtomicUsize::new(0));
+    let model = Arc::new(FunctionModel::new(zhir_testing::model_capabilities(), {
+        let registry = registry.clone();
+        let calls = calls.clone();
+        move |request, _| {
+            assert_eq!(
+                request
+                    .runtime_tools
+                    .iter()
+                    .map(|s| s.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["a"]
+            );
+            let turn = calls.fetch_add(1, Ordering::SeqCst);
+            if turn == 0 {
+                registry.register(typed("b")).unwrap();
+            }
+            async move {
+                if turn == 0 {
+                    let mut response = ModelResponse::text("");
+                    response.output = vec![Output::RuntimeToolCall {
+                        call: RuntimeToolCall {
+                            id: "call".into(),
+                            name: "a".into(),
+                            input: RuntimeToolInput::Structured(json!({"count": 3})),
+                        },
+                    }];
+                    Ok(response)
+                } else {
+                    assert!(
+                        matches!(request.messages.last(), Some(Message::RuntimeTool {outcome, ..}) if outcome.structured().unwrap()["count"] == 3)
+                    );
+                    Ok(ModelResponse::text("done"))
+                }
+            }
+        }
+    }));
+    let runtime = Runtime::builder(model)
+        .runtime_tools(registry)
+        .build()
         .unwrap();
-    registry.register(typed("b")).unwrap();
-    assert_eq!(first.specs().len(), 1);
-    assert_eq!(
-        selected
-            .select(registry.open_catalog(Default::default()).await.unwrap())
-            .unwrap()
-            .specs()
-            .len(),
-        1
-    );
-    let call = |name: &str| RuntimeToolCall {
-        id: "call".into(),
-        name: name.into(),
-        input: RuntimeToolInput::Structured(json!({"count":3})),
-    };
-    assert!(first.bind(&call("b")).is_err());
-    let result = first
-        .bind(&call("a"))
+    let completion = runtime
+        .start(
+            zhir::RunRequest::new([Message::user("run")])
+                .runtime_tools(zhir::tool::RuntimeToolSelection::only(["a"])),
+        )
         .unwrap()
-        .invoke(zhir::tool::RuntimeToolContext {
-            run: Default::default(),
-            cancellation: Default::default(),
-            progress: None,
-        })
+        .result()
         .await
         .unwrap();
-    assert_eq!(result.outcome.structured().unwrap()["count"], 3);
-    assert!(
-        zhir::tool::RuntimeToolSelection::only(["a", "a"])
-            .validate()
-            .is_err()
-    );
-    assert!(
-        zhir::tool::RuntimeToolSelection::only(["missing"])
-            .select(registry.open_catalog(Default::default()).await.unwrap())
-            .is_err()
-    );
+    assert!(matches!(
+        completion.outcome(),
+        zhir::RunOutcome::Completed(_)
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
 async fn streamed_sink_completion_is_inside_the_concurrency_permit() {
     let entered = Arc::new(AtomicUsize::new(0));
     let gate = Arc::new(tokio::sync::Semaphore::new(0));
-    let model = Arc::new(FunctionModel::new(Capabilities::default(), {
+    let model = Arc::new(FunctionModel::new(zhir_testing::model_capabilities(), {
         let entered = entered.clone();
         move |_, context| {
             let entered = entered.clone();

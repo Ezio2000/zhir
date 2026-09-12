@@ -2937,10 +2937,12 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "uuid",
  "zhir-builtins",
  "zhir-core",
  "zhir-kernel",
  "zhir-models",
+ "zhir-policies",
  "zhir-storage",
  "zhir-testing",
  "zhir-tools",
@@ -2958,6 +2960,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "tokio",
+ "uuid",
  "walkdir",
  "zhir-core",
  "zhir-kernel",
@@ -2989,7 +2992,6 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror",
- "uuid",
 ]
 
 [[package]]
@@ -2997,10 +2999,12 @@ name = "zhir-kernel"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror",
  "tokio",
+ "uuid",
  "zhir-core",
 ]
 
@@ -3016,6 +3020,14 @@ dependencies = [
  "tempfile",
  "tokio",
  "zhir-core",
+ "zhir-policies",
+]
+
+[[package]]
+name = "zhir-policies"
+version = "0.1.0"
+dependencies = [
+ "zhir-core",
 ]
 
 [[package]]
@@ -3029,7 +3041,9 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
+ "uuid",
  "zhir-core",
+ "zhir-kernel",
 ]
 
 [[package]]
@@ -3053,6 +3067,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "zhir-core",
+ "zhir-policies",
 ]
 
 [[package]]

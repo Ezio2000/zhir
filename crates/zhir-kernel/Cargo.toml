@@ -11,6 +11,8 @@ workspace = true
 
 [dependencies]
 zhir-core.workspace = true
+uuid.workspace = true
+serde.workspace = true
 tokio.workspace = true
 futures.workspace = true
 serde_json.workspace = true

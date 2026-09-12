@@ -4,7 +4,7 @@ mod history;
 pub use completion::{RunCompletion, RunOutcome};
 pub use context::ContextKey;
 mod options;
-mod request;
+mod ticket;
 use crate::{
     BoxFuture, Result,
     error::{Error, Failure},
@@ -14,25 +14,11 @@ use crate::{
 };
 pub use history::{History, append_digest as append_history_digest};
 pub use options::RunOptions;
-pub use request::{ResumeRequest, ResumeTarget, RunRequest, SuspensionTicket};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{
-    collections::BTreeMap,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{collections::BTreeMap, sync::Arc};
+pub use ticket::{ResumeTarget, SuspensionTicket};
 
-pub fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .min(u64::MAX as u128) as u64
-}
-pub fn new_id() -> String {
-    uuid::Uuid::new_v4().to_string()
-}
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -45,11 +31,11 @@ pub struct RunContext {
     #[serde(default)]
     pub metadata: BTreeMap<String, Value>,
 }
-impl Default for RunContext {
-    fn default() -> Self {
+impl RunContext {
+    pub fn new(run_id: impl Into<String>, started_at_ms: u64) -> Self {
         Self {
-            run_id: new_id(),
-            started_at_ms: now_ms(),
+            run_id: run_id.into(),
+            started_at_ms,
             deadline_at_ms: None,
             parent_run_id: None,
             parent_runtime_tool_call_id: None,
@@ -256,7 +242,7 @@ pub enum LimitReason {
 }
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 pub struct Limits {
     pub max_planning_steps: u64,
     pub max_runtime_tool_calls: u64,
@@ -267,21 +253,6 @@ pub struct Limits {
     pub max_total_tokens: Option<u64>,
     pub elapsed_ms: Option<u64>,
     pub commit_timeout_ms: u64,
-}
-impl Default for Limits {
-    fn default() -> Self {
-        Self {
-            max_planning_steps: 100,
-            max_runtime_tool_calls: 1000,
-            max_runtime_tool_batch_size: 32,
-            max_runtime_tool_concurrency: 8,
-            max_progress_events: 256,
-            max_buffered_progress: 256,
-            max_total_tokens: None,
-            elapsed_ms: None,
-            commit_timeout_ms: 5000,
-        }
-    }
 }
 impl Limits {
     pub fn validate(&self) -> Result<()> {

@@ -42,7 +42,7 @@ pub fn ask_question() -> Result<Arc<dyn RuntimeTool>> {
                     "question ids must be nonempty and unique".into(),
                 ));
             }
-            let wait = zhir_core::run::new_id();
+            let wait = uuid::Uuid::new_v4().to_string();
             Ok(RuntimeToolResult::waiting(
                 wait,
                 json!({"questions":a.questions}),

@@ -21,7 +21,7 @@ use zhir::{
         ModelConfig, Protocol, openai,
         provider_tools::{ProviderOutput, ProviderToolAdapter, ProviderTools},
     },
-    run::{RunContext, State},
+    run::State,
     runtime_tools::{RuntimeToolRegistry, ToolReply, TypedTool},
     stores::memory::MemoryRunStore,
     tool::{Execution, RuntimeTool},
@@ -139,7 +139,7 @@ async fn consumer_transcripts_and_typed_review_compose_without_production_change
         let runtime = &runtime;
         async move {
             let tenant = format!("consumer-tenant-{index}");
-            let mut context = RunContext::default();
+            let mut context = zhir::kernel::defaults::context();
             context.metadata.insert("tenant".into(), json!(tenant));
             let checkpoint = runtime
                 .start(

@@ -30,7 +30,7 @@ pub async fn run(case: &Value) -> Result<()> {
             let runtime = Runtime::builder(Arc::new(CaseModel::new(vec![]))).build()?;
             match value["kind"].as_str() {
                 Some("start") => runtime
-                    .start(zhir_core::run::RunRequest::new(decode::<Vec<Message>>(
+                    .start(zhir_kernel::RunRequest::new(decode::<Vec<Message>>(
                         &value["messages"],
                     )?))
                     .map(|_| ()),
@@ -53,9 +53,7 @@ pub async fn run(case: &Value) -> Result<()> {
             Runtime::builder(model)
                 .store(store.clone())
                 .build()?
-                .start(zhir_core::run::RunRequest::new(vec![Message::user(
-                    "trace",
-                )]))?
+                .start(zhir_kernel::RunRequest::new(vec![Message::user("trace")]))?
                 .result()
                 .await
                 .map_err(|e| e.error)?
@@ -97,7 +95,7 @@ mod tests {
         .store(store.clone())
         .build()
         .unwrap()
-        .start(zhir_core::run::RunRequest::new(vec![Message::user(
+        .start(zhir_kernel::RunRequest::new(vec![Message::user(
             "original",
         )]))
         .unwrap()

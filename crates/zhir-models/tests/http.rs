@@ -77,7 +77,7 @@ fn request(stream: bool) -> ModelRequest {
 }
 fn context(deltas: Arc<Deltas>) -> ModelContext {
     ModelContext {
-        run: RunContext::default(),
+        run: RunContext::new("model-test", 0),
         cancellation: Cancellation::default(),
         deltas: Some(deltas),
     }

@@ -4,9 +4,13 @@ zhir is a Rust Agent SDK and the foundation for future products. Use native Rust
 APIs and contracts; do not add legacy API, wire, database, or Python compatibility layers.
 
 - `zhir-core` owns public values, extension traits, and explicit wire DTOs. It has
-  no executor, HTTP, database, or dependency on another zhir crate.
+  no executor, HTTP, database, environment-generated identities, runtime presets,
+  concrete port adapters, or dependency on another zhir crate.
 - `zhir-kernel` owns the only execution state machine and checkpoint commit path.
-- Models, tools, and storage depend on core, not on one another or the kernel.
+- Shared strategy implementations belong in `zhir-policies`, which depends only on
+  core. Models and tools use core and policies; kernel and storage use only core
+  among zhir crates. These are production dependency boundaries; test fixtures may
+  use the runtime. Models, tools, and storage do not depend on one another.
 - Builtins use core and tools; only the optional agent backend depends on kernel.
 - `zhir` is the public SDK facade, not another runtime.
 - Keep one RuntimeTool trait, explicit structured/freeform inputs, immutable snapshots,

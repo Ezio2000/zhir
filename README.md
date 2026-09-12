@@ -10,6 +10,7 @@ zhir 是可嵌入的 Rust Agent SDK，也是后续独立产品的公共基础。
 | Crate | 职责 |
 | --- | --- |
 | `zhir-core` | 公共类型、扩展 trait、原生 wire DTO |
+| `zhir-policies` | 共享重试策略与退避计算，不依赖执行器 |
 | `zhir-kernel` | 唯一执行引擎、调度、控制、提交、诊断 |
 | `zhir-models` | 函数式模型、异步请求变换、扩展组合；可选 HTTP 协议 |
 | `zhir-tools` | 工具注册、函数与强类型适配、校验、重试、熔断 |
@@ -59,10 +60,11 @@ if let RunOutcome::Completed(content) = result.outcome() {
 # }
 ```
 
-默认 SDK 仅启用 core 和 kernel 两个执行组件。可选 feature 为 `tools`、`typed-tools`、`typed-output`、`models`、`filesystem`、`shell`、
+默认 SDK 仅启用 core 和 kernel 两个执行组件。可选 feature 为 `policies`、`tools`、`typed-tools`、`typed-output`、`models`、`filesystem`、`shell`、
 `interaction`、`agent`、`openai-chat`、`openai-responses`、`anthropic`、`memory`、
 `sqlite`、`mysql`、`redis`、`artifacts-filesystem`。
 
+`policies` 提供共享策略，`models` 和 `tools` 自动启用它。
 `models` 提供通用模型组件，不引入 HTTP 客户端；具体协议 feature 自动启用它。
 `typed-tools` 从 Rust 类型生成工具 Schema；`typed-output` 提供请求与本地校验共用的
 `JsonOutput<T>`。完整用法与扩展方法见[研发接入指南](docs/developer-api.md)。

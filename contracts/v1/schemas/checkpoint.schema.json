@@ -390,13 +390,11 @@
       "additionalProperties": false,
       "properties": {
         "commit_timeout_ms": {
-          "default": 5000,
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
         "elapsed_ms": {
-          "default": null,
           "format": "uint64",
           "minimum": 0,
           "type": [
@@ -405,43 +403,36 @@
           ]
         },
         "max_buffered_progress": {
-          "default": 256,
           "format": "uint",
           "minimum": 0,
           "type": "integer"
         },
         "max_planning_steps": {
-          "default": 100,
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
         "max_progress_events": {
-          "default": 256,
           "format": "uint",
           "minimum": 0,
           "type": "integer"
         },
         "max_runtime_tool_batch_size": {
-          "default": 32,
           "format": "uint",
           "minimum": 0,
           "type": "integer"
         },
         "max_runtime_tool_calls": {
-          "default": 1000,
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
         "max_runtime_tool_concurrency": {
-          "default": 8,
           "format": "uint",
           "minimum": 0,
           "type": "integer"
         },
         "max_total_tokens": {
-          "default": null,
           "format": "uint64",
           "minimum": 0,
           "type": [
@@ -450,6 +441,15 @@
           ]
         }
       },
+      "required": [
+        "max_planning_steps",
+        "max_runtime_tool_calls",
+        "max_runtime_tool_batch_size",
+        "max_runtime_tool_concurrency",
+        "max_progress_events",
+        "max_buffered_progress",
+        "commit_timeout_ms"
+      ],
       "type": "object"
     },
     "MediaSource": {

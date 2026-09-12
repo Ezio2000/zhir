@@ -19,7 +19,7 @@ use zhir::{
         ModelResponse, ResponseFormat, ToolChoice,
     },
     models::{HttpModel, ModelConfig, Protocol, anthropic, openai},
-    run::{EventData, Limits, RunContext, State, now_ms},
+    run::{EventData, Limits, State},
     runtime_tools::{FunctionTool, RuntimeToolRegistry},
     tool::{
         Execution, InputSpec, RuntimeTool, RuntimeToolCall, RuntimeToolInput, RuntimeToolResult,
@@ -144,7 +144,7 @@ async fn text_case(
                 stream,
             },
             ModelContext {
-                run: RunContext::default(),
+                run: zhir::kernel::defaults::context(),
                 cancellation: Cancellation::default(),
                 deltas: Some(deltas.clone()),
             },
@@ -270,7 +270,7 @@ async fn tool_case(
                 max_planning_steps: 3,
                 max_runtime_tool_calls: 2,
                 elapsed_ms: Some(90_000),
-                ..Default::default()
+                ..zhir::kernel::defaults::limits()
             })
         })
         .build()?;
@@ -279,8 +279,7 @@ async fn tool_case(
     } else {
         "You must call the add tool exactly once with a=19 and b=23. Do not calculate without the tool. After receiving its result, reply with exactly the number 42 and do not call any more tools."
     };
-    let mut invocation =
-        runtime.start(zhir_core::run::RunRequest::new(vec![Message::user(prompt)]))?;
+    let mut invocation = runtime.start(zhir::RunRequest::new(vec![Message::user(prompt)]))?;
     let mut events = invocation.events()?;
     let mut counts = BTreeMap::<String, usize>::new();
     while let Some(event) = events.next().await {
@@ -340,7 +339,7 @@ async fn live_protocol_matrix() -> std::result::Result<(), Box<dyn std::error::E
     let filter = std::env::var("DEEPSEEK_LIVE_FILTER").unwrap_or_default();
     let output =
         std::env::var("DEEPSEEK_LIVE_REPORT").unwrap_or_else(|_| "deepseek-live.json".into());
-    let started = now_ms();
+    let started = zhir::kernel::defaults::context().started_at_ms;
     let mut rows = Vec::new();
     for protocol in [Protocol::Chat, Protocol::Responses, Protocol::Messages] {
         let mut scenarios = vec!["text", "stream", "tool_stream", "thinking_tool_stream"];

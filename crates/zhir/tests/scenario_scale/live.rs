@@ -178,8 +178,8 @@ async fn workflow(
     store: &StoreFixture,
 ) -> Result<Value> {
     let tag = case.tag();
-    let receipt = format!("R{}", zhir::run::new_id().replace('-', ""));
-    let ticket = format!("T{}", zhir::run::new_id().replace('-', ""));
+    let receipt = format!("R{}", uuid::Uuid::new_v4().to_string().replace('-', ""));
+    let ticket = format!("T{}", uuid::Uuid::new_v4().to_string().replace('-', ""));
     let thinking = case.repeat % 2 == 1 && case.stream;
     let child = if case.family == "delegated_agent" {
         let child_runtime = Runtime::builder(recorded.clone())
@@ -190,7 +190,7 @@ async fn workflow(
                 run.limits(Limits {
                     max_planning_steps: 2,
                     elapsed_ms: Some(60_000),
-                    ..Default::default()
+                    ..zhir::kernel::defaults::limits()
                 })
             })
             .build()?;
@@ -412,7 +412,7 @@ async fn workflow(
                     max_runtime_tool_concurrency: 3,
                     max_progress_events: 4096,
                     elapsed_ms: Some(120_000),
-                    ..Default::default()
+                    ..zhir::kernel::defaults::limits()
                 })
             });
         if case.family == "approval_resume" {
@@ -425,7 +425,7 @@ async fn workflow(
     };
     // Reconstructing the runtime after suspension emulates application restart.
     let runtime = make_runtime()?;
-    let (first,events)=drain(runtime.start(zhir_core::run::RunRequest::new(vec![Message::system("Follow the workflow and exact output instructions. Tools use private fixture data. Do not invent tool results. When asked for only a receipt, output the receipt field string value itself, without JSON, quotation marks or explanation."),Message::user(prompt)]))?).await;
+    let (first,events)=drain(runtime.start(zhir::RunRequest::new(vec![Message::system("Follow the workflow and exact output instructions. Tools use private fixture data. Do not invent tool results. When asked for only a receipt, output the receipt field string value itself, without JSON, quotation marks or explanation."),Message::user(prompt)]))?).await;
     let mut all_events = vec![json!({"ordered":events.ordered,"counts":events.counts})];
     let mut checkpoint = first.map_err(|e| e.error)?;
     let mut suspended_revision = None;

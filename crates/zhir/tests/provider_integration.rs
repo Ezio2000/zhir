@@ -241,9 +241,7 @@ async fn mixed_runtime_and_provider_calls_have_separate_execution_and_metrics() 
         .build()
         .unwrap();
     let completed = runtime
-        .start(zhir_core::run::RunRequest::new(vec![Message::user(
-            "mixed",
-        )]))
+        .start(zhir::RunRequest::new(vec![Message::user("mixed")]))
         .unwrap()
         .result()
         .await
@@ -334,9 +332,7 @@ async fn artifacts_are_durable_before_commit_and_replay_after_reconstruction() {
         .build()
         .unwrap();
     let checkpoint = runtime
-        .start(zhir_core::run::RunRequest::new(vec![Message::user(
-            "image",
-        )]))
+        .start(zhir::RunRequest::new(vec![Message::user("image")]))
         .unwrap()
         .result()
         .await
@@ -410,9 +406,7 @@ async fn artifact_failure_or_missing_binding_never_commits_a_partial_provider_re
             .build()
             .unwrap();
         let error = runtime
-            .start(zhir_core::run::RunRequest::new(vec![Message::user(
-                "failure",
-            )]))
+            .start(zhir::RunRequest::new(vec![Message::user("failure")]))
             .unwrap()
             .result()
             .await
@@ -477,9 +471,7 @@ async fn provider_continuation_never_enters_runtime_tool_execution() {
             .build()
             .unwrap();
         let completed = runtime
-            .start(zhir_core::run::RunRequest::new(vec![Message::user(
-                "continue",
-            )]))
+            .start(zhir::RunRequest::new(vec![Message::user("continue")]))
             .unwrap()
             .result()
             .await
@@ -565,9 +557,7 @@ async fn consumer_maps_native_client_actions_to_the_single_runtime_trait() {
         .build()
         .unwrap();
     let completed = runtime
-        .start(zhir_core::run::RunRequest::new(vec![Message::user(
-            "client action",
-        )]))
+        .start(zhir::RunRequest::new(vec![Message::user("client action")]))
         .unwrap()
         .result()
         .await
@@ -647,7 +637,7 @@ async fn artifact_resolution_preserves_business_objects_and_missing_references_s
     let inner = Arc::new(zhir::models::FunctionModel::new(
         zhir::model::Capabilities {
             input_modalities: vec!["text".into(), "image".into()],
-            ..Default::default()
+            ..zhir_testing::model_capabilities()
         },
         {
             let invoked = invoked.clone();
@@ -984,7 +974,7 @@ async fn consumer_media_outputs_are_independent_of_native_model_input_modalities
         .unwrap()
         .with_capabilities(zhir::model::Capabilities {
             provider_tools: true,
-            ..Default::default()
+            ..zhir_testing::model_capabilities()
         })
         .with_extension(|_| {
             Ok({
@@ -1170,7 +1160,7 @@ async fn local_media_paths_support_multiple_items_escaped_keys_and_every_media_k
         let inner = zhir::models::FunctionModel::new(
             zhir::model::Capabilities {
                 provider_tools: true,
-                ..Default::default()
+                ..zhir_testing::model_capabilities()
             },
             move |_, _| {
                 let output = output.clone();
@@ -1193,7 +1183,7 @@ async fn local_media_paths_support_multiple_items_escaped_keys_and_every_media_k
         let verifier = zhir::models::FunctionModel::new(
             zhir::model::Capabilities {
                 provider_tools: true,
-                ..Default::default()
+                ..zhir_testing::model_capabilities()
             },
             |request, _| async move {
                 let Message::Assistant { output, .. } = &request.messages[1] else {

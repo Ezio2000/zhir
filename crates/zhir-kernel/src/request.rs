@@ -1,17 +1,18 @@
-use super::{Checkpoint, Limits, RunContext, RunOptions, State, Suspension, SuspensionSelector};
-use crate::{
-    Result,
-    error::ResumeError,
-    message::Message,
-    model::{ModelOptions, ProviderToolSpec, ResponseFormat, ToolChoice},
-};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
+use zhir_core::{
+    Result,
+    message::Message,
+    model::{ModelOptions, ProviderToolSpec, ResponseFormat, ToolChoice},
+    run::{
+        Checkpoint, Limits, ResumeTarget, RunContext, RunOptions, SuspensionSelector,
+        SuspensionTicket,
+    },
+};
 
 #[derive(Debug, Clone, Default)]
 struct Overrides {
-    runtime_tools: Option<crate::tool::RuntimeToolSelection>,
+    runtime_tools: Option<zhir_core::tool::RuntimeToolSelection>,
     limits: Option<Limits>,
     model: Option<ModelOptions>,
     provider_tools: Option<Vec<ProviderToolSpec>>,
@@ -28,20 +29,20 @@ pub struct RunRequest {
 impl RunRequest {
     pub fn context_value<T: serde::Serialize>(
         mut self,
-        key: super::ContextKey<T>,
+        key: zhir_core::run::ContextKey<T>,
         value: T,
     ) -> Result<Self> {
         self.context.insert(key, value)?;
         Ok(self)
     }
-    pub fn runtime_tools(mut self, value: crate::tool::RuntimeToolSelection) -> Self {
+    pub fn runtime_tools(mut self, value: zhir_core::tool::RuntimeToolSelection) -> Self {
         self.overrides.runtime_tools = Some(value);
         self
     }
     pub fn new(messages: impl IntoIterator<Item = Message>) -> Self {
         Self {
             messages: messages.into_iter().collect(),
-            context: Default::default(),
+            context: crate::defaults::context(),
             overrides: Default::default(),
         }
     }
@@ -113,53 +114,6 @@ impl RunRequest {
     }
 }
 
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SuspensionTicket {
-    pub run_id: String,
-    pub checkpoint_id: String,
-    pub revision: u64,
-    pub suspension: Suspension,
-}
-impl SuspensionTicket {
-    pub fn from_checkpoint(checkpoint: &Checkpoint) -> Result<Self> {
-        checkpoint.validate()?;
-        let State::Suspended { suspension, .. } = &checkpoint.state else {
-            return Err(ResumeError::NotSuspended.into());
-        };
-        Ok(Self {
-            run_id: checkpoint.context.run_id.clone(),
-            checkpoint_id: checkpoint.id.clone(),
-            revision: checkpoint.revision,
-            suspension: suspension.clone(),
-        })
-    }
-    pub fn validate(&self) -> Result<()> {
-        if self.run_id.is_empty() || self.checkpoint_id.is_empty() {
-            return Err(ResumeError::InvalidTicketIdentity.into());
-        }
-        self.suspension.validate()
-    }
-    pub fn check(&self, checkpoint: &Checkpoint) -> Result<()> {
-        self.validate()?;
-        checkpoint.validate()?;
-        if Self::from_checkpoint(checkpoint).as_ref().ok() != Some(self) {
-            return Err(ResumeError::StaleTicket {
-                run_id: self.run_id.clone(),
-                ticket_revision: self.revision,
-                head_revision: checkpoint.revision,
-            }
-            .into());
-        }
-        Ok(())
-    }
-}
-#[derive(Debug, Clone)]
-pub enum ResumeTarget {
-    Checkpoint(Arc<Checkpoint>),
-    Ticket(SuspensionTicket),
-}
 #[derive(Debug, Clone)]
 pub struct ResumeRequest {
     pub target: ResumeTarget,
@@ -170,12 +124,10 @@ pub struct ResumeRequest {
 impl ResumeRequest {
     pub fn context_value<T: serde::Serialize>(
         mut self,
-        key: super::ContextKey<T>,
+        key: zhir_core::run::ContextKey<T>,
         value: T,
     ) -> Result<Self> {
-        let mut context = RunContext::default();
-        context.insert(key, value)?;
-        self.metadata.extend(context.metadata);
+        key.insert(&mut self.metadata, value)?;
         Ok(self)
     }
     pub fn from_checkpoint(checkpoint: Arc<Checkpoint>) -> Self {

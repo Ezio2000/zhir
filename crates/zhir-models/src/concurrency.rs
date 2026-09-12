@@ -1,4 +1,5 @@
 //! Shared concurrency over complete model invocations, including streamed sinks.
+use crate::retry_wait::now_ms;
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -8,7 +9,6 @@ use zhir_core::{
     BoxFuture, Result,
     error::Error,
     model::{Capabilities, Model, ModelContext, ModelRequest, ModelResponse},
-    run::now_ms,
 };
 
 #[derive(Clone)]

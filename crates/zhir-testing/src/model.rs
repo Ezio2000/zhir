@@ -84,7 +84,7 @@ pub struct ScriptedModel {
 impl ScriptedModel {
     pub fn new(steps: impl IntoIterator<Item = ScriptStep>) -> Self {
         Self {
-            capabilities: Capabilities::default(),
+            capabilities: crate::model_capabilities(),
             script: Mutex::new(Script {
                 steps: Steps::Ordered(steps.into_iter().collect()),
                 violations: vec![],
@@ -103,7 +103,7 @@ impl ScriptedModel {
             }
         }
         Ok(Self {
-            capabilities: Capabilities::default(),
+            capabilities: crate::model_capabilities(),
             script: Mutex::new(Script {
                 steps: Steps::Matching(cases),
                 requests: vec![],

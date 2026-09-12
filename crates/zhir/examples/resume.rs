@@ -51,12 +51,12 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let tools = Arc::new(RuntimeToolRegistry::from_tools([
         interaction::ask_question()?,
     ])?);
-    let runtime = Runtime::builder(Arc::new(QuestionModel(Capabilities::default())))
+    let runtime = Runtime::builder(Arc::new(QuestionModel(capabilities())))
         .runtime_tools(tools)
         .store(store.clone())
         .build()?;
     let suspended = runtime
-        .start(zhir_core::run::RunRequest::new(vec![Message::user(
+        .start(zhir::RunRequest::new(vec![Message::user(
             "Start a project",
         )]))?
         .result()
@@ -100,4 +100,27 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         checkpoint.revision
     );
     Ok(())
+}
+
+fn capabilities() -> Capabilities {
+    Capabilities {
+        input_modalities: vec!["text".into()],
+        output_modalities: vec!["text".into()],
+        structured_runtime_tools: true,
+        freeform_runtime_tools: false,
+        provider_tools: false,
+        parallel_runtime_tools: true,
+        parallel_control: true,
+        streaming: true,
+        usage: true,
+        structured_output: false,
+        json_mode: false,
+        seed: false,
+        tool_choices: vec![
+            "auto".into(),
+            "none".into(),
+            "required".into(),
+            "runtime_tool".into(),
+        ],
+    }
 }

@@ -266,7 +266,7 @@ impl StoreFixture {
     pub async fn new(sqlite: bool) -> Result<Self> {
         let commits = Arc::new(Mutex::new(vec![]));
         if sqlite {
-            let path = std::env::temp_dir().join(format!("zhir-scale-{}.db", zhir::run::new_id()));
+            let path = std::env::temp_dir().join(format!("zhir-scale-{}.db", uuid::Uuid::new_v4()));
             let store =
                 SqliteRunStore::connect(&format!("sqlite://{}?mode=rwc", path.display())).await?;
             Ok(Self {

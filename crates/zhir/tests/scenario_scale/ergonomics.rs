@@ -49,7 +49,7 @@ async fn workflow(
     fixture: &StoreFixture,
 ) -> Result<Value> {
     let tag = format!("typed-{}-{stream}-{repeat}", name(protocol));
-    let receipt = format!("receipt-{}", zhir::run::new_id());
+    let receipt = format!("receipt-{}", uuid::Uuid::new_v4());
     let calls = Arc::new(AtomicUsize::new(0));
     let invoked = calls.clone();
     let expected_tag = tag.clone();
@@ -130,7 +130,7 @@ async fn workflow(
     };
     let model = zhir::models::decorators::RetryingModel::new(
         Arc::new(model),
-        zhir::retry::RetryPolicy::new(2)?.backoff(zhir::retry::Backoff::fixed(
+        zhir::policies::RetryPolicy::new(2)?.backoff(zhir::policies::Backoff::fixed(
             std::time::Duration::from_millis(50),
         )),
     )?;
@@ -159,12 +159,12 @@ async fn workflow(
                 max_planning_steps: 3,
                 max_runtime_tool_calls: 1,
                 elapsed_ms: Some(60_000),
-                ..Default::default()
+                ..zhir::kernel::defaults::limits()
             })
         })
         .build()?;
     let mut events = Events::new();
-    let checkpoint=zhir::runs::drive(runtime.start(zhir_core::run::RunRequest::new(vec![Message::user(format!("Call quote with product sku widget, quantity 3, request_id {tag}. Then return its total and receipt as JSON."))]).context_value(CASE,tag.clone())?.runtime_tools(zhir::tool::RuntimeToolSelection::only(["quote"])))?,|event| {
+    let checkpoint=zhir::runs::drive(runtime.start(zhir::RunRequest::new(vec![Message::user(format!("Call quote with product sku widget, quantity 3, request_id {tag}. Then return its total and receipt as JSON."))]).context_value(CASE,tag.clone())?.runtime_tools(zhir::tool::RuntimeToolSelection::only(["quote"])))?,|event| {
         events.record(&event);async {Ok(())}
     }).await.map_err(|e|zhir::error::Error::Invalid(e.to_string()))?.into_checkpoint();
     let output = zhir::output::decode::<Quote>(&checkpoint)?;

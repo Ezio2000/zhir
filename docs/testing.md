@@ -22,7 +22,9 @@ cargo run -p zhir-conformance --bin schemas -- --check
 | 入口 | 覆盖范围 |
 | --- | --- |
 | `conformance/cases/` | 状态、控制、审批、原子提交、历史、错误和限制 |
-| `crates/zhir-core/tests/` | 值校验、序列化和历史结构 |
+| `crates/zhir-core/tests/` | 值校验、完整限额序列化和历史结构 |
+| `crates/zhir-policies/tests/` | 重试预算、自定义退避与溢出边界 |
+| `crates/zhir/tests/core_boundaries.rs` | 目录选择与绑定、运行创建、显式能力和执行错误呈现 |
 | `crates/zhir-tools/tests/` | 工具目录、Schema、类型化结果和执行装饰器 |
 | `crates/zhir-models/tests/` | 协议编码、SSE、扩展会话与模型装饰器 |
 | `crates/zhir-builtins/tests/` | 文件、Shell、交互和子 Agent |
@@ -42,11 +44,15 @@ cargo run -p zhir-conformance --bin schemas -- --check
 
 ```sh
 cargo check -p zhir --no-default-features --locked
+cargo check -p zhir-core --no-default-features --locked
+cargo test -p zhir-policies --locked
+cargo check -p zhir --no-default-features --features policies --locked
 cargo check -p zhir --no-default-features --features typed-tools --locked
 cargo check -p zhir-testing --no-default-features --locked
 cargo check -p zhir-testing --no-default-features --features http --locked
 cargo test -p zhir --no-default-features --features models,typed-tools,memory --test developer_api
 cargo test -p zhir --no-default-features --features models,typed-tools,memory --test consumer_ten
+cargo test -p zhir --no-default-features --features models,typed-tools,memory --test core_boundaries
 cargo check -p zhir --no-default-features --features artifacts-filesystem --locked
 cargo test -p zhir --no-default-features --features models,typed-tools,typed-output,memory --test convenience
 cargo run -p zhir --no-default-features --example custom_tool --features models,typed-tools

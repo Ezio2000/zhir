@@ -375,8 +375,15 @@
         }
       ],
       "limits": {
+        "max_planning_steps": 100,
+        "max_runtime_tool_calls": 1000,
+        "max_runtime_tool_batch_size": 1,
         "max_runtime_tool_concurrency": 1,
-        "max_runtime_tool_batch_size": 1
+        "max_progress_events": 256,
+        "max_buffered_progress": 256,
+        "max_total_tokens": null,
+        "elapsed_ms": null,
+        "commit_timeout_ms": 5000
       },
       "expected": {
         "status": "failed",

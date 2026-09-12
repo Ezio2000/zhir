@@ -35,7 +35,13 @@ async fn schema_binding_and_snapshot_are_shared_for_custom_tools() {
     let registry = RuntimeToolRegistry::new();
     registry.register(tool.clone()).unwrap();
     assert!(registry.register(tool).is_err());
-    let catalog = registry.open_catalog(Default::default()).await.unwrap();
+    let catalog = registry
+        .open_catalog(zhir_core::tool::CatalogContext {
+            run: zhir_core::run::RunContext::new("port-test", 0),
+            cancellation: Default::default(),
+        })
+        .await
+        .unwrap();
     let call = RuntimeToolCall {
         id: "1".into(),
         name: "sum".into(),
@@ -45,7 +51,7 @@ async fn schema_binding_and_snapshot_are_shared_for_custom_tools() {
         .bind(&call)
         .unwrap()
         .invoke(RuntimeToolContext {
-            run: RunContext::default(),
+            run: RunContext::new("tool-test", 0),
             cancellation: Cancellation::default(),
             progress: None,
         })
@@ -67,7 +73,13 @@ async fn function_output_is_validated() {
         .unwrap(),
     ) as Arc<dyn RuntimeTool>;
     let registry = RuntimeToolRegistry::from_tools([tool]).unwrap();
-    let catalog = registry.open_catalog(Default::default()).await.unwrap();
+    let catalog = registry
+        .open_catalog(zhir_core::tool::CatalogContext {
+            run: zhir_core::run::RunContext::new("port-test", 0),
+            cancellation: Default::default(),
+        })
+        .await
+        .unwrap();
     let call = RuntimeToolCall {
         id: "1".into(),
         name: "sum".into(),
@@ -78,7 +90,7 @@ async fn function_output_is_validated() {
             .bind(&call)
             .unwrap()
             .invoke(RuntimeToolContext {
-                run: RunContext::default(),
+                run: RunContext::new("tool-test", 0),
                 cancellation: Cancellation::default(),
                 progress: None
             })
@@ -96,7 +108,7 @@ fn call() -> RuntimeToolCall {
 }
 fn context() -> RuntimeToolContext {
     RuntimeToolContext {
-        run: RunContext::default(),
+        run: RunContext::new("tool-test", 0),
         cancellation: Cancellation::default(),
         progress: None,
     }
@@ -133,18 +145,18 @@ async fn retry_requires_idempotence_and_retries_transient_errors() {
     assert!(
         RetryingTool::new(
             flaky(false).0,
-            zhir_core::retry::RetryPolicy::new(2)
+            zhir_policies::RetryPolicy::new(2)
                 .unwrap()
-                .backoff(zhir_core::retry::Backoff::fixed(Duration::ZERO))
+                .backoff(zhir_policies::Backoff::fixed(Duration::ZERO))
         )
         .is_err()
     );
     let (inner, attempts) = flaky(true);
     let tool = RetryingTool::new(
         inner,
-        zhir_core::retry::RetryPolicy::new(2)
+        zhir_policies::RetryPolicy::new(2)
             .unwrap()
-            .backoff(zhir_core::retry::Backoff::fixed(Duration::ZERO)),
+            .backoff(zhir_policies::Backoff::fixed(Duration::ZERO)),
     )
     .unwrap();
     assert!(tool.invoke(call(), context()).await.is_ok());

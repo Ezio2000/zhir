@@ -51,22 +51,6 @@ pub enum Error {
     #[error("operation cancelled")]
     Cancelled,
 }
-impl Error {
-    pub fn failure(&self) -> Failure {
-        match self {
-            Self::Model(f) | Self::RuntimeTool(f) => f.clone(),
-            Self::Invalid(s) => Failure::new("invalid_arguments", s),
-            Self::Validation(_) | Self::Catalog(_) | Self::Context(_) => {
-                Failure::new("invalid_arguments", self.to_string())
-            }
-            Self::Resume(_) => Failure::new("resume", self.to_string()),
-            Self::Protocol(s) => Failure::new("protocol", s),
-            Self::Deadline => Failure::new("deadline", "operation deadline reached"),
-            Self::Cancelled => Failure::new("cancelled", "operation cancelled"),
-            _ => Failure::new("infrastructure", self.to_string()),
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ResumeError {

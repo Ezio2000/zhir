@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 zhir-core.workspace = true
+uuid = { workspace = true, optional = true }
 zhir-tools.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -29,7 +30,7 @@ nix = { version = "0.30", features = ["signal", "process"], optional = true }
 default = []
 filesystem = ["dep:fancy-regex", "dep:globset", "dep:walkdir", "tokio/fs"]
 shell = ["tokio/process", "tokio/io-util", "dep:nix"]
-interaction = []
+interaction = ["dep:uuid"]
 agent = ["dep:zhir-kernel"]
 
 [dev-dependencies]
