@@ -29,6 +29,7 @@ cargo run -p zhir-conformance --bin schemas -- --check
 | `crates/zhir/tests/developer_api.rs` | 参数隔离、暂停票据、恢复冲突和研发 API 组合 |
 | `crates/zhir/tests/provider_integration.rs` | 用户能力适配、执行归属、媒体持久化与重放 |
 | `crates/zhir/tests/http_fixture.rs` | 传输捕获、分片、延迟、断连与清理 |
+| `crates/zhir/tests/consumer_ten.rs` | 目录组合、选择固化、类型上下文、结果、审批、响应变换、重试、匹配脚本与产物存储 |
 | `crates/zhir/tests/consumer_six.rs` | 消费者转写能力、类型化复核和恢复闭环 |
 | `crates/zhir/tests/scenario_scale/` | 并发、请求组合与密集流式场景 |
 
@@ -45,6 +46,8 @@ cargo check -p zhir --no-default-features --features typed-tools --locked
 cargo check -p zhir-testing --no-default-features --locked
 cargo check -p zhir-testing --no-default-features --features http --locked
 cargo test -p zhir --no-default-features --features models,typed-tools,memory --test developer_api
+cargo test -p zhir --no-default-features --features models,typed-tools,memory --test consumer_ten
+cargo check -p zhir --no-default-features --features artifacts-filesystem --locked
 cargo test -p zhir --no-default-features --features models,typed-tools,typed-output,memory --test convenience
 cargo run -p zhir --no-default-features --example custom_tool --features models,typed-tools
 cargo run -p zhir --example resume --features interaction,memory

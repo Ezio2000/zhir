@@ -14,11 +14,14 @@ zhir-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+sha2 = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
 sqlx = { workspace = true, optional = true }
 redis = { workspace = true, optional = true }
 
 [features]
 default = []
+artifacts-filesystem = ["dep:sha2", "dep:tempfile"]
 sqlite = ["dep:sqlx", "sqlx/sqlite", "sqlx/any"]
 mysql = ["dep:sqlx", "sqlx/mysql", "sqlx/any"]
 redis = ["dep:redis"]

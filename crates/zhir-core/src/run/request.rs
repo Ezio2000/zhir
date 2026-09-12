@@ -1,7 +1,7 @@
 use super::{Checkpoint, Limits, RunContext, RunOptions, State, Suspension, SuspensionSelector};
 use crate::{
     Result,
-    error::Error,
+    error::ResumeError,
     message::Message,
     model::{ModelOptions, ProviderToolSpec, ResponseFormat, ToolChoice},
 };
@@ -11,6 +11,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Debug, Clone, Default)]
 struct Overrides {
+    runtime_tools: Option<crate::tool::RuntimeToolSelection>,
     limits: Option<Limits>,
     model: Option<ModelOptions>,
     provider_tools: Option<Vec<ProviderToolSpec>>,
@@ -25,6 +26,18 @@ pub struct RunRequest {
     overrides: Overrides,
 }
 impl RunRequest {
+    pub fn context_value<T: serde::Serialize>(
+        mut self,
+        key: super::ContextKey<T>,
+        value: T,
+    ) -> Result<Self> {
+        self.context.insert(key, value)?;
+        Ok(self)
+    }
+    pub fn runtime_tools(mut self, value: crate::tool::RuntimeToolSelection) -> Self {
+        self.overrides.runtime_tools = Some(value);
+        self
+    }
     pub fn new(messages: impl IntoIterator<Item = Message>) -> Self {
         Self {
             messages: messages.into_iter().collect(),
@@ -38,6 +51,7 @@ impl RunRequest {
     }
     pub fn run_options(mut self, value: RunOptions) -> Self {
         self.overrides = Overrides {
+            runtime_tools: Some(value.runtime_tools),
             limits: Some(value.limits),
             model: Some(value.model),
             provider_tools: Some(value.provider_tools),
@@ -79,6 +93,9 @@ impl RunRequest {
     pub fn into_parts(self, defaults: &RunOptions) -> (Vec<Message>, RunContext, RunOptions) {
         let o = self.overrides;
         let options = RunOptions {
+            runtime_tools: o
+                .runtime_tools
+                .unwrap_or_else(|| defaults.runtime_tools.clone()),
             limits: o.limits.unwrap_or_else(|| defaults.limits.clone()),
             model: o.model.unwrap_or_else(|| defaults.model.clone()),
             provider_tools: o
@@ -109,9 +126,7 @@ impl SuspensionTicket {
     pub fn from_checkpoint(checkpoint: &Checkpoint) -> Result<Self> {
         checkpoint.validate()?;
         let State::Suspended { suspension, .. } = &checkpoint.state else {
-            return Err(Error::Invalid(
-                "ticket requires a suspended checkpoint".into(),
-            ));
+            return Err(ResumeError::NotSuspended.into());
         };
         Ok(Self {
             run_id: checkpoint.context.run_id.clone(),
@@ -122,16 +137,20 @@ impl SuspensionTicket {
     }
     pub fn validate(&self) -> Result<()> {
         if self.run_id.is_empty() || self.checkpoint_id.is_empty() {
-            return Err(Error::Invalid("empty suspension ticket identity".into()));
+            return Err(ResumeError::InvalidTicketIdentity.into());
         }
         self.suspension.validate()
     }
     pub fn check(&self, checkpoint: &Checkpoint) -> Result<()> {
         self.validate()?;
-        if Self::from_checkpoint(checkpoint)? != *self {
-            return Err(Error::Invalid(
-                "suspension ticket no longer matches the stored checkpoint".into(),
-            ));
+        checkpoint.validate()?;
+        if Self::from_checkpoint(checkpoint).as_ref().ok() != Some(self) {
+            return Err(ResumeError::StaleTicket {
+                run_id: self.run_id.clone(),
+                ticket_revision: self.revision,
+                head_revision: checkpoint.revision,
+            }
+            .into());
         }
         Ok(())
     }
@@ -149,6 +168,16 @@ pub struct ResumeRequest {
     pub selector: Option<SuspensionSelector>,
 }
 impl ResumeRequest {
+    pub fn context_value<T: serde::Serialize>(
+        mut self,
+        key: super::ContextKey<T>,
+        value: T,
+    ) -> Result<Self> {
+        let mut context = RunContext::default();
+        context.insert(key, value)?;
+        self.metadata.extend(context.metadata);
+        Ok(self)
+    }
     pub fn from_checkpoint(checkpoint: Arc<Checkpoint>) -> Self {
         Self::new(ResumeTarget::Checkpoint(checkpoint))
     }

@@ -1,10 +1,10 @@
 //! Event consumption helpers that delegate execution and settlement to kernel.
 use futures::StreamExt;
-use std::{future::Future, sync::Arc};
+use std::future::Future;
 use zhir_core::{
     Result,
     error::Error,
-    run::{Checkpoint, Event},
+    run::{Event, RunCompletion},
 };
 use zhir_kernel::{Invocation, RunError, invocation::RunResult};
 
@@ -27,7 +27,7 @@ pub enum DriveError {
 pub async fn drive<F, Fut>(
     mut invocation: Invocation,
     mut handler: F,
-) -> std::result::Result<Arc<Checkpoint>, DriveError>
+) -> std::result::Result<RunCompletion, DriveError>
 where
     F: FnMut(Event) -> Fut,
     Fut: Future<Output = Result<()>>,

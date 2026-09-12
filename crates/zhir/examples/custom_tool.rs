@@ -52,7 +52,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             "Use echo",
         )]))?
         .result()
-        .await?;
+        .await?
+        .into_checkpoint();
     println!(
         "{}; {} tool call",
         checkpoint.state.kind(),

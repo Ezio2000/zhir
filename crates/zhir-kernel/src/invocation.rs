@@ -16,7 +16,7 @@ use zhir_core::{
     BoxFuture, Result,
     error::Error,
     model::{DeltaSink, ModelDelta},
-    run::{Checkpoint, Event, EventData, new_id},
+    run::{Checkpoint, Event, EventData, RunCompletion, new_id},
     tool::ProgressSink,
 };
 
@@ -26,7 +26,8 @@ pub struct RunError {
     pub error: Error,
     pub last_checkpoint: Option<Arc<Checkpoint>>,
 }
-pub type RunResult = std::result::Result<Arc<Checkpoint>, RunError>;
+pub type RunResult = std::result::Result<RunCompletion, RunError>;
+pub(crate) type EngineResult = std::result::Result<Arc<Checkpoint>, RunError>;
 struct EventState {
     sequence: u64,
     sender: Option<mpsc::UnboundedSender<Event>>,
@@ -142,6 +143,12 @@ impl Invocation {
             tokio::spawn(async move {
                 let result =
                     crate::engine::execute(config, request, receiver, emitter.clone()).await;
+                let result = result.and_then(|checkpoint| {
+                    RunCompletion::new(checkpoint.clone()).map_err(|error| RunError {
+                        error,
+                        last_checkpoint: Some(checkpoint),
+                    })
+                });
                 sender.send_replace(Some(result));
                 emitter.close();
             });

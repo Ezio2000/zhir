@@ -914,6 +914,9 @@
             }
           ]
         },
+        "runtime_tools": {
+          "$ref": "#/$defs/RuntimeToolSelection"
+        },
         "stream": {
           "type": "boolean"
         },
@@ -922,6 +925,7 @@
         }
       },
       "required": [
+        "runtime_tools",
         "limits",
         "model",
         "provider_tools",
@@ -1076,6 +1080,56 @@
             "wait_id",
             "content",
             "structured"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RuntimeToolSelection": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "all",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "only",
+              "type": "string"
+            },
+            "names": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "names"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "none",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
           ],
           "type": "object"
         }

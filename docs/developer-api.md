@@ -129,6 +129,9 @@ let model = TransformModel::new(inner, |mut request, context| async move {
 
 变换函数拿到上下文副本，只返回 ModelRequest；运行身份、截止时间、取消信号和观察器
 沿用原调用。函数在内层模型执行前完成，失败不会调用内层模型。
+使用 `.map_response(callback)` 顺序添加异步响应变换；只有响应变换时用
+`TransformModel::response(inner, callback)`。内层错误直接传播，各阶段检查取消并校验
+响应，最终响应变换不改写已发出的 delta。
 
 输入能力默认与内层模型相同。若变换把附件转换成文本，需要用 with_capabilities
 显式声明变换器可接受的输入；变换前后分别按外层和内层能力校验。放在重试包装器内侧时
@@ -148,11 +151,11 @@ let request = RunRequest::new([Message::user("run")])
     .context(context)
     .options(ModelOptions { temperature: Some(0.4), ..Default::default() })
     .response_format(output.format());
-let checkpoint = runtime.start(request)?.result().await?;
+let checkpoint = runtime.start(request)?.result().await?.into_checkpoint();
 ```
 
 Runtime 保存共享模型、工具目录、存储和策略资源，以及新运行的参数默认值。
-RunRequest 只覆盖显式设置的整字段：limits、model options、provider_tools、tool_choice、
+RunRequest 只覆盖显式设置的整字段：runtime_tools、limits、model options、provider_tools、tool_choice、
 response_format、stream；不会递归合并 JSON，也不会修改共享 Runtime。
 `without_response_format()` 显式清空格式；`run_options(options)` 一次覆盖全部参数。
 
@@ -164,11 +167,12 @@ Store 提交和轨迹校验拒绝中途更改参数；需要不同参数时开�
 ## 运行与结果
 
 ```rust
-let checkpoint = zhir::runs::drive(invocation, |event| async move {
+let result = zhir::runs::drive(invocation, |event| async move {
     handle_my_event(event).await
 }).await?;
 
-let report: Report = zhir::output::decode(&checkpoint)?;
+let checkpoint = result.checkpoint();
+let report: Report = zhir::output::decode(checkpoint)?;
 
 let ticket = SuspensionTicket::from_checkpoint(&checkpoint)?;
 let resumed = runtime.resume(
@@ -178,7 +182,8 @@ let resumed = runtime.resume(
 
 - drive 顺序消费事件，再返回结算结果。处理函数报错时取消并等待运行，返回
   DriveError::Observer { error, settled }，完整保留观察错误和实际运行结果。运行可能
-  在取消到达前已经完成；不把该情况改写成取消。State::Failed 仍按现有契约返回 checkpoint。
+  在取消到达前已经完成；不把该情况改写成取消。模型失败通过 RunCompletion 的
+  RunOutcome::Failed 返回，checkpoint 保留完整失败事实。
 - 慢处理函数仍面对有界、可丢弃的展示事件。需要完整 delta 观察时使用 ObservedModel。
   处理函数自身 I/O 的超时由用户负责；丢弃 drive future 会请求取消，但无法等待结算。
 - output::decode 只接受 Completed 的纯文本 JSON，拼接文本片段后严格反序列化。
@@ -204,13 +209,13 @@ let scripted = Arc::new(ScriptedModel::responses([
     ModelResponse::text("done"),
 ]));
 let runtime = Runtime::builder(scripted.clone()).build()?;
-let checkpoint = runtime.start(RunRequest::new([Message::user("run")]))?.result().await?;
+let checkpoint = runtime.start(RunRequest::new([Message::user("run")]))?.result().await?.into_checkpoint();
 assert_eq!(scripted.requests().len(), 1);
 assert_eq!(scripted.remaining(), 0);
 ```
 
-ScriptStep 可声明增量、响应或错误，队列耗尽明确失败。并发调用按取得锁的次序消费
-脚本；需要按请求数据匹配响应时使用 FunctionModel。RecordingModel 保存请求、run
+ScriptStep 可声明增量、响应或错误，队列耗尽明确失败。顺序模式中并发调用按取得锁的次序消费
+脚本；匹配模式用 `ScriptedModel::matching` 和 `ModelCase` 根据请求/上下文选择独立步骤队列。RecordingModel 保存请求、run
 和结果；未返回或被丢弃的调用保留 outcome: None。RecordingSink 可在指定的第 N 次
 写入记录后报错。RecordingStore 记录成功等待到的提交，按 run/revision 验证轨迹，
 重复的幂等提交核对一致性后计一次。
@@ -265,20 +270,25 @@ RuntimeToolCall、RuntimeTool 结果和外部回复一起保留。没有足够�
 
 ```rust
 let model = Arc::new(zhir::models::ConcurrencyLimitedModel::new(model, 8)?);
-let selected = zhir::runtime_tools::SelectedRuntimeTools::new(
-    catalog,
-    ["search", "read_file"],
-)?;
-let runtime = Runtime::builder(model).runtime_tools(Arc::new(selected)).build()?;
+let sources: Vec<Arc<dyn zhir::tool::RuntimeToolCatalogProvider>> = vec![local, project];
+let catalog = zhir::runtime_tools::CompositeRuntimeTools::new(sources);
+let runtime = Runtime::builder(model).runtime_tools(Arc::new(catalog)).build()?;
+let request = RunRequest::new([Message::user("run")])
+    .runtime_tools(zhir::tool::RuntimeToolSelection::only(["search", "read_file"]));
 ```
 
 ConcurrencyLimitedModel 的克隆共享同一个信号量。许可覆盖完整 Model::invoke，包括所有
 已等待的 delta sink 写入；取消、错误及丢弃 Future 均释放许可。排队和执行期间检查取消
 与单调截止时间。需要限制实际模型尝试时，将重试器放在限制器外侧，使退避不占许可。
 
-SelectedRuntimeTools 每次只打开一个底层目录快照，声明与绑定均来自该快照；目录后续
-变化不影响当前调用。空选择合法，重复、空名称或目录中不存在的名称明确报错。绑定返回
-的规格必须与快照相同。ProviderToolSpec 通过独立的 provider_tools 入口配置。
+RuntimeToolSelection 是 All / Only { names } / None。Only 的空列表选择零个工具；
+重复、空名称或目录中不存在的名称明确报错。选择随 RunOptions 固化和持久化。
+恢复时沿用选择值，资源由应用重建；所选名称缺失会失败，不扩大到当前默认目录。
+
+open_catalog 接收 CatalogContext，其中有 RunContext 和 Cancellation。组合目录依次打开
+各来源一次，并保留各自快照；重名错误携带来源下标。kernel 将选择应用到合并快照，
+模型声明与 bind 使用同一视图，绑定规格必须与快照一致。ProviderToolSpec 仍通过
+provider_tools 配置。RuntimeToolRegistry 继续用于注册具体 RuntimeTool。
 
 ## ProviderTool 接入
 
@@ -380,3 +390,88 @@ call id 可能在不同模型轮次重复。查询保留这些位置，不把不
 ProviderToolCall.output 是服务端产物，独立于模型的原生输入模态。模型只支持文本输入时，
 用户适配器仍可以返回音频、视频和文件，并按服务端引用回放。普通 User/Assistant 内容
 直接携带这些媒体时，仍执行模型输入能力校验。
+
+## 结束结果、结构化错误与上下文
+
+Invocation::result 和 runs::drive 返回 RunCompletion。它只保存一个已校验 checkpoint，
+outcome() 提供 Completed(content)、Suspended(ticket)、Failed(failure)、Limited(reason)
+四种视图。checkpoint() 借用 Arc，into_checkpoint() 显式取出。基础设施中断继续通过
+RunError 携带 error 和 last_checkpoint；Failed 并不等于基础设施错误。
+
+```rust
+let result = runtime.start(request)?.result().await?;
+match result.outcome() {
+    RunOutcome::Completed(content) => render(content),
+    RunOutcome::Suspended(ticket) => enqueue(ticket),
+    RunOutcome::Failed(failure) => report_failure(failure),
+    RunOutcome::Limited(reason) => report_limit(reason),
+}
+```
+
+Error::Resume 区分 StoreRequired、RunNotFound、StaleTicket、NotSuspended、NotActive、
+SelectorMismatch、MessagesNotAllowed、InvalidTicketIdentity。当前 head 已经结束也属于
+旧票据 StaleTicket；CAS 冲突仍为 Error::Conflict。Error::Catalog 包含缺失、未选择、
+重复及规格漂移；ValidationError 包含 Schema、Value（实例与 schema 路径）、Decode
+和 InputKind。调用方按类型处理，无需检查文案；自定义 Failure.code 仍由业务定义。
+
+```rust
+const JOB: ContextKey<JobContext> = ContextKey::new("app.job");
+let request = RunRequest::new(messages).context_value(JOB, job)?;
+let job = ctx.run.require(JOB)?;
+// RunContext::get 返回 Result<Option<T>>，缺失与 JSON null 分开。
+// ResumeRequest::context_value 追加恢复时的 metadata 更新。
+```
+
+ContextKey<T> 关联静态键名与 serde 类型。存储仍为 JSON metadata；空键、缺失、编码、
+解码错误分别可判断。该视图不改变 wire 格式，也不把 Runtime 变为业务泛型。
+
+## 函数式审批和重试策略
+
+```rust
+let policy = FunctionApprovalPolicy::per_call(review);
+// 整批决策：FunctionApprovalPolicy::batch(review_batch)
+let runtime = Runtime::builder(model).approval(Arc::new(policy)).build()?;
+```
+
+per_call 顺序调用并收集决定，batch 校验返回数量。暂停继续由 kernel 在完整批次上处理，
+错误直接传播，规则由调用方提供。
+
+```rust
+let policy = RetryPolicy::new(4)?.backoff(Backoff::exponential(
+    Duration::from_millis(100), Duration::from_secs(2),
+)?);
+let model = RetryingModel::new(model, policy.clone())?;
+let tool = RetryingTool::new(tool, policy)?;
+```
+
+次数包含首次调用。Backoff::fixed / exponential / custom 只计算等待时间；custom 接收
+从 1 开始的失败尝试次数。计数按每次调用独立。模型已发出增量后不会重试，工具仍要求
+幂等声明与可重试错误。退避响应取消和从运行上下文重建的单调截止时间；取消轮询间隔
+为 10ms，实际调度延迟取决于执行器。具体等待保留在 models/tools，core 不引入 Tokio。
+
+## 产物存储与匹配脚本
+
+```rust
+let artifacts = Arc::new(FilesystemArtifactStore::open("./data/artifacts").await?);
+let model = ArtifactModel::new(model, artifacts);
+```
+
+MemoryArtifactStore 在进程内保留产物。文件实现通过 artifacts-filesystem feature 引入，
+键映射为 SHA-256 文件标识，MIME/base64 保存在一个不可变 JSON 文件中。临时文件写完
+并同步后原子发布；同键同内容幂等，不同内容报 ArtifactError::Conflict。读取校验引用
+MIME，损坏与 I/O 错误分别返回。落盘在 blocking worker 中执行，被丢弃的 future 仍可能
+完成写入，未提交产物的回收由调用方负责。文件实现要求底层文件系统支持原子发布和同步。
+
+```rust
+let model = ScriptedModel::matching([
+    ModelCase::new("job-a")
+        .when(|input| input.run.run_id == "run-a")
+        .steps([ScriptStep::response(ModelResponse::text("done"))]),
+])?;
+// 运行测试……
+model.verify()?;
+```
+
+每个 case 有独立步骤队列。匹配和领取原子完成，异步 delta 在锁外执行。无匹配、多重
+匹配、脚本耗尽即时失败，verify 检查残余步骤和异常调用记录。取消或丢弃已经领取的步骤
+不会返还到队列。测试组件仅在 zhir-testing；条件、协议响应与业务适配由测试作者定义。

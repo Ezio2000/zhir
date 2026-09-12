@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 use zhir_core::{
     BoxFuture, Result,
     error::Error,
@@ -91,19 +91,11 @@ impl DeltaSink for Tracker {
 }
 pub struct RetryingModel {
     inner: Arc<dyn Model>,
-    attempts: usize,
-    delay: Duration,
+    policy: zhir_core::retry::RetryPolicy,
 }
 impl RetryingModel {
-    pub fn new(inner: Arc<dyn Model>, attempts: usize, delay: Duration) -> Result<Self> {
-        if attempts == 0 {
-            return Err(Error::Invalid("retry count must be positive".into()));
-        }
-        Ok(Self {
-            inner,
-            attempts,
-            delay,
-        })
+    pub fn new(inner: Arc<dyn Model>, policy: zhir_core::retry::RetryPolicy) -> Result<Self> {
+        Ok(Self { inner, policy })
     }
 }
 impl Model for RetryingModel {
@@ -116,8 +108,9 @@ impl Model for RetryingModel {
         context: ModelContext,
     ) -> BoxFuture<'_, Result<ModelResponse>> {
         Box::pin(async move {
-            for attempt in 0..self.attempts {
-                context.cancellation.check()?;
+            let deadline = crate::retry_wait::deadline(&context.run)?;
+            for attempt in 0..self.policy.max_attempts() {
+                crate::retry_wait::check(&context.cancellation, deadline)?;
                 let tracker = Arc::new(Tracker {
                     inner: context.deltas.clone(),
                     seen: false.into(),
@@ -127,12 +120,22 @@ impl Model for RetryingModel {
                 match self.inner.invoke(request.clone(), ctx).await {
                     Err(Error::Model(error))
                         if error.retryable
-                            && attempt + 1 < self.attempts
+                            && attempt + 1 < self.policy.max_attempts()
                             && !tracker.seen.load(std::sync::atomic::Ordering::Acquire) =>
                     {
-                        tokio::time::sleep(self.delay).await
+                        crate::retry_wait::wait(
+                            self.policy
+                                .delay_after(attempt + 1)
+                                .expect("remaining attempt"),
+                            &context.cancellation,
+                            deadline,
+                        )
+                        .await?
                     }
-                    result => return result,
+                    result => {
+                        crate::retry_wait::check(&context.cancellation, deadline)?;
+                        return result;
+                    }
                 }
             }
             unreachable!("positive attempts")

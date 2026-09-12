@@ -102,11 +102,16 @@ async fn contextual_factories_are_fallible_per_attempt_and_protocol_independent(
         ctx.run.metadata.insert("marker".into(), json!("caller"));
         let mut input = request(false);
         input.options.extra.insert("marker".into(), json!("caller"));
-        RetryingModel::new(Arc::new(model), 3, Duration::ZERO)
-            .unwrap()
-            .invoke(input, ctx)
-            .await
-            .unwrap();
+        RetryingModel::new(
+            Arc::new(model),
+            zhir_core::retry::RetryPolicy::new(3)
+                .unwrap()
+                .backoff(zhir_core::retry::Backoff::fixed(Duration::ZERO)),
+        )
+        .unwrap()
+        .invoke(input, ctx)
+        .await
+        .unwrap();
         assert_eq!(count.load(Ordering::SeqCst), 3);
         let sent = fixture.finish().await.unwrap();
         assert_eq!(sent.len(), 2);

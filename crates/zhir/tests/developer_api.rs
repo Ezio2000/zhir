@@ -181,7 +181,8 @@ async fn typed_tools_transforms_observers_and_recording_ports_compose_across_64_
                 },
             )
             .await
-            .unwrap();
+            .unwrap()
+            .into_checkpoint();
             assert_eq!(
                 zhir::output::decode::<Report>(&checkpoint).unwrap(),
                 Report { total: value * 2 }
@@ -225,7 +226,13 @@ async fn scripted_failures_sink_failures_and_exhaustion_remain_explicit() {
             first,
             ScriptStep::response(ModelResponse::text("done")),
         ]));
-        let model = RetryingModel::new(scripted.clone(), 3, Duration::ZERO).unwrap();
+        let model = RetryingModel::new(
+            scripted.clone(),
+            zhir_core::retry::RetryPolicy::new(3)
+                .unwrap()
+                .backoff(zhir_core::retry::Backoff::fixed(Duration::ZERO)),
+        )
+        .unwrap();
         let sink = Arc::new(RecordingSink::default());
         let mut ctx = context();
         ctx.deltas = Some(sink.clone());
@@ -256,11 +263,16 @@ async fn scripted_failures_sink_failures_and_exhaustion_remain_explicit() {
     let mut ctx = context();
     ctx.deltas = Some(sink.clone());
     assert!(
-        RetryingModel::new(scripted.clone(), 3, Duration::ZERO)
-            .unwrap()
-            .invoke(request(), ctx)
-            .await
-            .is_err()
+        RetryingModel::new(
+            scripted.clone(),
+            zhir_core::retry::RetryPolicy::new(3)
+                .unwrap()
+                .backoff(zhir_core::retry::Backoff::fixed(Duration::ZERO))
+        )
+        .unwrap()
+        .invoke(request(), ctx)
+        .await
+        .is_err()
     );
     assert_eq!(scripted.requests().len(), 1);
     assert_eq!(sink.deltas().len(), 1);
@@ -393,7 +405,7 @@ async fn drive_preserves_observer_failure_and_actual_settlement() {
     )
     .await
     .unwrap();
-    assert!(matches!(failed.state, State::Failed { .. }));
+    assert!(matches!(failed.outcome(), zhir::RunOutcome::Failed(_)));
     let runtime = Runtime::builder(Arc::new(ScriptedModel::responses([ModelResponse::text(
         "done",
     )])))
@@ -403,7 +415,7 @@ async fn drive_preserves_observer_failure_and_actual_settlement() {
         if matches!(event.data,EventData::CheckpointCommitted {ref state,..} if state=="completed") {Err(Error::Invalid("late observer".into()))} else {Ok(())}
     }).await.unwrap_err();
     assert!(
-        matches!(late,DriveError::Observer {settled:Ok(ref c),..} if matches!(c.state,State::Completed {..}))
+        matches!(late,DriveError::Observer {settled:Ok(ref c),..} if matches!(c.outcome(),zhir::RunOutcome::Completed(_)))
     );
 }
 #[tokio::test]
@@ -418,7 +430,8 @@ async fn output_decoding_is_strict_and_leaves_checkpoint_intact() {
         .unwrap()
         .result()
         .await
-        .unwrap();
+        .unwrap()
+        .into_checkpoint();
     let bytes = zhir::wire::encode_checkpoint(&original).unwrap();
     assert_eq!(zhir::output::decode::<Report>(&original).unwrap().total, 7);
     assert_eq!(zhir::wire::encode_checkpoint(&original).unwrap(), bytes);
@@ -486,7 +499,8 @@ async fn ticket_resume_uses_configured_store_and_does_not_retry_stale_heads() {
         .unwrap()
         .result()
         .await
-        .unwrap();
+        .unwrap()
+        .into_checkpoint();
     assert!(matches!(checkpoint.state, State::Suspended { .. }));
     let ticket = zhir::SuspensionTicket::from_checkpoint(&checkpoint).unwrap();
     let mut missing = ticket.clone();
@@ -512,7 +526,7 @@ async fn ticket_resume_uses_configured_store_and_does_not_retry_stale_heads() {
         || ResumeRequest::from_ticket(ticket.clone()).message(Message::external("answer"));
     let mut first = runtime.resume(request()).await.unwrap();
     let mut stale = runtime.resume(request()).await.unwrap();
-    let done = first.result().await.unwrap();
+    let done = first.result().await.unwrap().into_checkpoint();
     assert!(matches!(done.state, State::Completed { .. }));
     assert!(matches!(stale.result().await,Err(ref e) if matches!(e.error,Error::Conflict {..})));
     assert_eq!(scripted.requests().len(), 2);
@@ -611,7 +625,13 @@ async fn run_requests_isolate_all_options_and_persist_effective_values_across_96
                         }),
                 ),
             };
-            let c = runtime.start(request).unwrap().result().await.unwrap();
+            let c = runtime
+                .start(request)
+                .unwrap()
+                .result()
+                .await
+                .unwrap()
+                .into_checkpoint();
             assert!(matches!(c.state, State::Completed { .. }), "{:?}", c.state);
             match index % 3 {
                 0 => assert_eq!(&c.options, defaults),
@@ -745,7 +765,8 @@ async fn frozen_options_survive_continue_and_ticket_resume_with_different_runtim
         .unwrap()
         .result()
         .await
-        .unwrap();
+        .unwrap()
+        .into_checkpoint();
     let ticket = SuspensionTicket::from_checkpoint(&checkpoint).unwrap();
     let ticket: SuspensionTicket =
         serde_json::from_value(serde_json::to_value(ticket).unwrap()).unwrap();
@@ -780,7 +801,8 @@ async fn frozen_options_survive_continue_and_ticket_resume_with_different_runtim
         .unwrap()
         .result()
         .await
-        .unwrap();
+        .unwrap()
+        .into_checkpoint();
     assert_eq!(done.options.model.seed, Some(42));
     assert!(done.options.stream);
     assert_eq!(done.context.metadata["answer"], 7);
@@ -834,7 +856,8 @@ async fn reused_wait_identity_does_not_accept_a_previous_suspension_ticket() {
         .unwrap()
         .result()
         .await
-        .unwrap();
+        .unwrap()
+        .into_checkpoint();
     let old = zhir::SuspensionTicket::from_checkpoint(&first).unwrap();
     let second = runtime
         .resume(ResumeRequest::from_ticket(old.clone()).message(Message::external("first answer")))
@@ -842,7 +865,8 @@ async fn reused_wait_identity_does_not_accept_a_previous_suspension_ticket() {
         .unwrap()
         .result()
         .await
-        .unwrap();
+        .unwrap()
+        .into_checkpoint();
     let current = zhir::SuspensionTicket::from_checkpoint(&second).unwrap();
     assert_eq!(old.suspension, current.suspension);
     assert!(current.revision > old.revision);
@@ -861,6 +885,7 @@ async fn reused_wait_identity_does_not_accept_a_previous_suspension_ticket() {
             .result()
             .await
             .unwrap()
+            .into_checkpoint()
             .state,
         State::Completed { .. }
     ));

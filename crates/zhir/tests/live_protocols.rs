@@ -293,7 +293,11 @@ async fn tool_case(
         };
         *counts.entry(kind).or_default() += 1;
     }
-    let checkpoint = invocation.result().await.map_err(|error| error.error)?;
+    let checkpoint = invocation
+        .result()
+        .await
+        .map_err(|error| error.error)?
+        .into_checkpoint();
     let State::Completed { content } = &checkpoint.state else {
         return Err(Error::Protocol(format!(
             "run ended as {:?}",

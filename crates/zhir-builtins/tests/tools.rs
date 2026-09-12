@@ -24,7 +24,7 @@ async fn invoke(
     let name = tool.spec().name.clone();
     let registry = RuntimeToolRegistry::from_tools([tool])?;
     registry
-        .open_catalog()
+        .open_catalog(Default::default())
         .await?
         .bind(&RuntimeToolCall {
             id: "call".into(),
@@ -223,5 +223,13 @@ async fn custom_tools_do_not_require_builtins_at_runtime() {
             "hello",
         )]))
         .unwrap();
-    assert!(invocation.result().await.unwrap().state.terminal());
+    assert!(
+        invocation
+            .result()
+            .await
+            .unwrap()
+            .into_checkpoint()
+            .state
+            .terminal()
+    );
 }

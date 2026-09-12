@@ -35,7 +35,7 @@ async fn schema_binding_and_snapshot_are_shared_for_custom_tools() {
     let registry = RuntimeToolRegistry::new();
     registry.register(tool.clone()).unwrap();
     assert!(registry.register(tool).is_err());
-    let catalog = registry.open_catalog().await.unwrap();
+    let catalog = registry.open_catalog(Default::default()).await.unwrap();
     let call = RuntimeToolCall {
         id: "1".into(),
         name: "sum".into(),
@@ -67,7 +67,7 @@ async fn function_output_is_validated() {
         .unwrap(),
     ) as Arc<dyn RuntimeTool>;
     let registry = RuntimeToolRegistry::from_tools([tool]).unwrap();
-    let catalog = registry.open_catalog().await.unwrap();
+    let catalog = registry.open_catalog(Default::default()).await.unwrap();
     let call = RuntimeToolCall {
         id: "1".into(),
         name: "sum".into(),
@@ -130,9 +130,23 @@ fn flaky(idempotent: bool) -> (Arc<dyn RuntimeTool>, Arc<std::sync::atomic::Atom
 async fn retry_requires_idempotence_and_retries_transient_errors() {
     use std::{sync::atomic::Ordering, time::Duration};
     use zhir_tools::decorators::RetryingTool;
-    assert!(RetryingTool::new(flaky(false).0, 2, Duration::ZERO).is_err());
+    assert!(
+        RetryingTool::new(
+            flaky(false).0,
+            zhir_core::retry::RetryPolicy::new(2)
+                .unwrap()
+                .backoff(zhir_core::retry::Backoff::fixed(Duration::ZERO))
+        )
+        .is_err()
+    );
     let (inner, attempts) = flaky(true);
-    let tool = RetryingTool::new(inner, 2, Duration::ZERO).unwrap();
+    let tool = RetryingTool::new(
+        inner,
+        zhir_core::retry::RetryPolicy::new(2)
+            .unwrap()
+            .backoff(zhir_core::retry::Backoff::fixed(Duration::ZERO)),
+    )
+    .unwrap();
     assert!(tool.invoke(call(), context()).await.is_ok());
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
 }

@@ -60,7 +60,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             "Start a project",
         )]))?
         .result()
-        .await?;
+        .await?
+        .into_checkpoint();
     assert!(matches!(suspended.state, State::Suspended { .. }));
     println!(
         "{} at revision {}",
@@ -89,7 +90,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         )
         .await?
         .result()
-        .await?;
+        .await?
+        .into_checkpoint();
     assert!(matches!(checkpoint.state, State::Completed { .. }));
     assert_eq!(checkpoint.metrics.runtime_tool_calls, 1);
     println!(

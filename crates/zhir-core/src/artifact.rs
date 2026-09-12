@@ -8,7 +8,8 @@ pub struct ArtifactRef {
     pub id: String,
     pub mime_type: String,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ArtifactContent {
     pub mime_type: String,
     pub base64: String,

@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 use zhir_core::{
     Result,
-    error::Error,
+    error::{Error, ResumeError},
     message::Message,
     model::Model,
     run::{
@@ -133,9 +133,7 @@ impl Runtime {
     pub fn continue_from(&self, checkpoint: Arc<Checkpoint>) -> Result<Invocation> {
         checkpoint.validate()?;
         if checkpoint.state.active().is_none() {
-            return Err(Error::Invalid(
-                "continue requires an active checkpoint".into(),
-            ));
+            return Err(ResumeError::NotActive.into());
         }
         Ok(Invocation::new(
             self.config.clone(),
@@ -147,13 +145,16 @@ impl Runtime {
             ResumeTarget::Checkpoint(checkpoint) => checkpoint.clone(),
             ResumeTarget::Ticket(ticket) => {
                 ticket.validate()?;
-                let store = self.config.store.as_ref().ok_or_else(|| {
-                    Error::Invalid("ticket resume requires a configured store".into())
+                let store = self
+                    .config
+                    .store
+                    .as_ref()
+                    .ok_or(Error::Resume(ResumeError::StoreRequired))?;
+                let checkpoint = store.load_head(&ticket.run_id).await?.ok_or_else(|| {
+                    Error::Resume(ResumeError::RunNotFound {
+                        run_id: ticket.run_id.clone(),
+                    })
                 })?;
-                let checkpoint = store
-                    .load_head(&ticket.run_id)
-                    .await?
-                    .ok_or_else(|| Error::Invalid(format!("run not found: {}", ticket.run_id)))?;
                 ticket.check(&checkpoint)?;
                 checkpoint
             }
@@ -164,16 +165,14 @@ impl Runtime {
             suspension,
         } = &checkpoint.state
         else {
-            return Err(Error::Invalid(
-                "resume requires a suspended checkpoint".into(),
-            ));
+            return Err(ResumeError::NotSuspended.into());
         };
         if request
             .selector
             .as_ref()
             .is_some_and(|s| !s.matches(suspension))
         {
-            return Err(Error::Invalid("suspension selector mismatch".into()));
+            return Err(ResumeError::SelectorMismatch.into());
         }
         if !request.messages.is_empty()
             && !matches!(
@@ -183,9 +182,7 @@ impl Runtime {
                 }
             )
         {
-            return Err(Error::Invalid(
-                "resume messages require idle planning".into(),
-            ));
+            return Err(ResumeError::MessagesNotAllowed.into());
         }
         let history = checkpoint.history.append(request.messages.clone())?;
         validate_history(&history, Some(resume_to))?;

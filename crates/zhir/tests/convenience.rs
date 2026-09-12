@@ -23,7 +23,7 @@ use zhir::{
     models::{ConcurrencyLimitedModel, FunctionModel},
     output::JsonOutput,
     run::{Checkpoint, Fact, History, HistoryReducer, State},
-    runtime_tools::{RuntimeToolRegistry, SelectedRuntimeTools, TypedTool},
+    runtime_tools::{RuntimeToolRegistry, TypedTool},
     tool::{Execution, RuntimeToolCall, RuntimeToolCatalogProvider, RuntimeToolInput},
 };
 
@@ -93,10 +93,11 @@ async fn output_contract_uses_one_schema_and_reports_validation_stage() {
         .unwrap()
         .result()
         .await
-        .unwrap();
+        .unwrap()
+        .into_checkpoint();
     assert_eq!(output.decode(&completed).unwrap(), Report { count: 3 });
     for (text, stage) in [
-        (r#"{"count":11}"#, "schema at /count"),
+        (r#"{"count":11}"#, "schema validation at /count"),
         (r#"{"count":3,"extra":1}"#, "schema"),
         (r#"{"count":3} trailing"#, "JSON"),
     ] {
@@ -104,13 +105,20 @@ async fn output_contract_uses_one_schema_and_reports_validation_stage() {
         modified.state = State::Completed {
             content: vec![zhir::message::Content::text(text)],
         };
-        assert!(
-            output
-                .decode(&modified)
-                .unwrap_err()
-                .to_string()
-                .contains(stage)
-        );
+        let error = output.decode(&modified).unwrap_err();
+        match stage {
+            "JSON" => assert!(matches!(
+                error,
+                Error::Validation(zhir::error::ValidationError::Decode { .. })
+            )),
+            "schema validation at /count" => assert!(
+                matches!(error, Error::Validation(zhir::error::ValidationError::Value { path, .. }) if path == "/count")
+            ),
+            _ => assert!(matches!(
+                error,
+                Error::Validation(zhir::error::ValidationError::Value { .. })
+            )),
+        }
     }
     assert!(JsonOutput::<Report>::new("").is_err());
     assert!(
@@ -285,11 +293,20 @@ fn typed(name: &str) -> Arc<dyn zhir::tool::RuntimeTool> {
 #[tokio::test]
 async fn selected_catalogs_bind_only_the_same_snapshot() {
     let registry = Arc::new(RuntimeToolRegistry::from_tools([typed("a")]).unwrap());
-    let selected = SelectedRuntimeTools::new(registry.clone(), ["a"]).unwrap();
-    let first = selected.open_catalog().await.unwrap();
+    let selected = zhir::tool::RuntimeToolSelection::only(["a"]);
+    let first = selected
+        .select(registry.open_catalog(Default::default()).await.unwrap())
+        .unwrap();
     registry.register(typed("b")).unwrap();
     assert_eq!(first.specs().len(), 1);
-    assert_eq!(selected.open_catalog().await.unwrap().specs().len(), 1);
+    assert_eq!(
+        selected
+            .select(registry.open_catalog(Default::default()).await.unwrap())
+            .unwrap()
+            .specs()
+            .len(),
+        1
+    );
     let call = |name: &str| RuntimeToolCall {
         id: "call".into(),
         name: name.into(),
@@ -307,12 +324,14 @@ async fn selected_catalogs_bind_only_the_same_snapshot() {
         .await
         .unwrap();
     assert_eq!(result.outcome.structured().unwrap()["count"], 3);
-    assert!(SelectedRuntimeTools::new(registry.clone(), ["a", "a"]).is_err());
     assert!(
-        SelectedRuntimeTools::new(registry, ["missing"])
-            .unwrap()
-            .open_catalog()
-            .await
+        zhir::tool::RuntimeToolSelection::only(["a", "a"])
+            .validate()
+            .is_err()
+    );
+    assert!(
+        zhir::tool::RuntimeToolSelection::only(["missing"])
+            .select(registry.open_catalog(Default::default()).await.unwrap())
             .is_err()
     );
 }

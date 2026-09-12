@@ -7,7 +7,8 @@
 ))]
 pub use zhir_builtins as builtins;
 pub use zhir_core as core;
-pub use zhir_core::{BoxFuture, Result, error, message, model, run, storage, tool, wire};
+pub use zhir_core::run::{RunCompletion, RunOutcome};
+pub use zhir_core::{BoxFuture, Result, error, message, model, retry, run, storage, tool, wire};
 pub use zhir_kernel as kernel;
 pub use zhir_kernel::{
     Invocation, ResumeRequest, RunError, RunOptions, RunRequest, Runtime, RuntimeBuilder,
@@ -20,6 +21,7 @@ pub mod output;
 pub mod runs;
 #[cfg(any(
     feature = "memory",
+    feature = "artifacts-filesystem",
     feature = "sqlite",
     feature = "mysql",
     feature = "redis"

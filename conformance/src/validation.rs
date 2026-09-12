@@ -58,7 +58,8 @@ pub async fn run(case: &Value) -> Result<()> {
                 )]))?
                 .result()
                 .await
-                .map_err(|e| e.error)?;
+                .map_err(|e| e.error)?
+                .into_checkpoint();
             let mut checkpoints = store.checkpoints();
             let mut after = checkpoints[1].as_ref().clone();
             if value["fault"] == "revision_gap" {
@@ -102,7 +103,8 @@ mod tests {
         .unwrap()
         .result()
         .await
-        .unwrap();
+        .unwrap()
+        .into_checkpoint();
         let trace = store.checkpoints();
         zhir_kernel::diagnostics::verify_trace(&trace).unwrap();
         for fault in [

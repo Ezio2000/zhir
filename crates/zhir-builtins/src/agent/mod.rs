@@ -157,13 +157,15 @@ impl AgentBackend for InMemoryAgentBackend {
                 let completed = match invocation.result().await {
                     Ok(checkpoint) => AgentSnapshot {
                         id,
-                        status: checkpoint.state.kind().into(),
-                        content: if let State::Completed { content } = &checkpoint.state {
+                        status: checkpoint.checkpoint().state.kind().into(),
+                        content: if let State::Completed { content } =
+                            &checkpoint.checkpoint().state
+                        {
                             content.clone()
                         } else {
                             vec![]
                         },
-                        error: if let State::Failed { error } = &checkpoint.state {
+                        error: if let State::Failed { error } = &checkpoint.checkpoint().state {
                             Some(error.message.clone())
                         } else {
                             None

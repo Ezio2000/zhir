@@ -1,4 +1,8 @@
+mod completion;
+mod context;
 mod history;
+pub use completion::{RunCompletion, RunOutcome};
+pub use context::ContextKey;
 mod options;
 mod request;
 use crate::{

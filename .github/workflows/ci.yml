@@ -19,6 +19,7 @@ jobs:
       - run: cargo run -p zhir-conformance --bin schemas -- --check
       - run: cargo run -p zhir --no-default-features --example custom_tool --features models,typed-tools
       - run: cargo test -p zhir --no-default-features --features models,typed-tools,memory --test developer_api
+      - run: cargo test -p zhir --no-default-features --features models,typed-tools,memory --test consumer_ten
       - run: cargo test -p zhir --no-default-features --features models,typed-tools,typed-output,memory --test convenience
       - run: cargo run -p zhir --example resume --features interaction,memory
       - run: cargo package --workspace --allow-dirty --locked
@@ -26,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        feature: [default, tools, typed-tools, typed-output, models, filesystem, shell, interaction, agent, openai-chat, openai-responses, anthropic, memory, sqlite, mysql, redis]
+        feature: [default, tools, typed-tools, typed-output, models, filesystem, shell, interaction, agent, openai-chat, openai-responses, anthropic, memory, sqlite, mysql, redis, artifacts-filesystem]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master

@@ -18,3 +18,6 @@ zhir-testing = { path = "../zhir/crates/zhir-testing", features = ["http"] }
 ```
 
 [Developer guide](../../docs/developer-api.md) · [Test instructions](../../docs/testing.md)
+
+ScriptedModel::matching accepts named ModelCase matchers with independent step
+queues. verify checks unconsumed expectations and unexpected/ambiguous calls.

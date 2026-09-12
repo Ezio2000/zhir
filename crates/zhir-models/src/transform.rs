@@ -1,45 +1,58 @@
-//! Asynchronous request preparation owned by the caller.
+//! Asynchronous request and response transformations owned by the caller.
 use std::{future::Future, sync::Arc};
 use zhir_core::{
     BoxFuture, Result,
     model::{Capabilities, Model, ModelContext, ModelRequest, ModelResponse},
 };
+type Prepare =
+    dyn Fn(ModelRequest, ModelContext) -> BoxFuture<'static, Result<ModelRequest>> + Send + Sync;
+type MapResponse =
+    dyn Fn(ModelResponse, ModelContext) -> BoxFuture<'static, Result<ModelResponse>> + Send + Sync;
 
-/// Prepare a request before the inner model is invoked, using the same context.
-///
-/// The transform receives a context clone and returns only the request. Deadlines,
-/// cancellation, run identity and the downstream sink remain owned by the caller.
-/// No background task is started. Like other Model decorators, placement relative
-/// to RetryingModel determines whether preparation happens per attempt or per call.
-/// The input capabilities default to the inner model's. Declare different input
-/// capabilities explicitly when preparation converts modalities or features.
-pub struct TransformModel<F> {
+/// Transformations run in declaration order and retain the original run context.
+/// Placement relative to retry determines per-attempt versus per-call execution.
+/// Response maps do not rewrite already emitted deltas.
+pub struct TransformModel {
     inner: Arc<dyn Model>,
     capabilities: Capabilities,
-    transform: F,
+    prepare: Arc<Prepare>,
+    responses: Vec<Arc<MapResponse>>,
 }
-impl<F> TransformModel<F> {
-    pub fn new<Fut>(inner: Arc<dyn Model>, transform: F) -> Self
+impl TransformModel {
+    pub fn new<F, Fut>(inner: Arc<dyn Model>, prepare: F) -> Self
     where
-        F: Fn(ModelRequest, ModelContext) -> Fut + Send + Sync,
+        F: Fn(ModelRequest, ModelContext) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<ModelRequest>> + Send + 'static,
     {
         Self {
             capabilities: inner.capabilities().clone(),
             inner,
-            transform,
+            prepare: Arc::new(move |r, c| Box::pin(prepare(r, c))),
+            responses: vec![],
         }
+    }
+    pub fn response<F, Fut>(inner: Arc<dyn Model>, transform: F) -> Self
+    where
+        F: Fn(ModelResponse, ModelContext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<ModelResponse>> + Send + 'static,
+    {
+        Self::new(inner, |request, _| async move { Ok(request) }).map_response(transform)
+    }
+    pub fn map_response<F, Fut>(mut self, transform: F) -> Self
+    where
+        F: Fn(ModelResponse, ModelContext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<ModelResponse>> + Send + 'static,
+    {
+        self.responses
+            .push(Arc::new(move |r, c| Box::pin(transform(r, c))));
+        self
     }
     pub fn with_capabilities(mut self, capabilities: Capabilities) -> Self {
         self.capabilities = capabilities;
         self
     }
 }
-impl<F, Fut> Model for TransformModel<F>
-where
-    F: Fn(ModelRequest, ModelContext) -> Fut + Send + Sync,
-    Fut: Future<Output = Result<ModelRequest>> + Send + 'static,
-{
+impl Model for TransformModel {
     fn capabilities(&self) -> &Capabilities {
         &self.capabilities
     }
@@ -51,13 +64,17 @@ where
         Box::pin(async move {
             context.cancellation.check()?;
             request.validate(&self.capabilities)?;
-            let request = (self.transform)(request, context.clone()).await?;
+            let request = (self.prepare)(request, context.clone()).await?;
             context.cancellation.check()?;
             request.validate(self.inner.capabilities())?;
-            let cancellation = context.cancellation.clone();
-            let response = self.inner.invoke(request, context).await?;
-            cancellation.check()?;
+            let mut response = self.inner.invoke(request, context.clone()).await?;
+            context.cancellation.check()?;
             response.validate()?;
+            for transform in &self.responses {
+                response = transform(response, context.clone()).await?;
+                context.cancellation.check()?;
+                response.validate()?;
+            }
             Ok(response)
         })
     }

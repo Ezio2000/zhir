@@ -155,7 +155,8 @@ async fn consumer_transcripts_and_typed_review_compose_without_production_change
                 .unwrap()
                 .result()
                 .await
-                .unwrap();
+                .unwrap()
+                .into_checkpoint();
             assert!(matches!(checkpoint.state, State::Suspended { .. }));
             assert_eq!(checkpoint.metrics.runtime_tool_calls, 1);
             assert_eq!(
@@ -181,6 +182,7 @@ async fn consumer_transcripts_and_typed_review_compose_without_production_change
                 .result()
                 .await
                 .unwrap()
+                .into_checkpoint()
         }
     }))
     .await;

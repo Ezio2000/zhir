@@ -221,7 +221,10 @@ pub async fn drain(
     while let Some(event) = events.next().await {
         summary.record(&event);
     }
-    (invocation.result().await, summary)
+    (
+        invocation.result().await.map(|r| r.into_checkpoint()),
+        summary,
+    )
 }
 pub fn text(content: &[Content]) -> String {
     content.iter().filter_map(Content::as_text).collect()
