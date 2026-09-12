@@ -1,0 +1,86 @@
+{
+  "$defs": {
+    "Execution": {
+      "additionalProperties": false,
+      "properties": {
+        "idempotent": {
+          "type": "boolean"
+        },
+        "parallel": {
+          "type": "boolean"
+        },
+        "read_only": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "parallel",
+        "read_only",
+        "idempotent"
+      ],
+      "type": "object"
+    },
+    "InputSpec": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "structured",
+              "type": "string"
+            },
+            "schema": true
+          },
+          "required": [
+            "kind",
+            "schema"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "format": true,
+            "kind": {
+              "const": "freeform",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "description": {
+      "type": "string"
+    },
+    "execution": {
+      "$ref": "#/$defs/Execution",
+      "default": {
+        "idempotent": false,
+        "parallel": false,
+        "read_only": false
+      }
+    },
+    "input": {
+      "$ref": "#/$defs/InputSpec"
+    },
+    "name": {
+      "type": "string"
+    },
+    "output_schema": true
+  },
+  "required": [
+    "name",
+    "description",
+    "input"
+  ],
+  "title": "RuntimeToolSpec",
+  "type": "object"
+}

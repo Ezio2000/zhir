@@ -1,0 +1,66 @@
+[package]
+name = "zhir"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Composable Rust Agent SDK"
+
+[lints]
+workspace = true
+
+[dependencies]
+zhir-core.workspace = true
+zhir-kernel.workspace = true
+zhir-tools = { workspace = true, optional = true }
+zhir-builtins = { workspace = true, optional = true }
+zhir-models = { workspace = true, optional = true }
+zhir-storage = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+schemars = { workspace = true, optional = true }
+jsonschema = { workspace = true, optional = true }
+
+[features]
+default = []
+typed-output = ["dep:schemars", "dep:jsonschema"]
+tools = ["dep:zhir-tools"]
+typed-tools = ["tools", "zhir-tools/typed"]
+models = ["dep:zhir-models"]
+filesystem = ["tools", "dep:zhir-builtins", "zhir-builtins/filesystem"]
+shell = ["tools", "dep:zhir-builtins", "zhir-builtins/shell"]
+interaction = ["tools", "dep:zhir-builtins", "zhir-builtins/interaction"]
+agent = ["tools", "dep:zhir-builtins", "zhir-builtins/agent"]
+openai-chat = ["models", "zhir-models/openai-chat"]
+openai-responses = ["models", "zhir-models/openai-responses"]
+anthropic = ["models", "zhir-models/anthropic"]
+memory = ["dep:zhir-storage"]
+sqlite = ["dep:zhir-storage", "zhir-storage/sqlite"]
+mysql = ["dep:zhir-storage", "zhir-storage/mysql"]
+redis = ["dep:zhir-storage", "zhir-storage/redis"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["fs"] }
+schemars.workspace = true
+zhir-testing = { workspace = true, features = ["http"] }
+tempfile.workspace = true
+reqwest = { workspace = true, features = ["multipart"] }
+base64 = "0.22"
+
+[[example]]
+name = "chat"
+required-features = ["openai-chat", "sqlite"]
+
+[[example]]
+name = "custom_tool"
+required-features = ["typed-tools", "models"]
+
+[[example]]
+name = "resume"
+required-features = ["interaction", "memory"]
+
+[[test]]
+name = "live_protocols"
+required-features = ["tools", "openai-chat", "openai-responses", "anthropic"]

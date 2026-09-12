@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "name": "tools_pending_requires_calls",
+  "kind": "validation",
+  "target": "state",
+  "value": {
+    "kind": "runtime_tools_pending",
+    "provider_turn_pending": false,
+    "calls": []
+  },
+  "valid": false
+}

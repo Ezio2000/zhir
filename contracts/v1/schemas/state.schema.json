@@ -1,0 +1,458 @@
+{
+  "$defs": {
+    "ActiveState": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "planning",
+              "type": "string"
+            },
+            "provider_turn_pending": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "provider_turn_pending"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "calls": {
+              "items": {
+                "$ref": "#/$defs/RuntimeToolCall"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "runtime_tools_pending",
+              "type": "string"
+            },
+            "provider_turn_pending": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "calls",
+            "provider_turn_pending"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Content": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "text",
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "image",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/MediaSource"
+            }
+          },
+          "required": [
+            "kind",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "audio",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/MediaSource"
+            }
+          },
+          "required": [
+            "kind",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "video",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/MediaSource"
+            }
+          },
+          "required": [
+            "kind",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "file",
+              "type": "string"
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "$ref": "#/$defs/MediaSource"
+            }
+          },
+          "required": [
+            "kind",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": true,
+            "kind": {
+              "const": "opaque",
+              "type": "string"
+            },
+            "provider": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "provider",
+            "data"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Failure": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "retryable": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "LimitReason": {
+      "enum": [
+        "deadline",
+        "planning_steps",
+        "runtime_tool_calls",
+        "total_tokens"
+      ],
+      "type": "string"
+    },
+    "MediaSource": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "url",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "url"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "base64": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "inline",
+              "type": "string"
+            },
+            "mime_type": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "mime_type",
+            "base64"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "artifact",
+              "type": "string"
+            },
+            "mime_type": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "mime_type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RuntimeToolCall": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "input": {
+          "$ref": "#/$defs/RuntimeToolInput"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "input"
+      ],
+      "type": "object"
+    },
+    "RuntimeToolInput": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "structured",
+              "type": "string"
+            },
+            "value": true
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "freeform",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Suspension": {
+      "additionalProperties": false,
+      "properties": {
+        "metadata": {
+          "additionalProperties": true,
+          "default": {},
+          "type": "object"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "wait_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "reason",
+        "source"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "planning",
+          "type": "string"
+        },
+        "provider_turn_pending": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind",
+        "provider_turn_pending"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "calls": {
+          "items": {
+            "$ref": "#/$defs/RuntimeToolCall"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "const": "runtime_tools_pending",
+          "type": "string"
+        },
+        "provider_turn_pending": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind",
+        "calls",
+        "provider_turn_pending"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "suspended",
+          "type": "string"
+        },
+        "resume_to": {
+          "$ref": "#/$defs/ActiveState"
+        },
+        "suspension": {
+          "$ref": "#/$defs/Suspension"
+        }
+      },
+      "required": [
+        "kind",
+        "resume_to",
+        "suspension"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "items": {
+            "$ref": "#/$defs/Content"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "const": "completed",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "content"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/Failure"
+        },
+        "kind": {
+          "const": "failed",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "error"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "limited",
+          "type": "string"
+        },
+        "reason": {
+          "$ref": "#/$defs/LimitReason"
+        }
+      },
+      "required": [
+        "kind",
+        "reason"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "State"
+}

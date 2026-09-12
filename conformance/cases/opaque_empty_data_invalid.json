@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "name": "opaque_empty_data_invalid",
+  "kind": "validation",
+  "target": "message",
+  "value": {
+    "role": "user",
+    "content": [
+      {
+        "kind": "opaque",
+        "provider": "fixture",
+        "data": {}
+      }
+    ]
+  },
+  "valid": false
+}

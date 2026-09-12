@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "name": "deadline_precedes_tool_pause",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "kind": "text",
+                "text": "deadline wins"
+              }
+            ]
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "output": [
+                {
+                  "kind": "runtime_tool_call",
+                  "call": {
+                    "id": "call-1",
+                    "name": "delayed_echo",
+                    "input": {
+                      "kind": "structured",
+                      "value": {
+                        "delay": 0.1,
+                        "text": "too late"
+                      }
+                    }
+                  }
+                }
+              ],
+              "usage": {},
+              "provider_turn_pending": false,
+              "provider_data": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "finish_reason": "runtime_tool_calls"
+            }
+          },
+          "deltas": []
+        }
+      ],
+      "limits": {
+        "elapsed_ms": 30,
+        "max_runtime_tool_concurrency": 1,
+        "max_runtime_tool_batch_size": 1
+      },
+      "actions": [
+        {
+          "when": {
+            "event_kind": "runtime_tool_started",
+            "occurrence": 1
+          },
+          "command": {
+            "kind": "pause",
+            "suspension": {
+              "reason": "host_pause",
+              "source": "host",
+              "wait_id": null,
+              "metadata": {}
+            }
+          }
+        }
+      ],
+      "expected": {
+        "status": "limited",
+        "revision": 2,
+        "planning_steps": 1,
+        "runtime_tool_calls": 0,
+        "limit_reason": "deadline",
+        "event_counts": {
+          "runtime_tool_started": 1,
+          "runtime_tool_finished": 0
+        },
+        "fact_kinds": [
+          "started",
+          "model_turn",
+          "control"
+        ],
+        "message_roles": [
+          "user",
+          "assistant"
+        ]
+      }
+    }
+  ]
+}

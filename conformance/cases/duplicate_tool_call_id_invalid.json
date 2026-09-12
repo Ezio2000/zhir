@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "name": "duplicate_tool_call_id_invalid",
+  "kind": "validation",
+  "target": "message",
+  "value": {
+    "role": "assistant",
+    "output": [
+      {
+        "kind": "runtime_tool_call",
+        "call": {
+          "id": "duplicate",
+          "name": "echo",
+          "input": {
+            "kind": "structured",
+            "value": {}
+          }
+        }
+      },
+      {
+        "kind": "runtime_tool_call",
+        "call": {
+          "id": "duplicate",
+          "name": "echo",
+          "input": {
+            "kind": "structured",
+            "value": {}
+          }
+        }
+      }
+    ],
+    "provider_data": null
+  },
+  "valid": false
+}

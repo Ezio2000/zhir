@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "name": "history_rewrite_before_model",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "kind": "text",
+                "text": "long history"
+              }
+            ]
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "output": [
+                {
+                  "kind": "content",
+                  "content": {
+                    "kind": "text",
+                    "text": "summarized"
+                  }
+                }
+              ],
+              "usage": {},
+              "provider_turn_pending": false,
+              "provider_data": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "finish_reason": "end_turn"
+            }
+          },
+          "deltas": []
+        }
+      ],
+      "history_rewrite": {
+        "trigger_history_count": 1,
+        "messages": [
+          {
+            "role": "system",
+            "content": [
+              {
+                "kind": "text",
+                "text": "summary"
+              }
+            ]
+          }
+        ],
+        "reason": "compact",
+        "metadata": {
+          "source": "fixture"
+        }
+      },
+      "expected": {
+        "status": "completed",
+        "revision": 2,
+        "planning_steps": 1,
+        "runtime_tool_calls": 0,
+        "final_text": "summarized",
+        "model_request_roles": [
+          [
+            "system"
+          ]
+        ],
+        "fact_kinds": [
+          "started",
+          "history_rewrite",
+          "model_turn"
+        ],
+        "message_roles": [
+          "system",
+          "assistant"
+        ]
+      }
+    }
+  ]
+}

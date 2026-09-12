@@ -1,0 +1,161 @@
+{
+  "version": 1,
+  "name": "approval_policy_guards",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "approval_decisions": {
+        "other": {
+          "call_id": "other",
+          "kind": "allow"
+        }
+      },
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "kind": "text",
+                "text": "missing decision"
+              }
+            ]
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "output": [
+                {
+                  "kind": "runtime_tool_call",
+                  "call": {
+                    "id": "call-1",
+                    "name": "echo",
+                    "input": {
+                      "kind": "structured",
+                      "value": {
+                        "text": "never"
+                      }
+                    }
+                  }
+                }
+              ],
+              "usage": {},
+              "provider_turn_pending": false,
+              "provider_data": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "finish_reason": "runtime_tool_calls"
+            }
+          },
+          "deltas": []
+        }
+      ],
+      "expected": {
+        "status": "failed",
+        "revision": 2,
+        "planning_steps": 1,
+        "runtime_tool_calls": 0,
+        "error_code": "protocol",
+        "event_counts": {
+          "approval_requested": 1,
+          "approval_decided": 0
+        },
+        "forbidden_event_kinds": [
+          "runtime_tool_started",
+          "runtime_tool_finished"
+        ],
+        "fact_kinds": [
+          "started",
+          "model_turn",
+          "control"
+        ],
+        "message_roles": [
+          "user",
+          "assistant"
+        ]
+      }
+    },
+    {
+      "approval_decisions": {
+        "call-2": {
+          "call_id": "wrong",
+          "kind": "allow"
+        }
+      },
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "kind": "text",
+                "text": "mismatched decision"
+              }
+            ]
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "output": [
+                {
+                  "kind": "runtime_tool_call",
+                  "call": {
+                    "id": "call-2",
+                    "name": "echo",
+                    "input": {
+                      "kind": "structured",
+                      "value": {
+                        "text": "never"
+                      }
+                    }
+                  }
+                }
+              ],
+              "usage": {},
+              "provider_turn_pending": false,
+              "provider_data": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "finish_reason": "runtime_tool_calls"
+            }
+          },
+          "deltas": []
+        }
+      ],
+      "expected": {
+        "status": "failed",
+        "revision": 2,
+        "planning_steps": 1,
+        "runtime_tool_calls": 0,
+        "error_code": "protocol",
+        "event_counts": {
+          "approval_requested": 1,
+          "approval_decided": 0
+        },
+        "forbidden_event_kinds": [
+          "runtime_tool_started",
+          "runtime_tool_finished"
+        ],
+        "fact_kinds": [
+          "started",
+          "model_turn",
+          "control"
+        ],
+        "message_roles": [
+          "user",
+          "assistant"
+        ]
+      }
+    }
+  ]
+}

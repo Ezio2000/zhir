@@ -1,0 +1,36 @@
+[package]
+name = "zhir-builtins"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Filesystem, shell, interaction and child-agent tools for zhir"
+
+[lints]
+workspace = true
+
+[dependencies]
+zhir-core.workspace = true
+zhir-tools.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+zhir-kernel = { workspace = true, optional = true }
+fancy-regex = { version = "0.16", optional = true }
+globset = { version = "0.4", optional = true }
+walkdir = { version = "2", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.30", features = ["signal", "process"], optional = true }
+
+[features]
+default = []
+filesystem = ["dep:fancy-regex", "dep:globset", "dep:walkdir", "tokio/fs"]
+shell = ["tokio/process", "tokio/io-util", "dep:nix"]
+interaction = []
+agent = ["dep:zhir-kernel"]
+
+[dev-dependencies]
+tempfile.workspace = true

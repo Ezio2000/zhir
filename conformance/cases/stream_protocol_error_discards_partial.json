@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "name": "stream_protocol_error_discards_partial",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "kind": "text",
+                "text": "bad stream"
+              }
+            ]
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "deltas": [
+            {
+              "kind": "text",
+              "output_index": 0,
+              "text": "partial"
+            },
+            {
+              "kind": "text",
+              "output_index": 0,
+              "text": "invalid"
+            }
+          ],
+          "outcome": {
+            "kind": "error",
+            "error": {
+              "code": "model_protocol_error",
+              "message": "fixture stream protocol error",
+              "retryable": false
+            }
+          }
+        }
+      ],
+      "expected": {
+        "status": "failed",
+        "revision": 1,
+        "planning_steps": 0,
+        "runtime_tool_calls": 0,
+        "error_code": "protocol",
+        "event_counts": {
+          "model_delta": 2
+        },
+        "fact_kinds": [
+          "started",
+          "control"
+        ],
+        "message_roles": [
+          "user"
+        ]
+      }
+    }
+  ]
+}

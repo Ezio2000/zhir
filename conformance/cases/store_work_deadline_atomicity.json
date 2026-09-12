@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "name": "store_work_deadline_atomicity",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "store_delay": {
+        "delay_seconds": 0.1,
+        "fact_kind": "model_turn"
+      },
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "kind": "text",
+                "text": "slow commit"
+              }
+            ]
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "output": [
+                {
+                  "kind": "content",
+                  "content": {
+                    "kind": "text",
+                    "text": "must not commit"
+                  }
+                }
+              ],
+              "usage": {},
+              "provider_turn_pending": false,
+              "provider_data": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "finish_reason": "end_turn"
+            }
+          },
+          "deltas": []
+        }
+      ],
+      "limits": {
+        "elapsed_ms": 30,
+        "max_runtime_tool_concurrency": 1,
+        "max_runtime_tool_batch_size": 1
+      },
+      "expected": {
+        "status": "limited",
+        "revision": 1,
+        "planning_steps": 0,
+        "runtime_tool_calls": 0,
+        "limit_reason": "deadline",
+        "store_idempotent": true,
+        "fact_kinds": [
+          "started",
+          "control"
+        ],
+        "message_roles": [
+          "user"
+        ]
+      }
+    }
+  ]
+}

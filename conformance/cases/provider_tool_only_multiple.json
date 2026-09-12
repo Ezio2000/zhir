@@ -1,0 +1,120 @@
+{
+  "version": 1,
+  "name": "provider_tool_only_multiple",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "kind": "text",
+                "text": "search for the JHarness project"
+              }
+            ]
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "output": [
+                {
+                  "kind": "provider_tool_call",
+                  "call": {
+                    "id": "provider-search-1",
+                    "provider": "example.provider",
+                    "name": "web_search",
+                    "status": "completed",
+                    "output": [],
+                    "data": {
+                      "type": "search",
+                      "queries": [
+                        "JHarness project"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "kind": "provider_tool_call",
+                  "call": {
+                    "id": "provider-search-2",
+                    "provider": "example.provider",
+                    "name": "web_search",
+                    "status": "completed",
+                    "output": [],
+                    "data": {
+                      "type": "open_page",
+                      "url": "https://example.invalid/jharness"
+                    }
+                  }
+                }
+              ],
+              "usage": {},
+              "provider_turn_pending": false,
+              "provider_data": null,
+              "model_id": "example-model",
+              "response_id": "fixture-provider-only-response",
+              "finish_reason": "stop"
+            }
+          },
+          "deltas": []
+        }
+      ],
+      "provider_tools": [
+        {
+          "provider": "example.provider",
+          "name": "web_search",
+          "options": {}
+        }
+      ],
+      "expected": {
+        "status": "completed",
+        "revision": 1,
+        "planning_steps": 1,
+        "runtime_tool_calls": 0,
+        "final_text": "",
+        "final_part_types": [],
+        "final_parts": [],
+        "fact_kinds": [
+          "started",
+          "model_turn"
+        ],
+        "message_roles": [
+          "user",
+          "assistant"
+        ],
+        "model_request_roles": [
+          [
+            "user"
+          ]
+        ],
+        "event_counts": {
+          "model_started": 1,
+          "model_finished": 1,
+          "tool_batch_selected": 0,
+          "approval_requested": 0,
+          "approval_decided": 0,
+          "runtime_tool_started": 0,
+          "runtime_tool_progress": 0,
+          "runtime_tool_finished": 0,
+          "runtime_tool_cancel_requested": 0
+        },
+        "forbidden_event_kinds": [
+          "tool_batch_selected",
+          "approval_requested",
+          "approval_decided",
+          "runtime_tool_started",
+          "runtime_tool_progress",
+          "runtime_tool_finished",
+          "runtime_tool_cancel_requested"
+        ]
+      }
+    }
+  ]
+}

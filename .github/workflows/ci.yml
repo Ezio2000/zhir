@@ -1,0 +1,72 @@
+name: Rust
+on: [push, pull_request]
+
+jobs:
+  sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --all-features --locked
+      - run: cargo check -p zhir-testing --no-default-features --locked
+      - run: cargo check -p zhir-testing --no-default-features --features http --locked
+      - run: cargo run -p zhir-conformance --bin schemas -- --check
+      - run: cargo run -p zhir --no-default-features --example custom_tool --features models,typed-tools
+      - run: cargo test -p zhir --no-default-features --features models,typed-tools,memory --test developer_api
+      - run: cargo test -p zhir --no-default-features --features models,typed-tools,typed-output,memory --test convenience
+      - run: cargo run -p zhir --example resume --features interaction,memory
+      - run: cargo package --workspace --allow-dirty --locked
+  features:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        feature: [default, tools, typed-tools, typed-output, models, filesystem, shell, interaction, agent, openai-chat, openai-responses, anthropic, memory, sqlite, mysql, redis]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Check standalone feature
+        env:
+          FEATURE: ${{ matrix.feature }}
+        run: |
+          if [ "$FEATURE" = default ]; then
+            cargo check -p zhir --no-default-features --locked
+          else
+            cargo check -p zhir --no-default-features --features "$FEATURE" --locked
+          fi
+  stores:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: zhir-test
+          MYSQL_DATABASE: zhir_test
+        ports: [3306:3306]
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -pzhir-test"
+          --health-interval=10s --health-timeout=5s --health-retries=12
+      redis:
+        image: redis:7-alpine
+        ports: [6379:6379]
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s --health-timeout=5s --health-retries=12
+    env:
+      ZHIR_TEST_MYSQL_URL: mysql://root:zhir-test@127.0.0.1:3306/zhir_test
+      ZHIR_TEST_REDIS_URL: redis://127.0.0.1:6379/
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p zhir-storage --all-features --test stores -- --ignored

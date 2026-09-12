@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "name": "max_total_tokens",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "kind": "text",
+                "text": "token budget"
+              }
+            ]
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "output": [
+                {
+                  "kind": "content",
+                  "content": {
+                    "kind": "text",
+                    "text": "over budget"
+                  }
+                }
+              ],
+              "usage": {
+                "input_tokens": 4,
+                "output_tokens": 2,
+                "total_tokens": 6,
+                "reasoning_tokens": null,
+                "cache_read_tokens": null,
+                "cache_write_tokens": null
+              },
+              "provider_turn_pending": false,
+              "provider_data": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "finish_reason": "end_turn"
+            }
+          },
+          "deltas": []
+        }
+      ],
+      "limits": {
+        "max_total_tokens": 5
+      },
+      "expected": {
+        "status": "limited",
+        "revision": 1,
+        "planning_steps": 1,
+        "runtime_tool_calls": 0,
+        "usage": {
+          "input_tokens": 4,
+          "output_tokens": 2,
+          "total_tokens": 6,
+          "reasoning_tokens": null,
+          "cache_read_tokens": null,
+          "cache_write_tokens": null
+        },
+        "limit_reason": "total_tokens",
+        "fact_kinds": [
+          "started",
+          "model_turn"
+        ],
+        "message_roles": [
+          "user",
+          "assistant"
+        ]
+      }
+    }
+  ]
+}

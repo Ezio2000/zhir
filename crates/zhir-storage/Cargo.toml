@@ -1,0 +1,27 @@
+[package]
+name = "zhir-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Incremental Memory, SQLite, MySQL and Redis stores for zhir"
+
+[lints]
+workspace = true
+
+[dependencies]
+zhir-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+sqlx = { workspace = true, optional = true }
+redis = { workspace = true, optional = true }
+
+[features]
+default = []
+sqlite = ["dep:sqlx", "sqlx/sqlite", "sqlx/any"]
+mysql = ["dep:sqlx", "sqlx/mysql", "sqlx/any"]
+redis = ["dep:redis"]
+
+[dev-dependencies]
+tempfile.workspace = true

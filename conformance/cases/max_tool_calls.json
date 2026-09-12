@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "name": "max_runtime_tool_calls",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "kind": "text",
+                "text": "tool budget zero"
+              }
+            ]
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "output": [
+                {
+                  "kind": "runtime_tool_call",
+                  "call": {
+                    "id": "call-1",
+                    "name": "echo",
+                    "input": {
+                      "kind": "structured",
+                      "value": {
+                        "text": "never"
+                      }
+                    }
+                  }
+                }
+              ],
+              "usage": {},
+              "provider_turn_pending": false,
+              "provider_data": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "finish_reason": "runtime_tool_calls"
+            }
+          },
+          "deltas": []
+        }
+      ],
+      "limits": {
+        "max_runtime_tool_calls": 0
+      },
+      "expected": {
+        "status": "limited",
+        "revision": 2,
+        "planning_steps": 1,
+        "runtime_tool_calls": 0,
+        "limit_reason": "runtime_tool_calls",
+        "forbidden_event_kinds": [
+          "runtime_tool_started"
+        ],
+        "fact_kinds": [
+          "started",
+          "model_turn",
+          "control"
+        ],
+        "message_roles": [
+          "user",
+          "assistant"
+        ]
+      }
+    }
+  ]
+}

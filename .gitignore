@@ -1,0 +1,38 @@
+# Rust build, package and coverage output (at any workspace depth).
+target/
+*.rs.bk
+*.profraw
+*.profdata
+
+# Generated test reports and local runtime data.
+/test-results/
+/coverage/
+deepseek-live.json
+*.log
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+
+# Local environment files; keep shareable templates eligible for version control.
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+
+# Editor and operating system files.
+.DS_Store
+.idea/
+.vscode/
+*.code-workspace
+*.swp
+*.swo
+*~
+
+# Cargo.lock is intentionally committed for reproducible workspace checks.

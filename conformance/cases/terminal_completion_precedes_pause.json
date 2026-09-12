@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "name": "terminal_completion_precedes_pause",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "kind": "text",
+                "text": "finish now"
+              }
+            ]
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "output": [
+                {
+                  "kind": "content",
+                  "content": {
+                    "kind": "text",
+                    "text": "done"
+                  }
+                }
+              ],
+              "usage": {},
+              "provider_turn_pending": false,
+              "provider_data": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "finish_reason": "end_turn"
+            }
+          },
+          "deltas": []
+        }
+      ],
+      "actions": [
+        {
+          "when": {
+            "event_kind": "model_finished",
+            "occurrence": 1
+          },
+          "command": {
+            "kind": "pause",
+            "suspension": {
+              "reason": "late_pause",
+              "source": "host",
+              "wait_id": null,
+              "metadata": {}
+            }
+          }
+        }
+      ],
+      "expected": {
+        "status": "completed",
+        "revision": 1,
+        "planning_steps": 1,
+        "runtime_tool_calls": 0,
+        "final_text": "done",
+        "fact_kinds": [
+          "started",
+          "model_turn"
+        ],
+        "message_roles": [
+          "user",
+          "assistant"
+        ]
+      }
+    }
+  ]
+}

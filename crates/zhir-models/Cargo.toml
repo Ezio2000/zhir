@@ -1,0 +1,30 @@
+[package]
+name = "zhir-models"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "OpenAI and Anthropic protocol adapters for zhir"
+
+[lints]
+workspace = true
+
+[dependencies]
+zhir-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+reqwest = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+
+[features]
+default = []
+openai-chat = ["dep:reqwest", "dep:futures"]
+openai-responses = ["dep:reqwest", "dep:futures"]
+anthropic = ["dep:reqwest", "dep:futures"]
+
+[dev-dependencies]
+futures.workspace = true
+tokio = { workspace = true, features = ["net", "io-util"] }
+tempfile.workspace = true

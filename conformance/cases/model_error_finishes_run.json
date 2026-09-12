@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "name": "model_error_finishes_run",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "kind": "text",
+                "text": "model error"
+              }
+            ]
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "error",
+            "error": {
+              "code": "provider_error",
+              "message": "model failed",
+              "retryable": true
+            }
+          },
+          "deltas": []
+        }
+      ],
+      "expected": {
+        "status": "failed",
+        "revision": 1,
+        "planning_steps": 0,
+        "runtime_tool_calls": 0,
+        "error_code": "provider_error",
+        "fact_kinds": [
+          "started",
+          "control"
+        ],
+        "message_roles": [
+          "user"
+        ]
+      }
+    }
+  ]
+}

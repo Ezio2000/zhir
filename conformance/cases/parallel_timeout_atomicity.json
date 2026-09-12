@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "name": "parallel_timeout_atomicity",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "kind": "text",
+                "text": "timeout batch"
+              }
+            ]
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "output": [
+                {
+                  "kind": "runtime_tool_call",
+                  "call": {
+                    "id": "call-1",
+                    "name": "delayed_echo",
+                    "input": {
+                      "kind": "structured",
+                      "value": {
+                        "delay": 0.2,
+                        "text": "one"
+                      }
+                    }
+                  }
+                },
+                {
+                  "kind": "runtime_tool_call",
+                  "call": {
+                    "id": "call-2",
+                    "name": "delayed_echo",
+                    "input": {
+                      "kind": "structured",
+                      "value": {
+                        "delay": 0.2,
+                        "text": "two"
+                      }
+                    }
+                  }
+                }
+              ],
+              "usage": {},
+              "provider_turn_pending": false,
+              "provider_data": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "finish_reason": "runtime_tool_calls"
+            }
+          },
+          "deltas": []
+        }
+      ],
+      "limits": {
+        "elapsed_ms": 30,
+        "max_runtime_tool_concurrency": 2,
+        "max_runtime_tool_batch_size": 2
+      },
+      "expected": {
+        "status": "limited",
+        "revision": 2,
+        "planning_steps": 1,
+        "runtime_tool_calls": 0,
+        "limit_reason": "deadline",
+        "fact_kinds": [
+          "started",
+          "model_turn",
+          "control"
+        ],
+        "message_roles": [
+          "user",
+          "assistant"
+        ]
+      }
+    }
+  ]
+}

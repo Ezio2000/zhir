@@ -1,0 +1,108 @@
+{
+  "version": 1,
+  "name": "tool_progress_overflow",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "kind": "text",
+                "text": "overflow progress"
+              }
+            ]
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "output": [
+                {
+                  "kind": "runtime_tool_call",
+                  "call": {
+                    "id": "call-1",
+                    "name": "progress",
+                    "input": {
+                      "kind": "structured",
+                      "value": {
+                        "steps": [
+                          1,
+                          2,
+                          3,
+                          4
+                        ],
+                        "burst": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "usage": {},
+              "provider_turn_pending": false,
+              "provider_data": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "finish_reason": "runtime_tool_calls"
+            }
+          },
+          "deltas": []
+        },
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "output": [
+                {
+                  "kind": "content",
+                  "content": {
+                    "kind": "text",
+                    "text": "overflow handled"
+                  }
+                }
+              ],
+              "usage": {},
+              "provider_turn_pending": false,
+              "provider_data": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "finish_reason": "end_turn"
+            }
+          },
+          "deltas": []
+        }
+      ],
+      "limits": {
+        "max_buffered_progress": 2
+      },
+      "expected": {
+        "status": "completed",
+        "revision": 3,
+        "planning_steps": 2,
+        "runtime_tool_calls": 1,
+        "final_text": "overflow handled",
+        "fact_kinds": [
+          "started",
+          "model_turn",
+          "runtime_tool_batch",
+          "model_turn"
+        ],
+        "message_roles": [
+          "user",
+          "assistant",
+          "runtime_tool",
+          "assistant"
+        ],
+        "tool_outcome_kinds": [
+          "failure"
+        ]
+      }
+    }
+  ]
+}

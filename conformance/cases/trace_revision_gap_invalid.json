@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "trace_revision_gap_invalid",
+  "kind": "validation",
+  "target": "trace",
+  "value": {
+    "fault": "revision_gap"
+  },
+  "valid": false
+}

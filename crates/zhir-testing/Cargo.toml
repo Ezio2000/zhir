@@ -1,0 +1,20 @@
+[package]
+name = "zhir-testing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Scripted models, recording ports and trace checks for zhir consumer tests"
+
+[lints]
+workspace = true
+
+[dependencies]
+zhir-core.workspace = true
+zhir-kernel.workspace = true
+tokio = { workspace = true, optional = true, features = ["net", "io-util"] }
+serde_json = { workspace = true, optional = true }
+
+[features]
+default = []
+http = ["dep:tokio", "dep:serde_json"]

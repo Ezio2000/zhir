@@ -1,0 +1,1393 @@
+{
+  "$defs": {
+    "ActiveState": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "planning",
+              "type": "string"
+            },
+            "provider_turn_pending": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "provider_turn_pending"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "calls": {
+              "items": {
+                "$ref": "#/$defs/RuntimeToolCall"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "runtime_tools_pending",
+              "type": "string"
+            },
+            "provider_turn_pending": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "calls",
+            "provider_turn_pending"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "CheckpointCore": {
+      "additionalProperties": false,
+      "properties": {
+        "context": {
+          "$ref": "#/$defs/RunContext"
+        },
+        "fact": {
+          "$ref": "#/$defs/Fact"
+        },
+        "history_count": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "history_digest": {
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "metrics": {
+          "$ref": "#/$defs/Metrics"
+        },
+        "options": {
+          "$ref": "#/$defs/RunOptions"
+        },
+        "parent_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/State"
+        }
+      },
+      "required": [
+        "options",
+        "id",
+        "revision",
+        "context",
+        "state",
+        "metrics",
+        "fact",
+        "history_count",
+        "history_digest"
+      ],
+      "type": "object"
+    },
+    "Content": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "text",
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "image",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/MediaSource"
+            }
+          },
+          "required": [
+            "kind",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "audio",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/MediaSource"
+            }
+          },
+          "required": [
+            "kind",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "video",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/MediaSource"
+            }
+          },
+          "required": [
+            "kind",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "file",
+              "type": "string"
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "$ref": "#/$defs/MediaSource"
+            }
+          },
+          "required": [
+            "kind",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": true,
+            "kind": {
+              "const": "opaque",
+              "type": "string"
+            },
+            "provider": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "provider",
+            "data"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Fact": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "started",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "resumed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "model_turn",
+              "type": "string"
+            },
+            "result": {
+              "type": "string"
+            },
+            "runtime_tool_call_ids": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "runtime_tool_call_ids",
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "call_ids": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "runtime_tool_batch",
+              "type": "string"
+            },
+            "outcomes": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "parallel": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "call_ids",
+            "outcomes",
+            "parallel"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "conversation_insert",
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "history_rewrite",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "control",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "action"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Failure": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "retryable": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "LimitReason": {
+      "enum": [
+        "deadline",
+        "planning_steps",
+        "runtime_tool_calls",
+        "total_tokens"
+      ],
+      "type": "string"
+    },
+    "Limits": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_timeout_ms": {
+          "default": 5000,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "elapsed_ms": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_buffered_progress": {
+          "default": 256,
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_planning_steps": {
+          "default": 100,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_progress_events": {
+          "default": 256,
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_runtime_tool_batch_size": {
+          "default": 32,
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_runtime_tool_calls": {
+          "default": 1000,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_runtime_tool_concurrency": {
+          "default": 8,
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_total_tokens": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "MediaSource": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "url",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "url"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "base64": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "inline",
+              "type": "string"
+            },
+            "mime_type": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "mime_type",
+            "base64"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "artifact",
+              "type": "string"
+            },
+            "mime_type": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "mime_type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Message": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "content": {
+              "items": {
+                "$ref": "#/$defs/Content"
+              },
+              "type": "array"
+            },
+            "role": {
+              "const": "system",
+              "type": "string"
+            }
+          },
+          "required": [
+            "role",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "content": {
+              "items": {
+                "$ref": "#/$defs/Content"
+              },
+              "type": "array"
+            },
+            "role": {
+              "const": "user",
+              "type": "string"
+            }
+          },
+          "required": [
+            "role",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "content": {
+              "items": {
+                "$ref": "#/$defs/Content"
+              },
+              "type": "array"
+            },
+            "role": {
+              "const": "external",
+              "type": "string"
+            }
+          },
+          "required": [
+            "role",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "output": {
+              "items": {
+                "$ref": "#/$defs/Output"
+              },
+              "type": "array"
+            },
+            "provider_data": {
+              "default": null
+            },
+            "role": {
+              "const": "assistant",
+              "type": "string"
+            }
+          },
+          "required": [
+            "role",
+            "output"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "call_id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "outcome": {
+              "$ref": "#/$defs/RuntimeToolOutcome"
+            },
+            "role": {
+              "const": "runtime_tool",
+              "type": "string"
+            }
+          },
+          "required": [
+            "role",
+            "call_id",
+            "name",
+            "outcome"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Metrics": {
+      "additionalProperties": false,
+      "properties": {
+        "planning_steps": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "runtime_tool_calls": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage"
+        }
+      },
+      "required": [
+        "planning_steps",
+        "runtime_tool_calls",
+        "usage"
+      ],
+      "type": "object"
+    },
+    "ModelOptions": {
+      "additionalProperties": false,
+      "properties": {
+        "extra": {
+          "additionalProperties": true,
+          "default": {},
+          "type": "object"
+        },
+        "max_output_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "parallel_runtime_tools": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "seed": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "temperature": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Output": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "content": {
+              "$ref": "#/$defs/Content"
+            },
+            "kind": {
+              "const": "content",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "call": {
+              "$ref": "#/$defs/RuntimeToolCall"
+            },
+            "kind": {
+              "const": "runtime_tool_call",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "call"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "call": {
+              "$ref": "#/$defs/ProviderToolCall"
+            },
+            "kind": {
+              "const": "provider_tool_call",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "call"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ProviderToolCall": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "default": null
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "output": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Content"
+          },
+          "type": "array"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/ProviderToolStatus"
+        }
+      },
+      "required": [
+        "id",
+        "provider",
+        "name",
+        "status"
+      ],
+      "type": "object"
+    },
+    "ProviderToolSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "options": {
+          "default": null
+        },
+        "provider": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "name"
+      ],
+      "type": "object"
+    },
+    "ProviderToolStatus": {
+      "enum": [
+        "pending",
+        "running",
+        "completed",
+        "incomplete",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "ResponseFormat": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "json",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "schema",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "schema": true
+          },
+          "required": [
+            "kind",
+            "name",
+            "schema"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RunContext": {
+      "additionalProperties": false,
+      "properties": {
+        "deadline_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "default": {},
+          "type": "object"
+        },
+        "parent_run_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parent_runtime_tool_call_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "started_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "run_id",
+        "started_at_ms"
+      ],
+      "type": "object"
+    },
+    "RunOptions": {
+      "additionalProperties": false,
+      "description": "Effective parameters frozen when a run starts and persisted with every checkpoint.",
+      "properties": {
+        "limits": {
+          "$ref": "#/$defs/Limits"
+        },
+        "model": {
+          "$ref": "#/$defs/ModelOptions"
+        },
+        "provider_tools": {
+          "items": {
+            "$ref": "#/$defs/ProviderToolSpec"
+          },
+          "type": "array"
+        },
+        "response_format": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResponseFormat"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stream": {
+          "type": "boolean"
+        },
+        "tool_choice": {
+          "$ref": "#/$defs/ToolChoice"
+        }
+      },
+      "required": [
+        "limits",
+        "model",
+        "provider_tools",
+        "tool_choice",
+        "stream"
+      ],
+      "type": "object"
+    },
+    "RuntimeToolCall": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "input": {
+          "$ref": "#/$defs/RuntimeToolInput"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "input"
+      ],
+      "type": "object"
+    },
+    "RuntimeToolInput": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "structured",
+              "type": "string"
+            },
+            "value": true
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "freeform",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RuntimeToolOutcome": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "content": {
+              "items": {
+                "$ref": "#/$defs/Content"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "success",
+              "type": "string"
+            },
+            "structured": true
+          },
+          "required": [
+            "kind",
+            "content",
+            "structured"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/Failure"
+            },
+            "kind": {
+              "const": "failure",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "error"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "content": {
+              "items": {
+                "$ref": "#/$defs/Content"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "accepted",
+              "type": "string"
+            },
+            "structured": true,
+            "task_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "task_id",
+            "content",
+            "structured"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "content": {
+              "items": {
+                "$ref": "#/$defs/Content"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "waiting",
+              "type": "string"
+            },
+            "structured": true,
+            "wait_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "wait_id",
+            "content",
+            "structured"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "State": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "planning",
+              "type": "string"
+            },
+            "provider_turn_pending": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "provider_turn_pending"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "calls": {
+              "items": {
+                "$ref": "#/$defs/RuntimeToolCall"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "runtime_tools_pending",
+              "type": "string"
+            },
+            "provider_turn_pending": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "calls",
+            "provider_turn_pending"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "suspended",
+              "type": "string"
+            },
+            "resume_to": {
+              "$ref": "#/$defs/ActiveState"
+            },
+            "suspension": {
+              "$ref": "#/$defs/Suspension"
+            }
+          },
+          "required": [
+            "kind",
+            "resume_to",
+            "suspension"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "content": {
+              "items": {
+                "$ref": "#/$defs/Content"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "completed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/Failure"
+            },
+            "kind": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "error"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "limited",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/LimitReason"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Suspension": {
+      "additionalProperties": false,
+      "properties": {
+        "metadata": {
+          "additionalProperties": true,
+          "default": {},
+          "type": "object"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "wait_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "reason",
+        "source"
+      ],
+      "type": "object"
+    },
+    "ToolChoice": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "auto",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "none",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "required",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "runtime_tool",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "provider_tool",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "provider": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "provider",
+            "name"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Usage": {
+      "additionalProperties": false,
+      "properties": {
+        "cache_read_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cache_write_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "input_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "output_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reasoning_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "total_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "checkpoint": {
+      "$ref": "#/$defs/CheckpointCore"
+    },
+    "history": {
+      "items": {
+        "$ref": "#/$defs/Message"
+      },
+      "type": "array"
+    },
+    "version": {
+      "format": "uint32",
+      "maximum": 1,
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "checkpoint",
+    "history"
+  ],
+  "title": "CheckpointEnvelope",
+  "type": "object"
+}

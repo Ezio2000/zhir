@@ -1,0 +1,25 @@
+[package]
+name = "zhir-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Tool registration, typed function adapters and validation for zhir"
+
+[lints]
+workspace = true
+
+[dependencies]
+zhir-core.workspace = true
+tokio.workspace = true
+jsonschema.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars = { workspace = true, optional = true }
+
+[features]
+default = []
+typed = ["dep:schemars"]
+
+[dev-dependencies]
+tempfile.workspace = true

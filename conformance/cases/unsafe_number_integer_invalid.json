@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "unsafe_number_integer_invalid",
+  "kind": "validation",
+  "target": "model_options",
+  "value": {
+    "temperature": 9007199254740992
+  },
+  "valid": false
+}

@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "name": "deadline_before_model_completion",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "kind": "text",
+                "text": "wait forever"
+              }
+            ]
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "block"
+          },
+          "deltas": []
+        }
+      ],
+      "limits": {
+        "elapsed_ms": 500
+      },
+      "expected": {
+        "status": "limited",
+        "revision": 1,
+        "planning_steps": 0,
+        "runtime_tool_calls": 0,
+        "limit_reason": "deadline",
+        "fact_kinds": [
+          "started",
+          "control"
+        ],
+        "message_roles": [
+          "user"
+        ]
+      }
+    }
+  ]
+}

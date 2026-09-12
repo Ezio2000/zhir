@@ -1,0 +1,19 @@
+[package]
+name = "zhir-conformance"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+zhir-core = { workspace = true, features = ["schema"] }
+zhir-kernel.workspace = true
+zhir-tools.workspace = true
+zhir-storage.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["unbounded_depth"] }
+futures.workspace = true
+jsonschema.workspace = true
+tokio.workspace = true

@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "name": "stream_deadline_discards_partial",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "kind": "text",
+                "text": "stream deadline"
+              }
+            ]
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "deltas": [
+            {
+              "kind": "text",
+              "output_index": 0,
+              "text": "partial"
+            }
+          ],
+          "outcome": {
+            "kind": "block"
+          }
+        }
+      ],
+      "limits": {
+        "elapsed_ms": 30
+      },
+      "expected": {
+        "status": "limited",
+        "revision": 1,
+        "planning_steps": 0,
+        "runtime_tool_calls": 0,
+        "limit_reason": "deadline",
+        "event_counts": {
+          "model_delta": 1
+        },
+        "fact_kinds": [
+          "started",
+          "control"
+        ],
+        "message_roles": [
+          "user"
+        ]
+      }
+    }
+  ]
+}

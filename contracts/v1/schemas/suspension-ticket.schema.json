@@ -1,0 +1,57 @@
+{
+  "$defs": {
+    "Suspension": {
+      "additionalProperties": false,
+      "properties": {
+        "metadata": {
+          "additionalProperties": true,
+          "default": {},
+          "type": "object"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "wait_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "reason",
+        "source"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "checkpoint_id": {
+      "type": "string"
+    },
+    "revision": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "suspension": {
+      "$ref": "#/$defs/Suspension"
+    }
+  },
+  "required": [
+    "run_id",
+    "checkpoint_id",
+    "revision",
+    "suspension"
+  ],
+  "title": "SuspensionTicket",
+  "type": "object"
+}

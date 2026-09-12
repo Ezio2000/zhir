@@ -1,0 +1,29 @@
+[package]
+name = "zhir-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Public values, extension ports and native wire contracts for zhir"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+schemars = { version = "1", optional = true }
+
+[features]
+default = []
+schema = ["dep:schemars"]
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[bench]]
+name = "history"
+harness = false
