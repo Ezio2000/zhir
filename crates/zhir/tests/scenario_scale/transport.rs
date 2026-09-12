@@ -25,7 +25,8 @@ struct Reply {
     body: String,
     sse: bool,
     chunk: usize,
-    pause_ms: u64,
+    // Keep a partial response open until the owning Server is dropped.
+    hold_after: Option<usize>,
 }
 struct Server {
     url: String,
@@ -97,13 +98,16 @@ async fn server(replies: Vec<Reply>) -> Server {
             if socket.write_all(header.as_bytes()).await.is_err() {
                 continue;
             }
-            for bytes in body.as_bytes().chunks(reply.chunk) {
+            let end = reply.hold_after.unwrap_or(body.len()).min(body.len());
+            for bytes in body.as_bytes()[..end].chunks(reply.chunk) {
                 if socket.write_all(bytes).await.is_err() {
                     break;
                 }
-                if reply.pause_ms > 0 {
-                    tokio::time::sleep(Duration::from_millis(reply.pause_ms)).await;
-                }
+            }
+            if reply.hold_after.is_some() {
+                // Cancellation is triggered by the first text delta. Completion cannot
+                // race ahead of the event consumer, regardless of executor scheduling.
+                std::future::pending::<()>().await;
             }
         }
     });
@@ -319,7 +323,7 @@ async fn wire_case(
         body: complete(protocol, "ok").to_string(),
         sse: false,
         chunk,
-        pause_ms: 0,
+        hold_after: None,
     };
     let response = match family {
         "retry_429" => vec![
@@ -362,8 +366,7 @@ async fn wire_case(
                 family == "custom_events",
             ),
             sse: true,
-            chunk: if family == "cancel_stream" { 64 } else { chunk },
-            pause_ms: if family == "cancel_stream" { 4 } else { 0 },
+            hold_after: (family == "cancel_stream").then(|| body(protocol, 1, false, false).len()),
             ..good.clone()
         }],
     };
@@ -591,6 +594,10 @@ async fn wire_case(
                     == 0,
             );
             if family == "cancel_stream" {
+                checks.insert(
+                    "cancel_after_first_text",
+                    cancelled && summary.counts.get("delta_text") == Some(&1),
+                );
                 checks.insert("cancelled", matches!(error, Some(Error::Cancelled)));
             }
             if family == "visible_error_no_retry" {
@@ -745,7 +752,7 @@ async fn messages_groups_tool_results_without_extensions() {
             body: complete(Protocol::Messages, "done").to_string(),
             sse: false,
             chunk: 4096,
-            pause_ms: 0,
+            hold_after: None,
         };
         let server = server(vec![reply]).await;
         let plain = http(Protocol::Messages, &server.url, "fixture", "fixture").unwrap();
@@ -841,7 +848,7 @@ async fn rpc_case(index: usize, client: reqwest::Client) -> Value {
             body: value.to_string(),
             sse: false,
             chunk: 7,
-            pause_ms: 0,
+            hold_after: None,
         })
         .collect();
     let server = server(replies).await;
