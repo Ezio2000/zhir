@@ -8,3 +8,7 @@ RunRequest/RunOptions describe per-run parameters; checkpoints persist effective
 options. SuspensionTicket identifies one paused revision; ResumeRequest carries a
 snapshot or ticket plus external messages/metadata. These are values only: loading,
 scheduling and resuming remain kernel responsibilities.
+
+ContextKey<T> gives typed JSON metadata access. RunCompletion/RunOutcome project a
+settled checkpoint. CatalogContext and RuntimeToolSelection define per-run catalog
+access. Structured errors and RetryPolicy remain executor-independent.

@@ -88,7 +88,13 @@ fn context() -> ModelContext {
 async fn retries_only_retryable_failures_before_stream_output() {
     for (retryable, emit, expected) in [(true, false, 2), (false, false, 1), (true, true, 1)] {
         let inner = Flaky::new(1, retryable, emit);
-        let model = RetryingModel::new(inner.clone(), 3, Duration::ZERO).unwrap();
+        let model = RetryingModel::new(
+            inner.clone(),
+            zhir_core::retry::RetryPolicy::new(3)
+                .unwrap()
+                .backoff(zhir_core::retry::Backoff::fixed(Duration::ZERO)),
+        )
+        .unwrap();
         let result = model.invoke(request(), context()).await;
         assert_eq!(result.is_ok(), expected == 2);
         assert_eq!(inner.calls.load(Ordering::SeqCst), expected);
@@ -274,14 +280,23 @@ async fn observer_errors_after_side_effects_never_retry_in_either_nesting_order(
                     Arc::new(ObservedModel::new(inner.clone(), move |_, _| {
                         Ok(captured.clone())
                     })),
-                    3,
-                    Duration::ZERO,
+                    zhir_core::retry::RetryPolicy::new(3)
+                        .unwrap()
+                        .backoff(zhir_core::retry::Backoff::fixed(Duration::ZERO)),
                 )
                 .unwrap(),
             )
         } else {
             Arc::new(ObservedModel::new(
-                Arc::new(RetryingModel::new(inner.clone(), 3, Duration::ZERO).unwrap()),
+                Arc::new(
+                    RetryingModel::new(
+                        inner.clone(),
+                        zhir_core::retry::RetryPolicy::new(3)
+                            .unwrap()
+                            .backoff(zhir_core::retry::Backoff::fixed(Duration::ZERO)),
+                    )
+                    .unwrap(),
+                ),
                 move |_, _| Ok(captured.clone()),
             ))
         };
@@ -310,14 +325,23 @@ async fn observer_factory_scope_tracks_wrapper_invocations_across_retries() {
             Arc::new(
                 RetryingModel::new(
                     Arc::new(ObservedModel::new(inner.clone(), factory)),
-                    3,
-                    Duration::ZERO,
+                    zhir_core::retry::RetryPolicy::new(3)
+                        .unwrap()
+                        .backoff(zhir_core::retry::Backoff::fixed(Duration::ZERO)),
                 )
                 .unwrap(),
             )
         } else {
             Arc::new(ObservedModel::new(
-                Arc::new(RetryingModel::new(inner.clone(), 3, Duration::ZERO).unwrap()),
+                Arc::new(
+                    RetryingModel::new(
+                        inner.clone(),
+                        zhir_core::retry::RetryPolicy::new(3)
+                            .unwrap()
+                            .backoff(zhir_core::retry::Backoff::fixed(Duration::ZERO)),
+                    )
+                    .unwrap(),
+                ),
                 factory,
             ))
         };

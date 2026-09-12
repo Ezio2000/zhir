@@ -20,3 +20,7 @@ zhir-models = { path = "../zhir/crates/zhir-models", features = ["openai-respons
 ```
 
 [Developer guide](../../docs/developer-api.md) · [Public API source](src/lib.rs)
+
+TransformModel supports ordered asynchronous response maps. RetryingModel uses
+RetryPolicy for fixed, exponential or custom backoff, bounded by cancellation and
+deadlines. Already emitted deltas prevent retries.

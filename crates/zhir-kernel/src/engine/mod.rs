@@ -1,7 +1,7 @@
 use crate::{
     control::Control,
     defaults::Ephemeral,
-    invocation::{Emitter, Progress, RunError, RunResult},
+    invocation::{Emitter, EngineResult, Progress, RunError},
     runtime::{Config, Request},
 };
 use futures::{StreamExt, stream};
@@ -53,7 +53,7 @@ pub(crate) async fn execute(
     request: Request,
     controls: mpsc::UnboundedReceiver<Control>,
     emitter: Emitter,
-) -> RunResult {
+) -> EngineResult {
     let initial = match &request {
         Request::Start { .. } => None,
         Request::Continue(c) | Request::Resume { checkpoint: c, .. } => Some(c.clone()),
@@ -426,16 +426,21 @@ impl Engine {
             }
             if self.catalog.is_none() {
                 let tools = self.config.runtime_tools.clone();
-                let future = Box::pin(async move { tools.open_catalog().await });
+                let cancellation = Cancellation::default();
+                let context = zhir_core::tool::CatalogContext {
+                    run: current.context.clone(),
+                    cancellation: cancellation.clone(),
+                };
+                let selection = self.options.runtime_tools.clone();
+                let future =
+                    Box::pin(async move { selection.select(tools.open_catalog(context).await?) });
                 let defer = !matches!(
                     current.state,
                     State::Planning {
                         provider_turn_pending: false
                     }
                 );
-                let effect = self
-                    .effect(future, Cancellation::default(), true, defer)
-                    .await;
+                let effect = self.effect(future, cancellation, true, defer).await;
                 let Some(catalog) = self.interruption(effect).await? else {
                     continue;
                 };

@@ -5,7 +5,7 @@ use std::{
 };
 use zhir_core::{
     BoxFuture, Result,
-    error::Error,
+    error::{CatalogError, Error, ValidationError},
     tool::{
         InputSpec, RuntimeTool, RuntimeToolBinding, RuntimeToolCall, RuntimeToolCatalog,
         RuntimeToolCatalogProvider, RuntimeToolContext, RuntimeToolInput, RuntimeToolResult,
@@ -30,7 +30,7 @@ impl RuntimeToolRegistry {
         let spec = tool.spec().clone();
         spec.execution.validate()?;
         if spec.name.is_empty() {
-            return Err(Error::Invalid("empty tool name".into()));
+            return Err(CatalogError::EmptyName.into());
         }
         let input = match &spec.input {
             InputSpec::Structured { schema } => Some(compile(schema)?),
@@ -42,7 +42,11 @@ impl RuntimeToolRegistry {
             .write()
             .map_err(|_| Error::Invalid("poisoned registry".into()))?;
         if entries.contains_key(&spec.name) {
-            return Err(Error::Invalid(format!("duplicate tool {}", spec.name)));
+            return Err(CatalogError::Duplicate {
+                name: spec.name.clone(),
+                sources: vec!["registry".into()],
+            }
+            .into());
         }
         entries.insert(
             spec.name.clone(),
@@ -69,8 +73,12 @@ struct Catalog {
     entries: BTreeMap<String, Arc<Entry>>,
 }
 impl RuntimeToolCatalogProvider for RuntimeToolRegistry {
-    fn open_catalog(&self) -> BoxFuture<'_, Result<Arc<dyn RuntimeToolCatalog>>> {
-        Box::pin(async {
+    fn open_catalog(
+        &self,
+        context: zhir_core::tool::CatalogContext,
+    ) -> BoxFuture<'_, Result<Arc<dyn RuntimeToolCatalog>>> {
+        Box::pin(async move {
+            context.cancellation.check()?;
             Ok(Arc::new(Catalog {
                 entries: self
                     .entries
@@ -90,14 +98,18 @@ impl RuntimeToolCatalog for Catalog {
         let entry = self
             .entries
             .get(&call.name)
-            .ok_or_else(|| Error::Invalid(format!("unknown tool {}", call.name)))?
+            .ok_or_else(|| {
+                Error::Catalog(CatalogError::NotFound {
+                    name: call.name.clone(),
+                })
+            })?
             .clone();
         match (&entry.spec.input, &call.input) {
             (InputSpec::Structured { .. }, RuntimeToolInput::Structured(value)) => {
                 validate(entry.input.as_ref().expect("compiled input schema"), value)?
             }
             (InputSpec::Freeform { .. }, RuntimeToolInput::Freeform(_)) => {}
-            _ => return Err(Error::Invalid("tool input kind mismatch".into())),
+            _ => return Err(ValidationError::InputKind.into()),
         }
         Ok(Arc::new(Binding {
             entry,

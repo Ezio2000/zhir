@@ -1,5 +1,9 @@
 //! Native atomic run stores with incremental history persistence.
+pub mod artifacts;
 mod codec;
+#[cfg(feature = "artifacts-filesystem")]
+pub use artifacts::FilesystemArtifactStore;
+pub use artifacts::MemoryArtifactStore;
 pub mod memory;
 #[cfg(feature = "mysql")]
 pub mod mysql;

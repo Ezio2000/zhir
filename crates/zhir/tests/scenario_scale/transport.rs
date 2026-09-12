@@ -392,7 +392,15 @@ async fn wire_case(
         family,
         "retry_429" | "permanent_400" | "visible_error_no_retry" | "observer_failure"
     ) {
-        model = Arc::new(RetryingModel::new(model, 3, Duration::from_millis(1)).unwrap());
+        model = Arc::new(
+            RetryingModel::new(
+                model,
+                zhir_core::retry::RetryPolicy::new(3)
+                    .unwrap()
+                    .backoff(zhir_core::retry::Backoff::fixed(Duration::from_millis(1))),
+            )
+            .unwrap(),
+        );
     }
     if family == "fallback_503" {
         model = Arc::new(
@@ -478,7 +486,7 @@ async fn wire_case(
         let result = invocation.result().await;
         let expected_success = slow || matches!(family, "custom_events" | "dense_stream");
         let (checkpoint, error) = match result {
-            Ok(c) => (Some(c), None),
+            Ok(c) => (Some(c.into_checkpoint()), None),
             Err(e) => (e.last_checkpoint, Some(e.error)),
         };
         checks.insert("ordered_events", summary.ordered);

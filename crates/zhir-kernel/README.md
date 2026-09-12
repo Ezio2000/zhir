@@ -9,3 +9,6 @@ resolves whole-field overrides and commits effective options at revision zero.
 continue_from and async resume(ResumeRequest) always use checkpoint options.
 SuspensionTicket resumption reads the configured store and checks the exact
 run/checkpoint/revision/suspension before entering the single commit path.
+
+Invocation::result returns RunCompletion; checkpoint access is explicit. Catalogs
+receive run context and cancellation, then frozen selection filters their snapshot.

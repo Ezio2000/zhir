@@ -10,21 +10,14 @@ use zhir_core::{
 
 pub struct RetryingTool {
     inner: Arc<dyn RuntimeTool>,
-    attempts: usize,
-    delay: Duration,
+    policy: zhir_core::retry::RetryPolicy,
 }
 impl RetryingTool {
-    pub fn new(inner: Arc<dyn RuntimeTool>, attempts: usize, delay: Duration) -> Result<Self> {
-        if attempts == 0 || (attempts > 1 && !inner.spec().execution.idempotent) {
-            return Err(Error::Invalid(
-                "retries require a positive count and an idempotent tool".into(),
-            ));
+    pub fn new(inner: Arc<dyn RuntimeTool>, policy: zhir_core::retry::RetryPolicy) -> Result<Self> {
+        if policy.max_attempts() > 1 && !inner.spec().execution.idempotent {
+            return Err(Error::Invalid("retries require an idempotent tool".into()));
         }
-        Ok(Self {
-            inner,
-            attempts,
-            delay,
-        })
+        Ok(Self { inner, policy })
     }
 }
 impl RuntimeTool for RetryingTool {
@@ -37,15 +30,26 @@ impl RuntimeTool for RetryingTool {
         context: RuntimeToolContext,
     ) -> BoxFuture<'_, Result<RuntimeToolResult>> {
         Box::pin(async move {
-            for attempt in 0..self.attempts {
-                context.cancellation.check()?;
+            let deadline = crate::retry_wait::deadline(&context.run)?;
+            for attempt in 0..self.policy.max_attempts() {
+                crate::retry_wait::check(&context.cancellation, deadline)?;
                 match self.inner.invoke(call.clone(), context.clone()).await {
                     Err(Error::RuntimeTool(error))
-                        if error.retryable && attempt + 1 < self.attempts =>
+                        if error.retryable && attempt + 1 < self.policy.max_attempts() =>
                     {
-                        tokio::time::sleep(self.delay).await
+                        crate::retry_wait::wait(
+                            self.policy
+                                .delay_after(attempt + 1)
+                                .expect("remaining attempt"),
+                            &context.cancellation,
+                            deadline,
+                        )
+                        .await?
                     }
-                    result => return result,
+                    result => {
+                        crate::retry_wait::check(&context.cancellation, deadline)?;
+                        return result;
+                    }
                 }
             }
             unreachable!("positive retry count")

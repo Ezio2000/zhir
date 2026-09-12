@@ -11,11 +11,16 @@
    Appended resume messages require Planning with no pending provider continuation.
 3. One committed change advances revision once and records one fact. The returned
    checkpoint is authoritative only after its atomic storage commit succeeds.
+   Invocation returns RunCompletion; its outcome exposes Completed, Suspended, Failed
+   or Limited. Infrastructure errors retain the last authoritative checkpoint.
 4. A complete model response commits ordered content, runtime calls, provider calls,
    usage and one planning step together. Partial stream observations never enter history.
 5. Only runtime calls are bound and scheduled. Provider-only responses may complete
    or continue planning without creating runtime tool work.
-6. One catalog snapshot is opened per invocation. Binding and input validation precede
+6. One catalog snapshot is opened per invocation using run context and cancellation.
+   Each composite source opens once; duplicate names fail. Frozen RuntimeToolSelection
+   applies to both model declarations and binding. Missing selected tools fail on recovery.
+   Binding and input validation precede
    approval. A suspended approval executes none of the selected batch.
 7. Batch policies select a nonempty bounded prefix. Parallel calls must be explicitly
    parallel, read-only and idempotent. Concurrency is bounded and results commit in

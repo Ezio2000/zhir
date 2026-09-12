@@ -22,6 +22,7 @@ use zhir::{
     tool::{Execution, RuntimeTool},
 };
 use zhir_testing::{RecordingModel, RecordingSink, RecordingStore};
+const CASE: zhir::run::ContextKey<String> = zhir::run::ContextKey::new("consumer.case");
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Product {
@@ -61,14 +62,15 @@ async fn workflow(
             read_only: true,
             idempotent: true,
         },
-        move |args, _ctx| {
+        move |args, ctx| {
             let receipt = returned_receipt.clone();
             let expected = expected_tag.clone();
             let invoked = invoked.clone();
             async move {
                 invoked.fetch_add(1, Ordering::SeqCst);
                 require(
-                    args.product.sku == "widget"
+                    ctx.run.require(CASE)? == expected
+                        && args.product.sku == "widget"
                         && args.product.quantity == 3
                         && args.request_id == expected,
                     "typed consumer arguments mismatch",
@@ -94,6 +96,8 @@ async fn workflow(
     tokio::fs::write(&path, instructions)
         .await
         .map_err(|e| zhir::error::Error::Invalid(e.to_string()))?;
+    let mapped = Arc::new(AtomicUsize::new(0));
+    let map_count = mapped.clone();
     let transform = TransformModel::new(recorded.clone(), move |mut request, context| {
         let path = path.clone();
         async move {
@@ -103,6 +107,13 @@ async fn workflow(
                 .map_err(|e| zhir::error::Error::Invalid(e.to_string()))?;
             request.messages.insert(0, Message::system(instructions));
             Ok(request)
+        }
+    });
+    let transform = transform.map_response(move |mut response, ctx| {
+        map_count.fetch_add(1, Ordering::SeqCst);
+        async move {
+            response.provider_data["consumer_transform"] = json!(ctx.run.require(CASE)?);
+            Ok(response)
         }
     });
     let observer = Arc::new(RecordingSink::default());
@@ -117,8 +128,28 @@ async fn workflow(
             schema: schemars::schema_for!(Quote).into(),
         }
     };
+    let model = zhir::models::decorators::RetryingModel::new(
+        Arc::new(model),
+        zhir::retry::RetryPolicy::new(2)?.backoff(zhir::retry::Backoff::fixed(
+            std::time::Duration::from_millis(50),
+        )),
+    )?;
+    let approvals = Arc::new(AtomicUsize::new(0));
+    let approval_count = approvals.clone();
+    let policy = zhir::runtime_tools::FunctionApprovalPolicy::per_call(move |_, ctx| {
+        approval_count.fetch_add(1, Ordering::SeqCst);
+        async move {
+            ctx.require(CASE)?;
+            Ok(zhir::tool::ApprovalDecision::Allow)
+        }
+    });
+    let sources: Vec<Arc<dyn zhir::tool::RuntimeToolCatalogProvider>> =
+        vec![tools, Arc::new(RuntimeToolRegistry::new())];
     let runtime = Runtime::builder(Arc::new(model))
-        .runtime_tools(tools)
+        .runtime_tools(Arc::new(zhir::runtime_tools::CompositeRuntimeTools::new(
+            sources,
+        )))
+        .approval(Arc::new(policy))
         .store(store.clone())
         .defaults(|run| run.options(options(protocol, &tag, false)))
         .defaults(|run| run.response_format(format))
@@ -133,9 +164,9 @@ async fn workflow(
         })
         .build()?;
     let mut events = Events::new();
-    let checkpoint=zhir::runs::drive(runtime.start(zhir_core::run::RunRequest::new(vec![Message::user(format!("Call quote with product sku widget, quantity 3, request_id {tag}. Then return its total and receipt as JSON."))]))?,|event| {
+    let checkpoint=zhir::runs::drive(runtime.start(zhir_core::run::RunRequest::new(vec![Message::user(format!("Call quote with product sku widget, quantity 3, request_id {tag}. Then return its total and receipt as JSON."))]).context_value(CASE,tag.clone())?.runtime_tools(zhir::tool::RuntimeToolSelection::only(["quote"])))?,|event| {
         events.record(&event);async {Ok(())}
-    }).await.map_err(|e|zhir::error::Error::Invalid(e.to_string()))?;
+    }).await.map_err(|e|zhir::error::Error::Invalid(e.to_string()))?.into_checkpoint();
     let output = zhir::output::decode::<Quote>(&checkpoint)?;
     let records = recorded.records();
     let responses: Vec<_> = records
@@ -156,6 +187,16 @@ async fn workflow(
         })
         .sum();
     let mut checks = std::collections::BTreeMap::new();
+    checks.insert("response_maps", mapped.load(Ordering::SeqCst) == 2);
+    checks.insert("function_approval", approvals.load(Ordering::SeqCst) == 1);
+    checks.insert(
+        "per_run_selection",
+        records.iter().all(|r| {
+            r.input.request.runtime_tools.len() == 1
+                && r.input.request.runtime_tools[0].name == "quote"
+        }),
+    );
+    checks.insert("typed_context", checkpoint.context.require(CASE)? == tag);
     checks.insert(
         "completed",
         matches!(checkpoint.state, State::Completed { .. }),

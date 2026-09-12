@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunOptions {
+    pub runtime_tools: crate::tool::RuntimeToolSelection,
     pub limits: Limits,
     pub model: ModelOptions,
     pub provider_tools: Vec<ProviderToolSpec>,
@@ -19,6 +20,10 @@ pub struct RunOptions {
     pub stream: bool,
 }
 impl RunOptions {
+    pub fn runtime_tools(mut self, value: crate::tool::RuntimeToolSelection) -> Self {
+        self.runtime_tools = value;
+        self
+    }
     pub fn limits(mut self, value: Limits) -> Self {
         self.limits = value;
         self
@@ -49,6 +54,7 @@ impl RunOptions {
     }
     pub fn validate(&self) -> Result<()> {
         self.limits.validate()?;
+        self.runtime_tools.validate()?;
         if self.model.temperature.is_some_and(|v| !v.is_finite()) {
             return Err(Error::Invalid("nonfinite model temperature".into()));
         }

@@ -18,12 +18,21 @@ impl RuntimeToolCatalog for EmptyTools {
         vec![]
     }
     fn bind(&self, call: &RuntimeToolCall) -> Result<Arc<dyn RuntimeToolBinding>> {
-        Err(Error::Invalid(format!("unknown tool {}", call.name)))
+        Err(zhir_core::error::CatalogError::NotFound {
+            name: call.name.clone(),
+        }
+        .into())
     }
 }
 impl RuntimeToolCatalogProvider for EmptyTools {
-    fn open_catalog(&self) -> BoxFuture<'_, Result<Arc<dyn RuntimeToolCatalog>>> {
-        Box::pin(async { Ok(Arc::new(Self) as Arc<dyn RuntimeToolCatalog>) })
+    fn open_catalog(
+        &self,
+        context: zhir_core::tool::CatalogContext,
+    ) -> BoxFuture<'_, Result<Arc<dyn RuntimeToolCatalog>>> {
+        Box::pin(async move {
+            context.cancellation.check()?;
+            Ok(Arc::new(Self) as Arc<dyn RuntimeToolCatalog>)
+        })
     }
 }
 pub(crate) struct DefaultBatch;

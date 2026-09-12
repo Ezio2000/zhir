@@ -58,3 +58,5 @@ mod http;
     feature = "anthropic"
 ))]
 pub use http::{HttpModel, ModelConfig};
+
+mod retry_wait;

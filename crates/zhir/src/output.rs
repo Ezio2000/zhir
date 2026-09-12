@@ -2,7 +2,7 @@
 use serde::de::DeserializeOwned;
 use zhir_core::{
     Result,
-    error::Error,
+    error::{Error, ValidationError},
     message::Content,
     run::{Checkpoint, State},
 };
@@ -49,7 +49,12 @@ pub fn provider_calls(checkpoint: &Checkpoint) -> Vec<ProviderToolRecord> {
 /// or retry execution. Serde controls the selected type's unknown-field behavior.
 pub fn decode<T: DeserializeOwned>(checkpoint: &Checkpoint) -> Result<T> {
     let text = completed_text(checkpoint)?;
-    serde_json::from_str(&text).map_err(|e| Error::Protocol(format!("completed output JSON: {e}")))
+    serde_json::from_str(&text).map_err(|e| {
+        Error::Validation(ValidationError::Decode {
+            path: String::new(),
+            message: e.to_string(),
+        })
+    })
 }
 
 fn completed_text(checkpoint: &Checkpoint) -> Result<String> {
@@ -89,10 +94,18 @@ impl<T: DeserializeOwned + schemars::JsonSchema> JsonOutput<T> {
             .for_deserialize()
             .into_generator()
             .into_root_schema_for::<T>();
-        let schema = serde_json::to_value(schema)
-            .map_err(|e| Error::Invalid(format!("output schema: {e}")))?;
-        let validator = jsonschema::validator_for(&schema)
-            .map_err(|e| Error::Invalid(format!("output schema: {e}")))?;
+        let schema = serde_json::to_value(schema).map_err(|e| {
+            Error::Validation(ValidationError::Schema {
+                path: String::new(),
+                message: e.to_string(),
+            })
+        })?;
+        let validator = jsonschema::validator_for(&schema).map_err(|e| {
+            Error::Validation(ValidationError::Schema {
+                path: String::new(),
+                message: e.to_string(),
+            })
+        })?;
         Ok(Self {
             format: zhir_core::model::ResponseFormat::Schema { name, schema },
             validator,
@@ -104,12 +117,24 @@ impl<T: DeserializeOwned + schemars::JsonSchema> JsonOutput<T> {
     }
     pub fn decode(&self, checkpoint: &Checkpoint) -> Result<T> {
         let text = completed_text(checkpoint)?;
-        let value: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| Error::Protocol(format!("output JSON: {e}")))?;
-        self.validator
-            .validate(&value)
-            .map_err(|e| Error::Protocol(format!("output schema at {}: {e}", e.instance_path())))?;
-        serde_json::from_value(value)
-            .map_err(|e| Error::Protocol(format!("output deserialization: {e}")))
+        let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+            Error::Validation(ValidationError::Decode {
+                path: String::new(),
+                message: e.to_string(),
+            })
+        })?;
+        self.validator.validate(&value).map_err(|e| {
+            Error::Validation(ValidationError::Value {
+                path: e.instance_path().to_string(),
+                schema_path: e.schema_path().to_string(),
+                message: e.to_string(),
+            })
+        })?;
+        serde_json::from_value(value).map_err(|e| {
+            Error::Validation(ValidationError::Decode {
+                path: String::new(),
+                message: e.to_string(),
+            })
+        })
     }
 }

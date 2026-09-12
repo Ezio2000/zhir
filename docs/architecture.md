@@ -48,12 +48,20 @@ the SDK does not infer execution ownership from names or status strings.
 Runtime holds shared resources and defaults for new runs. Start resolves explicit
 RunRequest overrides into RunOptions and freezes them in the initial Checkpoint.
 Continue and resume retain those options even when resources are rebuilt with
-different defaults. Stores and trace validation reject parameter drift.
+different defaults. RuntimeToolSelection is part of these frozen options. CatalogContext
+passes run metadata and cancellation to each source. CompositeRuntimeTools opens source
+snapshots once; kernel applies the pure selection view for declarations and binding.
+Stores and trace validation reject parameter drift.
 
 Each start, continue or resume creates one lazy, single-use Invocation. Controls
 can be shared independently. Only complete model responses and complete selected
 tool batches enter durable history; progress events can be bounded and lossy.
 Full model-delta observation is caller-owned and does not share checkpoint atomicity.
+Invocation returns RunCompletion, a settled view of the same committed checkpoint.
+RunOutcome exposes completion, suspension tickets, failures and limits. Structured
+resume/catalog/validation/context/artifact errors retain actionable causes.
+ContextKey<T> provides typed access to serialized metadata. RetryPolicy holds pure
+backoff calculations; models/tools own waits and execution eligibility.
 
 ResumeRequest accepts a snapshot or a SuspensionTicket. A ticket loads the
 configured store and matches the exact run, checkpoint, revision and suspension.
@@ -76,12 +84,13 @@ SQL writes use transactions and revision checks. Redis uses same-slot keys and a
 atomic Lua commit. Exact retries are idempotent; conflicting identity reuse fails.
 Applications own history retention and external-effect idempotency.
 
-ArtifactStore is a core port implemented by consumers. ArtifactModel saves media
+ArtifactStore is a core port. Storage provides MemoryArtifactStore and the optional
+FilesystemArtifactStore; consumers may supply other implementations. ArtifactModel saves media
 before returning the complete response to kernel. ProviderOutput keeps canonical
 native replay and decoder-local media bindings with the normalized call; the raw
 response position references its call id. Reordering normalized calls retains the
 association. Input resolution restores artifact contents before protocol encoding.
-Consumers own durable artifact storage and collection of uncommitted artifacts.
+Consumers configure artifact resources and own collection of uncommitted artifacts.
 
 ## Protocol and wire boundaries
 

@@ -17,3 +17,7 @@ not suspend. Errors still use Result. FunctionTool and structured/freeform adapt
 accept caller-provided schemas. No provider policy is inferred from Rust types.
 
 Part of the zhir Cargo workspace, version 0.1.0.
+
+CompositeRuntimeTools combines catalog sources without changing execution ownership.
+FunctionApprovalPolicy adapts per-call or batch functions. RetryingTool uses the core
+RetryPolicy while retaining idempotency checks and interruptible backoff.

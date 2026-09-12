@@ -230,8 +230,13 @@ pub trait RuntimeToolCatalog: Send + Sync {
     fn specs(&self) -> Vec<RuntimeToolSpec>;
     fn bind(&self, call: &RuntimeToolCall) -> Result<Arc<dyn RuntimeToolBinding>>;
 }
+pub mod catalog;
+pub use catalog::{CatalogContext, RuntimeToolSelection};
 pub trait RuntimeToolCatalogProvider: Send + Sync {
-    fn open_catalog(&self) -> BoxFuture<'_, Result<Arc<dyn RuntimeToolCatalog>>>;
+    fn open_catalog(
+        &self,
+        context: CatalogContext,
+    ) -> BoxFuture<'_, Result<Arc<dyn RuntimeToolCatalog>>>;
 }
 
 #[derive(Debug, Clone)]

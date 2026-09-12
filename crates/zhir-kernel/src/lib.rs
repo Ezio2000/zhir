@@ -9,3 +9,5 @@ pub use invocation::{EventStream, Invocation, RunError};
 pub use runtime::{
     ResumeRequest, RunOptions, RunRequest, Runtime, RuntimeBuilder, SuspensionTicket,
 };
+
+pub use zhir_core::run::{RunCompletion, RunOutcome};

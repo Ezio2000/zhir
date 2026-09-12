@@ -33,7 +33,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 ```rust,no_run
 use std::sync::Arc;
-use zhir::{RunRequest, Runtime, message::Message, run::State};
+use zhir::{RunRequest, Runtime, message::Message, RunOutcome};
 use zhir::models::{ModelConfig, openai};
 use zhir::stores::sqlite::SqliteRunStore;
 
@@ -49,8 +49,8 @@ let runtime = Runtime::builder(Arc::new(model))
     .defaults(|run| run.stream(true))
     .build()?;
 let mut run = runtime.start(RunRequest::new([Message::user("Hello")]))?;
-let checkpoint = run.result().await?;
-if let State::Completed { content } = &checkpoint.state {
+let result = run.result().await?;
+if let RunOutcome::Completed(content) = result.outcome() {
     for part in content {
         if let Some(text) = part.as_text() { print!("{text}"); }
     }
@@ -61,7 +61,7 @@ if let State::Completed { content } = &checkpoint.state {
 
 默认 SDK 仅启用 core 和 kernel 两个执行组件。可选 feature 为 `tools`、`typed-tools`、`typed-output`、`models`、`filesystem`、`shell`、
 `interaction`、`agent`、`openai-chat`、`openai-responses`、`anthropic`、`memory`、
-`sqlite`、`mysql`、`redis`。
+`sqlite`、`mysql`、`redis`、`artifacts-filesystem`。
 
 `models` 提供通用模型组件，不引入 HTTP 客户端；具体协议 feature 自动启用它。
 `typed-tools` 从 Rust 类型生成工具 Schema；`typed-output` 提供请求与本地校验共用的

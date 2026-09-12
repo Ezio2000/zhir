@@ -182,7 +182,7 @@ pub async fn run_case(case: &Value) -> Result<()> {
                     format!("invocation {index}: an action never fired"),
                 )?;
                 match run.result().await {
-                    Ok(checkpoint) => checkpoint,
+                    Ok(result) => result.into_checkpoint(),
                     Err(error) => {
                         if expected.get("store_error").is_none() {
                             return Err(error.error);

@@ -80,7 +80,7 @@ async fn generated_schemas_follow_input_and_output_serde_contracts() {
     assert!(output["properties"].get("unused_input_name").is_none());
     let registry =
         RuntimeToolRegistry::from_tools([Arc::new(tool) as Arc<dyn RuntimeTool>]).unwrap();
-    let catalog = registry.open_catalog().await.unwrap();
+    let catalog = registry.open_catalog(Default::default()).await.unwrap();
     let request = call(json!({"customer_id":"宁筠", "address":{"city":"杭州"}}));
     let result = catalog
         .bind(&request)
@@ -120,15 +120,18 @@ async fn typed_tools_keep_output_validation_and_error_lifecycle() {
         .unwrap();
     let catalog = RuntimeToolRegistry::from_tools([Arc::new(tool) as Arc<dyn RuntimeTool>])
         .unwrap()
-        .open_catalog()
+        .open_catalog(Default::default())
         .await
         .unwrap();
     let bound = catalog
         .bind(&call(json!({"customer_id":"x","address":{"city":"a"}})))
         .unwrap();
-    assert!(
-        matches!(bound.invoke(context()).await,Err(Error::Invalid(e)) if e.contains("schema validation"))
-    );
+    assert!(matches!(
+        bound.invoke(context()).await,
+        Err(Error::Validation(
+            zhir_core::error::ValidationError::Value { .. }
+        ))
+    ));
     let invoked = Arc::new(AtomicUsize::new(0));
     let count = invoked.clone();
     let tool = TypedTool::<Input, String>::new(
@@ -208,7 +211,7 @@ async fn typed_replies_preserve_media_and_validate_success_accepted_and_waiting_
             .unwrap();
             let catalog = RuntimeToolRegistry::from_tools([Arc::new(tool) as Arc<dyn RuntimeTool>])
                 .unwrap()
-                .open_catalog()
+                .open_catalog(Default::default())
                 .await
                 .unwrap();
             let result = catalog
@@ -217,7 +220,12 @@ async fn typed_replies_preserve_media_and_validate_success_accepted_and_waiting_
                 .invoke(context())
                 .await;
             if !valid {
-                assert!(matches!(result,Err(Error::Invalid(e)) if e.contains("schema validation")));
+                assert!(matches!(
+                    result,
+                    Err(Error::Validation(
+                        zhir_core::error::ValidationError::Value { .. }
+                    ))
+                ));
                 continue;
             }
             let result = result.unwrap();

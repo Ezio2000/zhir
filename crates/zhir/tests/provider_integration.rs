@@ -247,7 +247,8 @@ async fn mixed_runtime_and_provider_calls_have_separate_execution_and_metrics() 
         .unwrap()
         .result()
         .await
-        .unwrap();
+        .unwrap()
+        .into_checkpoint();
     assert!(matches!(completed.state, State::Completed { .. }));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(completed.metrics.runtime_tool_calls, 1);
@@ -339,7 +340,8 @@ async fn artifacts_are_durable_before_commit_and_replay_after_reconstruction() {
         .unwrap()
         .result()
         .await
-        .unwrap();
+        .unwrap()
+        .into_checkpoint();
     worker.await.unwrap();
     assert!(
         matches!(&checkpoint.state,State::Completed{content} if matches!(&content[0],Content::Image{source:MediaSource::Artifact{..}}))
@@ -481,7 +483,8 @@ async fn provider_continuation_never_enters_runtime_tool_execution() {
             .unwrap()
             .result()
             .await
-            .unwrap();
+            .unwrap()
+            .into_checkpoint();
         assert!(matches!(completed.state, State::Completed { .. }));
         assert_eq!(completed.metrics.planning_steps, 2);
         assert_eq!(completed.metrics.runtime_tool_calls, 0);
@@ -568,7 +571,8 @@ async fn consumer_maps_native_client_actions_to_the_single_runtime_trait() {
         .unwrap()
         .result()
         .await
-        .unwrap();
+        .unwrap()
+        .into_checkpoint();
     assert!(matches!(completed.state, State::Completed { .. }));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(completed.metrics.runtime_tool_calls, 1);

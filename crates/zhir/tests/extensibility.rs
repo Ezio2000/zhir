@@ -872,7 +872,7 @@ async fn user_model_new_events_and_content_survive_kernel_and_wire() {
             found = true;
         }
     }
-    let checkpoint = invocation.result().await.unwrap();
+    let checkpoint = invocation.result().await.unwrap().into_checkpoint();
     assert!(found);
     let decoded =
         zhir::wire::decode_checkpoint(&zhir::wire::encode_checkpoint(&checkpoint).unwrap())
