@@ -15,3 +15,11 @@ creating a run. RunCompletion/RunOutcome project settled checkpoints. CatalogCon
 and RuntimeToolSelection carry catalog parameters; kernel implements selection.
 Structured errors, ApprovalPolicy and BatchPolicy contracts stay here; concrete
 retry strategies belong to zhir-policies.
+
+PendingCalls identifies an unresolved call range in an assistant history message.
+Use History::resolve_pending to borrow its payloads; advancing the cursor does not
+copy the remaining calls. History caches order validation and prefix digests during
+append. History::appended_since validates a prefix and returns only added messages.
+StateKind, RuntimeToolOutcomeKind, ControlAction and ApprovalDecisionKind provide
+closed classifications for facts and events. BatchPolicy takes specifications in a
+BTreeMap keyed by tool name.

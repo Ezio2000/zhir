@@ -82,6 +82,30 @@ pub struct RuntimeToolSpec {
     pub execution: Execution,
 }
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeToolOutcomeKind {
+    Success,
+    Failure,
+    Accepted,
+    Waiting,
+}
+impl RuntimeToolOutcomeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Failure => "failure",
+            Self::Accepted => "accepted",
+            Self::Waiting => "waiting",
+        }
+    }
+}
+impl std::fmt::Display for RuntimeToolOutcomeKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RuntimeToolOutcome {
@@ -120,12 +144,12 @@ impl RuntimeToolOutcome {
             Self::Failure { error } => vec![Content::text(&error.message)],
         }
     }
-    pub fn kind(&self) -> &'static str {
+    pub fn kind(&self) -> RuntimeToolOutcomeKind {
         match self {
-            Self::Success { .. } => "success",
-            Self::Failure { .. } => "failure",
-            Self::Accepted { .. } => "accepted",
-            Self::Waiting { .. } => "waiting",
+            Self::Success { .. } => RuntimeToolOutcomeKind::Success,
+            Self::Failure { .. } => RuntimeToolOutcomeKind::Failure,
+            Self::Accepted { .. } => RuntimeToolOutcomeKind::Accepted,
+            Self::Waiting { .. } => RuntimeToolOutcomeKind::Waiting,
         }
     }
     pub fn validate(&self) -> Result<()> {
@@ -244,11 +268,42 @@ pub struct ApprovalRequest {
     pub call: RuntimeToolCall,
     pub spec: RuntimeToolSpec,
 }
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalDecisionKind {
+    Allow,
+    Deny,
+    Suspend,
+}
+impl ApprovalDecisionKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Deny => "deny",
+            Self::Suspend => "suspend",
+        }
+    }
+}
+impl std::fmt::Display for ApprovalDecisionKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 #[derive(Debug, Clone)]
 pub enum ApprovalDecision {
     Allow,
     Deny(String),
     Suspend(Suspension),
+}
+impl ApprovalDecision {
+    pub fn kind(&self) -> ApprovalDecisionKind {
+        match self {
+            Self::Allow => ApprovalDecisionKind::Allow,
+            Self::Deny(_) => ApprovalDecisionKind::Deny,
+            Self::Suspend(_) => ApprovalDecisionKind::Suspend,
+        }
+    }
 }
 pub trait ApprovalPolicy: Send + Sync {
     fn decide(
@@ -266,6 +321,6 @@ pub trait BatchPolicy: Send + Sync {
     fn select(
         &self,
         candidates: &[RuntimeToolCall],
-        specs: &[RuntimeToolSpec],
+        specs: &std::collections::BTreeMap<String, RuntimeToolSpec>,
     ) -> Result<RuntimeToolBatch>;
 }

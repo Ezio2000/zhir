@@ -90,7 +90,7 @@ impl Commit {
                 "history delta does not produce checkpoint".into(),
             ));
         }
-        self.checkpoint.state.validate()
+        self.checkpoint.validate()
     }
 }
 /// Implementations settle atomic writes before returning. A dropped caller does not

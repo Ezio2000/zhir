@@ -24,9 +24,10 @@ impl ShellOptions {
         }
     }
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Args {
+    #[schemars(length(min = 1))]
     command: String,
 }
 struct ProcessGroup {
@@ -70,12 +71,7 @@ pub fn bash(options: ShellOptions) -> Result<Arc<dyn RuntimeTool>> {
         ));
     }
     Ok(Arc::new(zhir_tools::function::structured(
-        spec(
-            "bash",
-            "Execute a shell command in the workspace.",
-            json!({"type":"object","required":["command"],"properties":{"command":{"type":"string","minLength":1}},"additionalProperties":false}),
-            false,
-        ),
+        spec::<Args>("bash", "Execute a shell command in the workspace.", false),
         move |a: Args, context| {
             let options = options.clone();
             async move {

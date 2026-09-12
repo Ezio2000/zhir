@@ -103,6 +103,157 @@ async fn exercise(store: Arc<dyn RunStore>) {
     expired.deadline = Some(std::time::Instant::now());
     assert!(store.commit(expired).await.is_err());
     assert_eq!(store.load_head(run).await.unwrap().unwrap().revision, 3);
+    pending_recovery(store).await;
+}
+async fn pending_recovery(store: Arc<dyn RunStore>) {
+    use zhir_core::{
+        message::Output,
+        run::{ActiveState, ControlAction, StateKind, Suspension},
+        tool::{RuntimeToolCall, RuntimeToolInput, RuntimeToolOutcome, RuntimeToolOutcomeKind},
+    };
+    let first = initial();
+    let run = first.checkpoint.context.run_id.clone();
+    store.commit(first.clone()).await.unwrap();
+    let calls: Vec<_> = (0..96)
+        .map(|i| RuntimeToolCall {
+            id: format!("call-{i}"),
+            name: "echo".into(),
+            input: RuntimeToolInput::Structured(serde_json::json!({"i":i})),
+        })
+        .collect();
+    let message = Message::Assistant {
+        output: calls
+            .iter()
+            .cloned()
+            .map(|call| Output::RuntimeToolCall { call })
+            .collect(),
+        provider_data: serde_json::Value::Null,
+    };
+    let mut head = first.checkpoint.as_ref().clone();
+    head.history = head.history.append(vec![message.clone()]).unwrap();
+    head.state = State::RuntimeToolsPending {
+        calls: head.history.pending().unwrap().unwrap(),
+        provider_turn_pending: false,
+    };
+    head.fact = Fact::ModelTurn {
+        runtime_tool_call_ids: calls.iter().map(|c| c.id.clone()).collect(),
+        result: StateKind::RuntimeToolsPending,
+    };
+    head.parent_id = Some(head.id.clone());
+    head.id = uuid::Uuid::new_v4().to_string();
+    head.revision += 1;
+    let mut invalid = head.clone();
+    if let State::RuntimeToolsPending { calls, .. } = &mut invalid.state {
+        calls.next += 1;
+    }
+    assert!(
+        store
+            .commit(Commit::new(
+                Arc::new(invalid),
+                HistoryDelta::Append(vec![message.clone()])
+            ))
+            .await
+            .is_err()
+    );
+    store
+        .commit(Commit::new(
+            Arc::new(head),
+            HistoryDelta::Append(vec![message]),
+        ))
+        .await
+        .unwrap();
+    for batch in calls.chunks(17) {
+        let loaded = store.load_head(&run).await.unwrap().unwrap();
+        let cursor = loaded.history.pending().unwrap().unwrap();
+        assert_eq!(
+            loaded.history.resolve_pending(cursor).unwrap()[0].id,
+            batch[0].id
+        );
+        let messages: Vec<_> = batch
+            .iter()
+            .map(|call| Message::RuntimeTool {
+                call_id: call.id.clone(),
+                name: call.name.clone(),
+                outcome: RuntimeToolOutcome::Success {
+                    content: vec![],
+                    structured: serde_json::Value::Null,
+                },
+            })
+            .collect();
+        let mut next = loaded.as_ref().clone();
+        next.parent_id = Some(next.id.clone());
+        next.id = uuid::Uuid::new_v4().to_string();
+        next.revision += 1;
+        next.history = next.history.append(messages.clone()).unwrap();
+        next.state = match cursor.advance(batch.len()).unwrap() {
+            Some(calls) => State::RuntimeToolsPending {
+                calls,
+                provider_turn_pending: false,
+            },
+            None => State::Planning {
+                provider_turn_pending: false,
+            },
+        };
+        next.fact = Fact::RuntimeToolBatch {
+            call_ids: batch.iter().map(|c| c.id.clone()).collect(),
+            outcomes: vec![RuntimeToolOutcomeKind::Success; batch.len()],
+            parallel: true,
+        };
+        store
+            .commit(Commit::new(Arc::new(next), HistoryDelta::Append(messages)))
+            .await
+            .unwrap();
+        if cursor.next == 0 {
+            let mut pause = store
+                .load_head(&run)
+                .await
+                .unwrap()
+                .unwrap()
+                .as_ref()
+                .clone();
+            let resume_to = pause.state.active().unwrap();
+            pause.parent_id = Some(pause.id.clone());
+            pause.id = uuid::Uuid::new_v4().to_string();
+            pause.revision += 1;
+            pause.state = State::Suspended {
+                resume_to,
+                suspension: Suspension::pause(),
+            };
+            pause.fact = Fact::Control {
+                action: ControlAction::Suspended,
+            };
+            store
+                .commit(Commit::new(Arc::new(pause), HistoryDelta::Unchanged))
+                .await
+                .unwrap();
+            let loaded = store.load_head(&run).await.unwrap().unwrap();
+            let State::Suspended {
+                resume_to: ActiveState::RuntimeToolsPending { calls, .. },
+                ..
+            } = loaded.state
+            else {
+                panic!("recovered suspension");
+            };
+            assert_eq!(calls.next, 17);
+            assert_eq!(loaded.history.resolve_pending(calls).unwrap().len(), 79);
+            let mut resumed = loaded.as_ref().clone();
+            resumed.parent_id = Some(resumed.id.clone());
+            resumed.id = uuid::Uuid::new_v4().to_string();
+            resumed.revision += 1;
+            resumed.state = State::RuntimeToolsPending {
+                calls,
+                provider_turn_pending: false,
+            };
+            resumed.fact = Fact::Resumed;
+            store
+                .commit(Commit::new(Arc::new(resumed), HistoryDelta::Unchanged))
+                .await
+                .unwrap();
+        }
+    }
+    let loaded = store.load_head(&run).await.unwrap().unwrap();
+    assert_eq!(loaded.history.pending().unwrap(), None);
+    assert_eq!(loaded.history.len(), 98);
 }
 #[tokio::test]
 async fn memory() {

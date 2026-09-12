@@ -1,5 +1,21 @@
 {
   "$defs": {
+    "ApprovalDecisionKind": {
+      "enum": [
+        "allow",
+        "deny",
+        "suspend"
+      ],
+      "type": "string"
+    },
+    "ControlAction": {
+      "enum": [
+        "failed",
+        "limited",
+        "suspended"
+      ],
+      "type": "string"
+    },
     "EventData": {
       "oneOf": [
         {
@@ -52,7 +68,7 @@
               "type": "string"
             },
             "decision": {
-              "type": "string"
+              "$ref": "#/$defs/ApprovalDecisionKind"
             },
             "kind": {
               "const": "approval_decided",
@@ -147,7 +163,7 @@
               "type": "string"
             },
             "outcome": {
-              "type": "string"
+              "$ref": "#/$defs/RuntimeToolOutcomeKind"
             }
           },
           "required": [
@@ -176,7 +192,7 @@
               "type": "integer"
             },
             "state": {
-              "type": "string"
+              "$ref": "#/$defs/StateKind"
             }
           },
           "required": [
@@ -226,7 +242,7 @@
               "type": "string"
             },
             "result": {
-              "type": "string"
+              "$ref": "#/$defs/StateKind"
             },
             "runtime_tool_call_ids": {
               "items": {
@@ -257,7 +273,7 @@
             },
             "outcomes": {
               "items": {
-                "type": "string"
+                "$ref": "#/$defs/RuntimeToolOutcomeKind"
               },
               "type": "array"
             },
@@ -311,7 +327,7 @@
           "additionalProperties": false,
           "properties": {
             "action": {
-              "type": "string"
+              "$ref": "#/$defs/ControlAction"
             },
             "kind": {
               "const": "control",
@@ -501,6 +517,26 @@
         "completed",
         "incomplete",
         "failed"
+      ],
+      "type": "string"
+    },
+    "RuntimeToolOutcomeKind": {
+      "enum": [
+        "success",
+        "failure",
+        "accepted",
+        "waiting"
+      ],
+      "type": "string"
+    },
+    "StateKind": {
+      "enum": [
+        "planning",
+        "runtime_tools_pending",
+        "suspended",
+        "completed",
+        "failed",
+        "limited"
       ],
       "type": "string"
     },

@@ -86,8 +86,16 @@ State transitions, control precedence and failure semantics are specified in the
 ## Persistence and artifacts
 
 History uses immutable chunks shared through Arc. Append copies at most one partial
-64-message chunk and updates an incremental digest. Full materialization is reserved
-for model requests and explicit recovery/export.
+64-message chunk and updates cached prefix digests and tool-order validation.
+PendingCalls is a cursor into the runtime calls of an assistant history message:
+message_index identifies the message, next is the first unresolved call ordinal,
+and end is the total number of runtime calls in that message. Call payloads are
+shared in the immutable history; states and checkpoint cores store only the cursor.
+History::resolve_pending borrows the remaining calls after checking the cursor.
+History::appended_since verifies the cached prefix digest and materializes only the
+suffix, including for independently reconstructed histories. Offline trace checks
+use this suffix and cached order validation. Full materialization is reserved for
+model requests and explicit recovery/export.
 
 SQL and Redis persist compact checkpoint cores plus accepted history deltas.
 Replacements start a new generation; Memory retains shared histories in-process.
@@ -116,6 +124,18 @@ Models owns protocol envelopes and per-invocation extension sessions. A fallible
 factory receives read-only protocol, request and run context. HTTP/SSE transport,
 validation and retry composition stay in models; concrete capability policies and
 auxiliary service clients stay with consumers. Entirely new protocols implement Model.
+
+Protocol encoding, decoding and stream accumulation are split into private Chat,
+Responses and Messages modules. Shared replay code indexes normalized provider calls
+by id while preserving native replay order. Stream text grows in place; media binding
+and payload membership use sets. Kernel indexes the selected catalog once, and passes
+its name-keyed specifications to BatchPolicy. Binding, approval, execution and commit
+preparation remain phases of the same kernel engine.
+
+StateKind, RuntimeToolOutcomeKind, ControlAction and ApprovalDecisionKind describe
+closed runtime classifications. Facts and events use these values directly. Builtins
+use AgentStatus and a typed grep mode, and derive input schemas from their Serde input
+types, including defaults, required nullable fields and numerical bounds.
 
 Normalized input usage includes cache reads and writes; cache counters are a
 breakdown and must not be added again. Protocol codecs normalize their native usage

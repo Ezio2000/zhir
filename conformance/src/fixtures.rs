@@ -234,7 +234,11 @@ impl ApprovalPolicy for Approval {
 }
 pub struct FaultBatch(pub String);
 impl BatchPolicy for FaultBatch {
-    fn select(&self, calls: &[RuntimeToolCall], _: &[RuntimeToolSpec]) -> Result<RuntimeToolBatch> {
+    fn select(
+        &self,
+        calls: &[RuntimeToolCall],
+        _: &std::collections::BTreeMap<String, RuntimeToolSpec>,
+    ) -> Result<RuntimeToolBatch> {
         let mut selected = calls.to_vec();
         let mut parallel = true;
         match self.0.as_str() {
@@ -372,9 +376,7 @@ pub fn seed(value: &Value) -> Result<Arc<Checkpoint>> {
         history: History::new(decode::<Vec<Message>>(&value["history"])?)?,
         state: decode(&value["state"])?,
         metrics: decode(&value["metrics"])?,
-        fact: zhir_core::run::Fact::Control {
-            action: "fixture".into(),
-        },
+        fact: zhir_core::run::Fact::Resumed,
     }))
 }
 

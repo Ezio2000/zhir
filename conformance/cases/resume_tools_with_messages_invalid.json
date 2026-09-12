@@ -34,18 +34,11 @@
         "resume_to": {
           "kind": "runtime_tools_pending",
           "provider_turn_pending": false,
-          "calls": [
-            {
-              "id": "call-1",
-              "name": "echo",
-              "input": {
-                "kind": "structured",
-                "value": {
-                  "text": "later"
-                }
-              }
-            }
-          ]
+          "calls": {
+            "message_index": 1,
+            "next": 0,
+            "end": 1
+          }
         },
         "suspension": {
           "reason": "approval",

@@ -123,7 +123,7 @@ impl ToolEnv {
                 let again=backend.start_or_get(call.id,prompt,context.run.clone()).await?;
                 require(first.id==again.id,"child idempotency mismatch")?;
                 let done=backend.wait(first.id,context.run).await?;
-                require(done.status=="completed" && text(&done.content).trim()==self.receipt,"child result mismatch")?;
+                require(done.status==zhir_builtins::agent::AgentStatus::Completed && text(&done.content).trim()==self.receipt,"child result mismatch")?;
                 Ok(RuntimeToolResult::json(json!({"receipt":text(&done.content).trim(),"child_id":done.id})))
             }
             "multimodal_report" if call.name=="read_image"=>Ok(RuntimeToolResult {outcome:RuntimeToolOutcome::Success {content:vec![Content::text("Read the alphanumeric code, then call submit_report with that code."),Content::Image {source:MediaSource::Inline {mime_type:"image/png".into(),base64:base64::engine::general_purpose::STANDARD.encode(include_bytes!("../fixtures/vision.png"))}}],structured:Value::Null},suspension:None}),
@@ -468,7 +468,7 @@ async fn workflow(
         String::new()
     };
     let mut checks = BTreeMap::new();
-    checks.insert("completed", state == "completed");
+    checks.insert("completed", state == zhir_core::run::StateKind::Completed);
     checks.insert(
         "expected_output",
         if case.family == "structured_report" {

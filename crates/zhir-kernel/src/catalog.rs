@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 use zhir_core::{
     Result,
     error::CatalogError,
@@ -11,7 +14,7 @@ use zhir_core::{
 pub(crate) fn select_catalog(
     selection: &RuntimeToolSelection,
     inner: Arc<dyn RuntimeToolCatalog>,
-) -> Result<Arc<dyn RuntimeToolCatalog>> {
+) -> Result<Arc<SelectedCatalog>> {
     selection.validate()?;
     let mut specs = BTreeMap::new();
     for spec in inner.specs() {
@@ -36,14 +39,15 @@ pub(crate) fn select_catalog(
                     return Err(CatalogError::NotFound { name: name.clone() }.into());
                 }
             }
-            specs.retain(|name, _| names.contains(name));
+            let selected: BTreeSet<_> = names.iter().collect();
+            specs.retain(|name, _| selected.contains(name));
         }
     }
     Ok(Arc::new(SelectedCatalog { inner, specs }))
 }
-struct SelectedCatalog {
+pub(crate) struct SelectedCatalog {
     inner: Arc<dyn RuntimeToolCatalog>,
-    specs: BTreeMap<String, RuntimeToolSpec>,
+    pub(crate) specs: BTreeMap<String, RuntimeToolSpec>,
 }
 impl RuntimeToolCatalog for SelectedCatalog {
     fn specs(&self) -> Vec<RuntimeToolSpec> {
