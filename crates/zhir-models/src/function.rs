@@ -2,48 +2,44 @@
 use std::future::Future;
 use zhir_core::{
     BoxFuture, Result,
-    model::{
-        Capabilities, DeltaSink, Model, ModelContext, ModelDelta, ModelRequest, ModelResponse,
-    },
+    model::{CapabilitySet, DeltaSink, Model, ModelContext, ModelDelta, ModelRequest, TurnOutput},
 };
 
-pub struct FunctionModel<F> {
-    capabilities: Capabilities,
-    callback: F,
+pub struct FunctionModel {
+    capabilities: CapabilitySet,
+    exchange: std::sync::Arc<crate::session::Exchange>,
 }
-impl<F> FunctionModel<F> {
-    pub fn new<Fut>(capabilities: Capabilities, callback: F) -> Self
+impl FunctionModel {
+    pub fn new<F, Fut>(capabilities: CapabilitySet, callback: F) -> Self
     where
-        F: Fn(ModelRequest, ModelContext) -> Fut + Send + Sync,
-        Fut: Future<Output = Result<ModelResponse>> + Send + 'static,
+        F: Fn(ModelRequest, ModelContext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<TurnOutput>> + Send + 'static,
     {
         Self {
             capabilities,
-            callback,
+            exchange: std::sync::Arc::new(move |r, c| Box::pin(callback(r, c))),
         }
     }
 }
-impl<F, Fut> Model for FunctionModel<F>
-where
-    F: Fn(ModelRequest, ModelContext) -> Fut + Send + Sync,
-    Fut: Future<Output = Result<ModelResponse>> + Send + 'static,
-{
-    fn capabilities(&self) -> &Capabilities {
+impl Model for FunctionModel {
+    fn capabilities(&self) -> &CapabilitySet {
         &self.capabilities
     }
-    fn invoke(
+    fn negotiate(&self, request: &ModelRequest) -> Result<zhir_core::profile::NegotiatedProfile> {
+        crate::session::validate_capabilities(&self.capabilities)?;
+        zhir_policies::negotiation::negotiate(request, &self.capabilities)
+    }
+    fn open_session(
         &self,
-        request: ModelRequest,
-        context: ModelContext,
-    ) -> BoxFuture<'_, Result<ModelResponse>> {
+        open: zhir_core::model::SessionOpen,
+    ) -> BoxFuture<'_, Result<zhir_core::model::ModelSession>> {
         Box::pin(async move {
-            context.cancellation.check()?;
-            request.validate(&self.capabilities)?;
-            let cancellation = context.cancellation.clone();
-            let response = (self.callback)(request, context).await?;
-            cancellation.check()?;
-            response.validate()?;
-            Ok(response)
+            crate::session::open(open, self.exchange.clone(), self.capabilities.clone(), {
+                let caps = self.capabilities.clone();
+                std::sync::Arc::new(move |request| {
+                    zhir_policies::negotiation::negotiate(request, &caps)
+                })
+            })
         })
     }
 }

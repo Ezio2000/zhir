@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "name": "reject_nonterminal_outcome_pending",
+  "kind": "value",
+  "schema": "tool-outcome",
+  "value": {
+    "kind": "pending",
+    "content": [],
+    "structured": null
+  },
+  "valid": false
+}

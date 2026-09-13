@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "name": "outcome_cancelled",
+  "kind": "value",
+  "schema": "tool-outcome",
+  "value": {
+    "kind": "cancelled",
+    "reason": "cancelled"
+  },
+  "valid": true
+}

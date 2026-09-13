@@ -10,14 +10,16 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-use zhir::core::artifact::{ArtifactContent, ArtifactRef, ArtifactStore};
 use zhir::{
     BoxFuture, Result, Runtime,
     error::Error,
-    message::{Content, MediaSource, Message, Output},
-    model::{Model, ModelDelta, ToolChoice},
-    models::{ArtifactModel, ModelConfig, openai},
+    message::{Content, Message, Output},
+    model::{ModelDelta, ToolChoice},
+    models::{ModelConfig, ResourceModel, openai},
     run::State,
+};
+use zhir_core::resource::{
+    ResourceReader, ResourceRef, ResourceSource, ResourceStore, ResourceWriter,
 };
 
 #[tokio::test]
@@ -36,10 +38,15 @@ async fn provider_adapter_matrix_preserves_identity_order_progress_and_replay() 
                     };
                     let (url, worker) =
                         server(vec![(body, streaming), (frame(vec![]).to_string(), false)]).await;
-                    let model =
-                        openai::responses::model(ModelConfig::new(url, "fixture", "fixture"))
-                            .unwrap()
-                            .with_extension(move |_| extension());
+                    let model = openai::responses::model(ModelConfig::new(
+                        url,
+                        std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+                            "Bearer", "fixture",
+                        )),
+                        "fixture",
+                    ))
+                    .unwrap()
+                    .with_extension(move |_| extension());
                     let deltas = Arc::new(Deltas::default());
                     let mut first_request = request(streaming);
                     if repeat % 2 == 0 {
@@ -49,7 +56,7 @@ async fn provider_adapter_matrix_preserves_identity_order_progress_and_replay() 
                         };
                     }
                     let response = model
-                        .invoke(first_request, context(deltas.clone()))
+                        .turn(first_request, context(deltas.clone()))
                         .await
                         .unwrap();
                     assert_eq!(response.output.len(), count);
@@ -88,7 +95,7 @@ async fn provider_adapter_matrix_preserves_identity_order_progress_and_replay() 
                         provider_data: response.provider_data,
                     });
                     model
-                        .invoke(next, context(Arc::new(Deltas::default())))
+                        .turn(next, context(Arc::new(Deltas::default())))
                         .await
                         .unwrap();
                     let sent = worker.await.unwrap();
@@ -141,13 +148,19 @@ async fn unknown_disabled_duplicate_and_unmapped_calls_fail_without_scheduling()
                 raw.to_string()
             };
             let (url, worker) = server(vec![(body, streaming)]).await;
-            let model =
-                openai::responses::model(ModelConfig::new(url, "fixture", "fixture")).unwrap();
+            let model = openai::responses::model(ModelConfig::new(
+                url,
+                std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+                    "Bearer", "fixture",
+                )),
+                "fixture",
+            ))
+            .unwrap();
             let mut input = request(streaming);
             input.provider_tools.clear();
             assert!(
                 model
-                    .invoke(input, context(Arc::new(Deltas::default())))
+                    .turn(input, context(Arc::new(Deltas::default())))
                     .await
                     .unwrap_err()
                     .to_string()
@@ -157,14 +170,20 @@ async fn unknown_disabled_duplicate_and_unmapped_calls_fail_without_scheduling()
         }
     }
     let (url, worker) = server(vec![(frame(vec![item(0, "done")]).to_string(), false)]).await;
-    let model = openai::responses::model(ModelConfig::new(url, "fixture", "fixture"))
-        .unwrap()
-        .with_extension(move |_| extension());
+    let model = openai::responses::model(ModelConfig::new(
+        url,
+        std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+            "Bearer", "fixture",
+        )),
+        "fixture",
+    ))
+    .unwrap()
+    .with_extension(move |_| extension());
     let mut disabled = request(false);
     disabled.provider_tools.clear();
     assert!(
         model
-            .invoke(disabled, context(Arc::new(Deltas::default())))
+            .turn(disabled, context(Arc::new(Deltas::default())))
             .await
             .unwrap_err()
             .to_string()
@@ -173,12 +192,17 @@ async fn unknown_disabled_duplicate_and_unmapped_calls_fail_without_scheduling()
     worker.await.unwrap();
     let mut adapters = extension().unwrap();
     assert!(adapters.register(Render::default()).is_err());
-    let model =
-        openai::responses::model(ModelConfig::new("http://127.0.0.1:1", "fixture", "fixture"))
-            .unwrap();
+    let model = openai::responses::model(ModelConfig::new(
+        "http://127.0.0.1:1",
+        std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+            "Bearer", "fixture",
+        )),
+        "fixture",
+    ))
+    .unwrap();
     assert!(
         model
-            .invoke(request(false), context(Arc::new(Deltas::default())))
+            .turn(request(false), context(Arc::new(Deltas::default())))
             .await
             .unwrap_err()
             .to_string()
@@ -189,12 +213,18 @@ async fn unknown_disabled_duplicate_and_unmapped_calls_fail_without_scheduling()
         false,
     )])
     .await;
-    let model = openai::responses::model(ModelConfig::new(url, "fixture", "fixture"))
-        .unwrap()
-        .with_extension(move |_| extension());
+    let model = openai::responses::model(ModelConfig::new(
+        url,
+        std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+            "Bearer", "fixture",
+        )),
+        "fixture",
+    ))
+    .unwrap()
+    .with_extension(move |_| extension());
     assert!(
         model
-            .invoke(request(false), context(Arc::new(Deltas::default())))
+            .turn(request(false), context(Arc::new(Deltas::default())))
             .await
             .unwrap_err()
             .to_string()
@@ -229,9 +259,15 @@ async fn mixed_runtime_and_provider_calls_have_separate_execution_and_metrics() 
         item(1, "done"),
     ]);
     let (url,worker)=server(vec![(raw.to_string(),false),(frame(vec![json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]})]).to_string(),false)]).await;
-    let model = openai::responses::model(ModelConfig::new(url, "fixture", "fixture"))
-        .unwrap()
-        .with_extension(move |_| extension());
+    let model = openai::responses::model(ModelConfig::new(
+        url,
+        std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+            "Bearer", "fixture",
+        )),
+        "fixture",
+    ))
+    .unwrap()
+    .with_extension(move |_| extension());
     let runtime = Runtime::builder(Arc::new(model))
         .runtime_tools(Arc::new(
             RuntimeToolRegistry::from_tools([Arc::new(tool) as Arc<dyn zhir::tool::RuntimeTool>])
@@ -270,43 +306,45 @@ struct Files {
     gets: Arc<AtomicUsize>,
     fail: bool,
 }
-impl ArtifactStore for Files {
-    fn put(&self, key: String, content: ArtifactContent) -> BoxFuture<'_, Result<ArtifactRef>> {
+impl ResourceStore for Files {
+    fn create(
+        &self,
+        key: String,
+        media_type: String,
+    ) -> BoxFuture<'_, Result<Box<dyn ResourceWriter>>> {
         Box::pin(async move {
             self.puts.fetch_add(1, Ordering::SeqCst);
             if self.fail {
                 return Err(Error::Storage("fixture write failed".into()));
             }
-            let bytes =
-                serde_json::to_vec(&json!({"mime_type":content.mime_type,"base64":content.base64}))
-                    .unwrap();
-            let path = self.root.join(&key);
-            if path.exists() {
-                assert_eq!(std::fs::read(path).unwrap(), bytes);
-            } else {
-                std::fs::write(path, bytes).unwrap();
-            }
-            Ok(ArtifactRef {
-                id: key,
-                mime_type: content.mime_type,
-            })
+            zhir_storage::FilesystemResourceStore::open(&self.root)
+                .await?
+                .create(key, media_type)
+                .await
         })
     }
-    fn get(&self, reference: ArtifactRef) -> BoxFuture<'_, Result<ArtifactContent>> {
+    fn open(&self, reference: ResourceRef) -> BoxFuture<'_, Result<Box<dyn ResourceReader>>> {
         Box::pin(async move {
             self.gets.fetch_add(1, Ordering::SeqCst);
-            let bytes = std::fs::read(self.root.join(reference.id))
-                .map_err(|e| Error::Storage(e.to_string()))?;
-            let data: Value = serde_json::from_slice(&bytes).unwrap();
-            Ok(ArtifactContent {
-                mime_type: data["mime_type"].as_str().unwrap().into(),
-                base64: data["base64"].as_str().unwrap().into(),
-            })
+            ResourceStore::open(
+                &zhir_storage::FilesystemResourceStore::open(&self.root).await?,
+                reference,
+            )
+            .await
         })
     }
 }
+fn resource_url(media_type: &str, url: String) -> Content {
+    Content::resource(ResourceRef {
+        id: url.clone(),
+        media_type: media_type.into(),
+        name: None,
+        source: ResourceSource::Url { url },
+        metadata: Default::default(),
+    })
+}
 #[tokio::test]
-async fn artifacts_are_durable_before_commit_and_replay_after_reconstruction() {
+async fn resources_are_durable_before_commit_and_replay_after_reconstruction() {
     let dir = tempfile::tempdir().unwrap();
     let puts = Arc::new(AtomicUsize::new(0));
     let gets = Arc::new(AtomicUsize::new(0));
@@ -317,14 +355,22 @@ async fn artifacts_are_durable_before_commit_and_replay_after_reconstruction() {
         fail: false,
     };
     let (url, worker) = server(vec![(frame(vec![item(0, "done")]).to_string(), false)]).await;
-    let model = ArtifactModel::new(
+    let model = ResourceModel::new(
         Arc::new(
-            openai::responses::model(ModelConfig::new(url, "fixture", "fixture"))
-                .unwrap()
-                .with_extension(move |_| extension()),
+            openai::responses::model(ModelConfig::new(
+                url,
+                std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+                    "Bearer", "fixture",
+                )),
+                "fixture",
+            ))
+            .unwrap()
+            .with_extension(move |_| extension()),
         ),
         Arc::new(files.clone()),
-    );
+        16 * 1024 * 1024,
+    )
+    .unwrap();
     let store = Arc::new(zhir::stores::memory::MemoryRunStore::new());
     let runtime = Runtime::builder(Arc::new(model))
         .defaults(|run| run.provider_tools(vec![spec()]))
@@ -340,18 +386,24 @@ async fn artifacts_are_durable_before_commit_and_replay_after_reconstruction() {
         .into_checkpoint();
     worker.await.unwrap();
     assert!(
-        matches!(&checkpoint.state,State::Completed{content} if matches!(&content[0],Content::Image{source:MediaSource::Artifact{..}}))
+        matches!(&checkpoint.state,State::Completed{content} if matches!(&content[0], Content::Resource { input } if matches!(input.resource.source, ResourceSource::Stored { .. })))
     );
     let bytes = zhir::wire::encode_checkpoint(&checkpoint).unwrap();
     assert!(!String::from_utf8_lossy(&bytes).contains("aGVsbG8="));
     assert_eq!(puts.load(Ordering::SeqCst), 1);
     let restored = zhir::wire::decode_checkpoint(&bytes).unwrap();
     let (url, worker) = server(vec![(frame(vec![]).to_string(), false)]).await;
-    let model = ArtifactModel::new(
+    let model = ResourceModel::new(
         Arc::new(
-            openai::responses::model(ModelConfig::new(url, "fixture", "fixture"))
-                .unwrap()
-                .with_extension(move |_| extension()),
+            openai::responses::model(ModelConfig::new(
+                url,
+                std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+                    "Bearer", "fixture",
+                )),
+                "fixture",
+            ))
+            .unwrap()
+            .with_extension(move |_| extension()),
         ),
         Arc::new(Files {
             root: dir.path().into(),
@@ -359,12 +411,14 @@ async fn artifacts_are_durable_before_commit_and_replay_after_reconstruction() {
             gets: gets.clone(),
             fail: false,
         }),
-    );
+        16 * 1024 * 1024,
+    )
+    .unwrap();
     let mut next = request(false);
-    next.messages = restored.history.messages();
+    next.messages = zhir::model::conversation(restored.history.entries());
     next.messages.push(Message::user("continue"));
     model
-        .invoke(next, context(Arc::new(Deltas::default())))
+        .turn(next, context(Arc::new(Deltas::default())))
         .await
         .unwrap();
     let sent = worker.await.unwrap();
@@ -375,11 +429,11 @@ async fn artifacts_are_durable_before_commit_and_replay_after_reconstruction() {
         .find(|item| item["type"] == "consumer_render_call")
         .unwrap();
     assert_eq!(image["result"], "aGVsbG8=");
-    assert_eq!(gets.load(Ordering::SeqCst), 1);
+    assert_eq!(gets.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
-async fn artifact_failure_or_missing_binding_never_commits_a_partial_provider_result() {
+async fn resource_failure_or_missing_binding_never_commits_a_partial_provider_result() {
     for failed_store in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let files = Files {
@@ -393,14 +447,22 @@ async fn artifact_failure_or_missing_binding_never_commits_a_partial_provider_re
             raw["unbound_duplicate"] = raw["result"].clone();
         }
         let (url, worker) = server(vec![(frame(vec![raw]).to_string(), false)]).await;
-        let model = ArtifactModel::new(
+        let model = ResourceModel::new(
             Arc::new(
-                openai::responses::model(ModelConfig::new(url, "fixture", "fixture"))
-                    .unwrap()
-                    .with_extension(move |_| extension()),
+                openai::responses::model(ModelConfig::new(
+                    url,
+                    std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+                        "Bearer", "fixture",
+                    )),
+                    "fixture",
+                ))
+                .unwrap()
+                .with_extension(move |_| extension()),
             ),
             Arc::new(files),
-        );
+            16 * 1024 * 1024,
+        )
+        .unwrap();
         let runtime = Runtime::builder(Arc::new(model))
             .defaults(|run| run.provider_tools(vec![spec()]))
             .build()
@@ -415,13 +477,15 @@ async fn artifact_failure_or_missing_binding_never_commits_a_partial_provider_re
             let error = result.unwrap_err();
             assert!(matches!(error.error, Error::Storage(_)));
             let checkpoint = error.last_checkpoint.unwrap();
-            assert_eq!(checkpoint.revision, 0);
+            assert!(checkpoint.active.session.turn_id.is_some());
             checkpoint
         } else {
             let checkpoint = result.unwrap().into_checkpoint();
-            assert_eq!(checkpoint.revision, 1);
+            assert!(checkpoint.active.session.turn_id.is_some());
             assert!(
-                matches!(&checkpoint.state, State::Failed { error } if error.code == "protocol")
+                matches!(&checkpoint.state, State::Failed { error } if error.code == "protocol"),
+                "{:?}",
+                checkpoint.state
             );
             checkpoint
         };
@@ -435,16 +499,22 @@ async fn invocation_sessions_are_isolated_across_concurrent_streams() {
     let raw = frame(vec![item(0, "done")]);
     let (url, worker) = server((0..32).map(|_| (stream(&raw, 1), true)).collect()).await;
     let model = Arc::new(
-        openai::responses::model(ModelConfig::new(url, "fixture", "fixture"))
-            .unwrap()
-            .with_extension(move |_| extension()),
+        openai::responses::model(ModelConfig::new(
+            url,
+            std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+                "Bearer", "fixture",
+            )),
+            "fixture",
+        ))
+        .unwrap()
+        .with_extension(move |_| extension()),
     );
     let results = futures::future::join_all((0..32).map(|_| {
         let model = model.clone();
         async move {
             let deltas = Arc::new(Deltas::default());
             model
-                .invoke(request(true), context(deltas.clone()))
+                .turn(request(true), context(deltas.clone()))
                 .await
                 .unwrap();
             let events = deltas.0.lock().unwrap();
@@ -474,9 +544,15 @@ async fn provider_continuation_never_enters_runtime_tool_execution() {
             (frame(vec![item(0, "done")]).to_string(), false),
         ])
         .await;
-        let model = openai::responses::model(ModelConfig::new(url, "fixture", "fixture"))
-            .unwrap()
-            .with_extension(move |_| extension());
+        let model = openai::responses::model(ModelConfig::new(
+            url,
+            std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+                "Bearer", "fixture",
+            )),
+            "fixture",
+        ))
+        .unwrap()
+        .with_extension(move |_| extension());
         let runtime = Runtime::builder(Arc::new(model))
             .defaults(|run| run.provider_tools(vec![spec()]))
             .build()
@@ -489,7 +565,7 @@ async fn provider_continuation_never_enters_runtime_tool_execution() {
             .unwrap()
             .into_checkpoint();
         assert!(matches!(completed.state, State::Completed { .. }));
-        assert_eq!(completed.metrics.planning_steps, 2);
+        assert_eq!(completed.metrics.model_turns, 2);
         assert_eq!(completed.metrics.runtime_tool_calls, 0);
         assert_eq!(zhir::output::provider_calls(&completed).len(), 2);
         assert_eq!(worker.await.unwrap().len(), 2);
@@ -555,9 +631,15 @@ async fn consumer_maps_native_client_actions_to_the_single_runtime_trait() {
     )
     .unwrap();
     let (url,worker)=server(vec![(frame(vec![json!({"type":"computer_call","call_id":"client-action","status":"completed","actions":[{"type":"screenshot"}]})]).to_string(),false),(frame(vec![]).to_string(),false)]).await;
-    let model = openai::responses::model(ModelConfig::new(url, "fixture", "fixture"))
-        .unwrap()
-        .with_extension(|_| Ok(ClientAction));
+    let model = openai::responses::model(ModelConfig::new(
+        url,
+        std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+            "Bearer", "fixture",
+        )),
+        "fixture",
+    ))
+    .unwrap()
+    .with_extension(|_| Ok(ClientAction));
     let runtime = Runtime::builder(Arc::new(model))
         .runtime_tools(Arc::new(
             zhir::runtime_tools::RuntimeToolRegistry::from_tools([
@@ -592,19 +674,24 @@ async fn consumer_maps_native_client_actions_to_the_single_runtime_trait() {
 
 #[tokio::test]
 async fn conflicting_mapping_and_malformed_provider_status_are_explicit_errors() {
-    let model =
-        openai::responses::model(ModelConfig::new("http://127.0.0.1:1", "fixture", "fixture"))
-            .unwrap()
-            .with_extension(|_| {
-                Ok({
-                    zhir::models::ExtensionChain::new()
-                        .push(extension()?)
-                        .push(extension()?)
-                })
-            });
+    let model = openai::responses::model(ModelConfig::new(
+        "http://127.0.0.1:1",
+        std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+            "Bearer", "fixture",
+        )),
+        "fixture",
+    ))
+    .unwrap()
+    .with_extension(|_| {
+        Ok({
+            zhir::models::ExtensionChain::new()
+                .push(extension()?)
+                .push(extension()?)
+        })
+    });
     assert!(
         model
-            .invoke(request(false), context(Arc::new(Deltas::default())))
+            .turn(request(false), context(Arc::new(Deltas::default())))
             .await
             .unwrap_err()
             .to_string()
@@ -612,13 +699,19 @@ async fn conflicting_mapping_and_malformed_provider_status_are_explicit_errors()
     );
     for stage in ["unknown", ""] {
         let (url, worker) = server(vec![(stream(&frame(vec![item(0, stage)]), 1), true)]).await;
-        let model = openai::responses::model(ModelConfig::new(url, "fixture", "fixture"))
-            .unwrap()
-            .with_extension(move |_| extension());
+        let model = openai::responses::model(ModelConfig::new(
+            url,
+            std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+                "Bearer", "fixture",
+            )),
+            "fixture",
+        ))
+        .unwrap()
+        .with_extension(move |_| extension());
         let deltas = Arc::new(Deltas::default());
         assert!(
             model
-                .invoke(request(true), context(deltas.clone()))
+                .turn(request(true), context(deltas.clone()))
                 .await
                 .is_err()
         );
@@ -635,7 +728,7 @@ async fn conflicting_mapping_and_malformed_provider_status_are_explicit_errors()
 }
 
 #[tokio::test]
-async fn artifact_resolution_preserves_business_objects_and_missing_references_stop_io() {
+async fn resource_resolution_preserves_business_objects_and_missing_references_stop_io() {
     let dir = tempfile::tempdir().unwrap();
     let gets = Arc::new(AtomicUsize::new(0));
     let files = Arc::new(Files {
@@ -646,7 +739,7 @@ async fn artifact_resolution_preserves_business_objects_and_missing_references_s
     });
     let invoked = Arc::new(AtomicUsize::new(0));
     let inner = Arc::new(zhir::models::FunctionModel::new(
-        zhir::model::Capabilities {
+        zhir::model::CapabilitySet {
             input_modalities: vec!["text".into(), "image".into()],
             ..zhir_testing::model_capabilities()
         },
@@ -659,12 +752,12 @@ async fn artifact_resolution_preserves_business_objects_and_missing_references_s
                     assert!(
                         matches!(&request.messages[1],Message::Assistant{output,..} if matches!(&output[0],Output::RuntimeToolCall{call} if call.input == zhir::tool::RuntimeToolInput::Structured(json!({"kind":"artifact","id":"business"}))))
                     );
-                    Ok(zhir::model::ModelResponse::text("done"))
+                    Ok(zhir::model::TurnOutput::text("done"))
                 }
             }
         },
     ));
-    let model = ArtifactModel::new(inner, files);
+    let model = ResourceModel::new(inner, files, 16 * 1024 * 1024).unwrap();
     let mut first = request(false);
     first.provider_tools.clear();
     first.messages.push(Message::Assistant {
@@ -680,26 +773,28 @@ async fn artifact_resolution_preserves_business_objects_and_missing_references_s
         provider_data: Value::Null,
     });
     model
-        .invoke(first, context(Arc::new(Deltas::default())))
+        .turn(first, context(Arc::new(Deltas::default())))
         .await
         .unwrap();
     assert_eq!(gets.load(Ordering::SeqCst), 0);
     let mut second = request(false);
     second.provider_tools.clear();
     second.messages.push(Message::User {
-        content: vec![Content::Image {
-            source: MediaSource::Artifact {
-                id: "missing".into(),
-                mime_type: "image/png".into(),
+        content: vec![Content::resource(ResourceRef {
+            id: "missing".into(),
+            media_type: "image/png".into(),
+            name: None,
+            source: ResourceSource::Stored {
+                key: "0".repeat(64),
             },
-        }],
+            metadata: Default::default(),
+        })],
     });
-    assert!(matches!(
-        model
-            .invoke(second, context(Arc::new(Deltas::default())))
-            .await,
-        Err(Error::Storage(_))
-    ));
+    let error = model
+        .turn(second, context(Arc::new(Deltas::default())))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::Resource(_)), "{error:?}");
     assert_eq!(invoked.load(Ordering::SeqCst), 1);
     assert_eq!(gets.load(Ordering::SeqCst), 1);
 }
@@ -763,9 +858,15 @@ async fn arbitrary_native_identity_fields_and_custom_replay_do_not_require_core_
         (frame(vec![]).to_string(), false),
     ])
     .await;
-    let model = openai::responses::model(ModelConfig::new(url, "fixture", "fixture"))
-        .unwrap()
-        .with_extension(move |_| extension());
+    let model = openai::responses::model(ModelConfig::new(
+        url,
+        std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+            "Bearer", "fixture",
+        )),
+        "fixture",
+    ))
+    .unwrap()
+    .with_extension(move |_| extension());
     let mut input = request(false);
     input.provider_tools = vec![zhir::model::ProviderToolSpec {
         provider: "consumer.example".into(),
@@ -773,7 +874,7 @@ async fn arbitrary_native_identity_fields_and_custom_replay_do_not_require_core_
         options: json!([1, 2]),
     }];
     let response = model
-        .invoke(input.clone(), context(Arc::new(Deltas::default())))
+        .turn(input.clone(), context(Arc::new(Deltas::default())))
         .await
         .unwrap();
     assert_eq!(
@@ -785,7 +886,7 @@ async fn arbitrary_native_identity_fields_and_custom_replay_do_not_require_core_
         provider_data: response.provider_data,
     });
     model
-        .invoke(input, context(Arc::new(Deltas::default())))
+        .turn(input, context(Arc::new(Deltas::default())))
         .await
         .unwrap();
     let sent = worker.await.unwrap();
@@ -879,18 +980,23 @@ async fn paired_native_blocks_replay_once_in_stream_and_nonstream_messages() {
             raw.to_string()
         };
         let (url,worker)=server(vec![(body,streaming),(json!({"content":[{"type":"text","text":"done"}],"stop_reason":"end_turn","usage":{}}).to_string(),false)]).await;
-        let model =
-            zhir::models::anthropic::messages::model(ModelConfig::new(url, "fixture", "fixture"))
-                .unwrap()
-                .with_extension(|_| {
-                    Ok({
-                        let mut registry = zhir::models::provider_tools::ProviderTools::new();
-                        registry.register(BlockAdapter)?;
-                        registry
-                    })
-                });
+        let model = zhir::models::anthropic::messages::model(ModelConfig::new(
+            url,
+            std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+                "Bearer", "fixture",
+            )),
+            "fixture",
+        ))
+        .unwrap()
+        .with_extension(|_| {
+            Ok({
+                let mut registry = zhir::models::provider_tools::ProviderTools::new();
+                registry.register(BlockAdapter)?;
+                registry
+            })
+        });
         let response = model
-            .invoke(request(streaming), context(Arc::new(Deltas::default())))
+            .turn(request(streaming), context(Arc::new(Deltas::default())))
             .await
             .unwrap();
         assert_eq!(response.output.len(), 1);
@@ -904,7 +1010,7 @@ async fn paired_native_blocks_replay_once_in_stream_and_nonstream_messages() {
             provider_data: response.provider_data,
         });
         model
-            .invoke(next, context(Arc::new(Deltas::default())))
+            .turn(next, context(Arc::new(Deltas::default())))
             .await
             .unwrap();
         let sent = worker.await.unwrap();
@@ -940,22 +1046,12 @@ impl zhir::models::provider_tools::ProviderToolAdapter for MediaAdapter {
                 name: "compose".into(),
                 status: zhir::message::ProviderToolStatus::Completed,
                 output: vec![
-                    Content::Audio {
-                        source: MediaSource::Url {
-                            url: "https://fixtures.invalid/audio".into(),
-                        },
-                    },
-                    Content::Video {
-                        source: MediaSource::Url {
-                            url: "https://fixtures.invalid/video".into(),
-                        },
-                    },
-                    Content::File {
-                        source: MediaSource::Url {
-                            url: "https://fixtures.invalid/file".into(),
-                        },
-                        name: Some("report".into()),
-                    },
+                    resource_url("audio/wav", "https://fixtures.invalid/audio".into()),
+                    resource_url("video/mp4", "https://fixtures.invalid/video".into()),
+                    resource_url(
+                        "application/octet-stream",
+                        "https://fixtures.invalid/file".into(),
+                    ),
                 ],
                 data: json!({"receipt":item["receipt"]}),
             },
@@ -981,19 +1077,26 @@ async fn consumer_media_outputs_are_independent_of_native_model_input_modalities
         (frame(vec![]).to_string(), false),
     ])
     .await;
-    let model = openai::responses::model(ModelConfig::new(url, "fixture", "fixture"))
-        .unwrap()
-        .with_capabilities(zhir::model::Capabilities {
-            provider_tools: true,
-            ..zhir_testing::model_capabilities()
+    let model = openai::responses::model(ModelConfig::new(
+        url,
+        std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+            "Bearer", "fixture",
+        )),
+        "fixture",
+    ))
+    .unwrap()
+    .with_capabilities(zhir::model::CapabilitySet {
+        features: [zhir_core::model::Capability::ProviderTools].into(),
+
+        ..zhir_testing::model_capabilities()
+    })
+    .with_extension(|_| {
+        Ok({
+            let mut registry = zhir::models::provider_tools::ProviderTools::new();
+            registry.register(MediaAdapter)?;
+            registry
         })
-        .with_extension(|_| {
-            Ok({
-                let mut registry = zhir::models::provider_tools::ProviderTools::new();
-                registry.register(MediaAdapter)?;
-                registry
-            })
-        });
+    });
     let mut input = request(false);
     input.provider_tools = vec![zhir::model::ProviderToolSpec {
         provider: "media.example".into(),
@@ -1001,7 +1104,7 @@ async fn consumer_media_outputs_are_independent_of_native_model_input_modalities
         options: json!({}),
     }];
     let response = model
-        .invoke(input.clone(), context(Arc::new(Deltas::default())))
+        .turn(input.clone(), context(Arc::new(Deltas::default())))
         .await
         .unwrap();
     assert_eq!(zhir::message::visible_content(&response.output).len(), 3);
@@ -1010,7 +1113,7 @@ async fn consumer_media_outputs_are_independent_of_native_model_input_modalities
         provider_data: response.provider_data,
     });
     model
-        .invoke(input.clone(), context(Arc::new(Deltas::default())))
+        .turn(input.clone(), context(Arc::new(Deltas::default())))
         .await
         .unwrap();
     let sent = worker.await.unwrap();
@@ -1019,15 +1122,14 @@ async fn consumer_media_outputs_are_independent_of_native_model_input_modalities
         json!({"type":"media_reference","receipt":"receipt-1"})
     );
     input.messages.push(Message::User {
-        content: vec![Content::Video {
-            source: MediaSource::Url {
-                url: "https://fixtures.invalid/native-input".into(),
-            },
-        }],
+        content: vec![resource_url(
+            "video/mp4",
+            "https://fixtures.invalid/native-input".into(),
+        )],
     });
     assert!(
         model
-            .invoke(input, context(Arc::new(Deltas::default())))
+            .turn(input, context(Arc::new(Deltas::default())))
             .await
             .unwrap_err()
             .to_string()
@@ -1041,8 +1143,8 @@ impl zhir::models::ProtocolExtension for ReverseNormalized {
         &mut self,
         _: zhir::models::Protocol,
         _: &Value,
-        decoded: Result<zhir::model::ModelResponse>,
-    ) -> Result<zhir::model::ModelResponse> {
+        decoded: Result<zhir::model::TurnOutput>,
+    ) -> Result<zhir::model::TurnOutput> {
         let mut response = decoded?;
         response.output.reverse();
         Ok(response)
@@ -1079,20 +1181,28 @@ async fn canonical_media_replay_survives_reordered_outputs_and_multiple_native_p
                 (frame(vec![]).to_string(), false),
             ])
             .await;
-            let model = ArtifactModel::new(
+            let model = ResourceModel::new(
                 Arc::new(
-                    openai::responses::model(ModelConfig::new(url, "fixture", "fixture"))
-                        .unwrap()
-                        .with_extension(|_| {
-                            Ok(zhir::models::ExtensionChain::new()
-                                .push(extension()?)
-                                .push(ReverseNormalized))
-                        }),
+                    openai::responses::model(ModelConfig::new(
+                        url,
+                        std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+                            "Bearer", "fixture",
+                        )),
+                        "fixture",
+                    ))
+                    .unwrap()
+                    .with_extension(|_| {
+                        Ok(zhir::models::ExtensionChain::new()
+                            .push(extension()?)
+                            .push(ReverseNormalized))
+                    }),
                 ),
                 files,
-            );
+                16 * 1024 * 1024,
+            )
+            .unwrap();
             let response = model
-                .invoke(request(streaming), context(Arc::new(Deltas::default())))
+                .turn(request(streaming), context(Arc::new(Deltas::default())))
                 .await
                 .unwrap();
             assert!(
@@ -1100,20 +1210,20 @@ async fn canonical_media_replay_survives_reordered_outputs_and_multiple_native_p
             );
             let bytes = serde_json::to_vec(&response).unwrap();
             assert!(!String::from_utf8_lossy(&bytes).contains("aGVsbG8="));
-            let restored: zhir::model::ModelResponse = serde_json::from_slice(&bytes).unwrap();
+            let restored: zhir::model::TurnOutput = serde_json::from_slice(&bytes).unwrap();
             let mut next = request(false);
             next.messages.push(Message::Assistant {
                 output: restored.output,
                 provider_data: restored.provider_data,
             });
             model
-                .invoke(next, context(Arc::new(Deltas::default())))
+                .turn(next, context(Arc::new(Deltas::default())))
                 .await
                 .unwrap();
             let sent = worker.await.unwrap();
             assert_eq!(sent[1]["input"].as_array().unwrap()[1..], native);
-            assert_eq!(puts.load(Ordering::SeqCst), 1);
-            assert_eq!(gets.load(Ordering::SeqCst), 1);
+            assert_eq!(puts.load(Ordering::SeqCst), count);
+            assert_eq!(gets.load(Ordering::SeqCst), 2 * count);
         }
     }
 }
@@ -1131,28 +1241,23 @@ async fn local_media_paths_support_multiple_items_escaped_keys_and_every_media_k
             ProviderToolStatus::Completed,
         )
         .native(first.clone())
-        .image("/a~1b~0/0", "image/png")
+        .media("/a~1b~0/0", "image/png")
         .unwrap()
         .native(second.clone())
         .media(
             "/data/bytes",
-            "application/octet-stream",
-            |source| match kind {
-                0 => Content::Image { source },
-                1 => Content::Audio { source },
-                2 => Content::Video { source },
-                _ => Content::File {
-                    source,
-                    name: Some("file".into()),
-                },
-            },
+            [
+                "image/png",
+                "audio/wav",
+                "video/mp4",
+                "application/octet-stream",
+            ][kind],
         )
         .unwrap()
-        .content(Content::Image {
-            source: MediaSource::Url {
-                url: "https://consumer.example/media".into(),
-            },
-        })
+        .content(resource_url(
+            "image/png",
+            "https://consumer.example/media".into(),
+        ))
         .finish()
         .unwrap();
         let Output::ProviderToolCall { call } = &output else {
@@ -1169,22 +1274,23 @@ async fn local_media_paths_support_multiple_items_escaped_keys_and_every_media_k
             fail: false,
         });
         let inner = zhir::models::FunctionModel::new(
-            zhir::model::Capabilities {
-                provider_tools: true,
+            zhir::model::CapabilitySet {
+                features: [zhir_core::model::Capability::ProviderTools].into(),
+
                 ..zhir_testing::model_capabilities()
             },
             move |_, _| {
                 let output = output.clone();
                 async move {
-                    let mut r = zhir::model::ModelResponse::text("");
+                    let mut r = zhir::model::TurnOutput::text("");
                     r.output = vec![output];
                     Ok(r)
                 }
             },
         );
-        let model = ArtifactModel::new(Arc::new(inner), files.clone());
+        let model = ResourceModel::new(Arc::new(inner), files.clone(), 16 * 1024 * 1024).unwrap();
         let response = model
-            .invoke(request(false), context(Arc::new(Deltas::default())))
+            .turn(request(false), context(Arc::new(Deltas::default())))
             .await
             .unwrap();
         let bytes = serde_json::to_vec(&response).unwrap();
@@ -1192,8 +1298,9 @@ async fn local_media_paths_support_multiple_items_escaped_keys_and_every_media_k
         assert!(!saved.contains("aGVsbG8=") && !saved.contains("c2Vjb25k"));
         assert!(saved.contains("https://consumer.example/media"));
         let verifier = zhir::models::FunctionModel::new(
-            zhir::model::Capabilities {
-                provider_tools: true,
+            zhir::model::CapabilitySet {
+                features: [zhir_core::model::Capability::ProviderTools].into(),
+
                 ..zhir_testing::model_capabilities()
             },
             |request, _| async move {
@@ -1206,7 +1313,7 @@ async fn local_media_paths_support_multiple_items_escaped_keys_and_every_media_k
                 let native = ProviderOutput::replay(call)?;
                 assert_eq!(native[0]["a/b~"][0], "aGVsbG8=");
                 assert_eq!(native[1]["data"]["bytes"], "c2Vjb25k");
-                Ok(zhir::model::ModelResponse::text("done"))
+                Ok(zhir::model::TurnOutput::text("done"))
             },
         );
         let mut next = request(false);
@@ -1214,12 +1321,13 @@ async fn local_media_paths_support_multiple_items_escaped_keys_and_every_media_k
             output: response.output,
             provider_data: response.provider_data,
         });
-        ArtifactModel::new(Arc::new(verifier), files)
-            .invoke(next, context(Arc::new(Deltas::default())))
+        ResourceModel::new(Arc::new(verifier), files, 16 * 1024 * 1024)
+            .unwrap()
+            .turn(next, context(Arc::new(Deltas::default())))
             .await
             .unwrap();
         assert_eq!(puts.load(Ordering::SeqCst), 2);
-        assert_eq!(gets.load(Ordering::SeqCst), 2);
+        assert_eq!(gets.load(Ordering::SeqCst), 4);
     }
     let builder = || {
         ProviderOutput::new(
@@ -1230,18 +1338,26 @@ async fn local_media_paths_support_multiple_items_escaped_keys_and_every_media_k
         )
         .native(json!({"result":"aGVsbG8="}))
     };
-    assert!(builder().image("/missing", "image/png").is_err());
+    assert!(builder().media("/missing", "image/png").is_err());
     assert!(
         builder()
-            .image("/result", "image/png")
+            .media("/result", "image/png")
             .unwrap()
-            .image("/result", "image/png")
+            .media("/result", "image/png")
             .is_err()
     );
     assert!(
-        builder()
-            .media("/result", "image/png", |_| Content::text("wrong"))
-            .is_err()
+        ProviderOutput::new(
+            "consumer.example",
+            "render",
+            "invalid",
+            ProviderToolStatus::Completed
+        )
+        .native(json!({"result":"not base64!"}))
+        .media("/result", "image/png")
+        .is_err()
     );
-    assert!(builder().image("/result", "").unwrap().finish().is_err());
+    assert!(builder().media("/result", "").unwrap().finish().is_err());
 }
+
+use zhir_testing::ModelTestExt;

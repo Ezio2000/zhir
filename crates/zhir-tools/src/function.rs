@@ -1,10 +1,11 @@
 use serde::de::DeserializeOwned;
+use zhir_core::operation::ToolExecution;
 use zhir_core::{
     BoxFuture, Result,
     error::Error,
     tool::{
         InputSpec, RuntimeTool, RuntimeToolCall, RuntimeToolContext, RuntimeToolInput,
-        RuntimeToolResult, RuntimeToolSpec,
+        RuntimeToolSpec,
     },
 };
 
@@ -21,16 +22,16 @@ impl<F> FunctionTool<F> {
 impl<F, Fut> RuntimeTool for FunctionTool<F>
 where
     F: Fn(RuntimeToolCall, RuntimeToolContext) -> Fut + Send + Sync,
-    Fut: std::future::Future<Output = Result<RuntimeToolResult>> + Send + 'static,
+    Fut: std::future::Future<Output = Result<ToolExecution>> + Send + 'static,
 {
     fn spec(&self) -> &RuntimeToolSpec {
         &self.spec
     }
-    fn invoke(
+    fn start(
         &self,
         call: RuntimeToolCall,
         context: RuntimeToolContext,
-    ) -> BoxFuture<'_, Result<RuntimeToolResult>> {
+    ) -> BoxFuture<'_, Result<ToolExecution>> {
         Box::pin((self.callback)(call, context))
     }
 }
@@ -40,7 +41,7 @@ pub fn structured<A, F, Fut>(spec: RuntimeToolSpec, callback: F) -> Result<impl 
 where
     A: DeserializeOwned + Send + 'static,
     F: Fn(A, RuntimeToolContext) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = Result<RuntimeToolResult>> + Send + 'static,
+    Fut: std::future::Future<Output = Result<ToolExecution>> + Send + 'static,
 {
     if !matches!(spec.input, InputSpec::Structured { .. }) {
         return Err(Error::Invalid(
@@ -66,7 +67,7 @@ where
 pub fn freeform<F, Fut>(spec: RuntimeToolSpec, callback: F) -> Result<impl RuntimeTool>
 where
     F: Fn(String, RuntimeToolContext) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = Result<RuntimeToolResult>> + Send + 'static,
+    Fut: std::future::Future<Output = Result<ToolExecution>> + Send + 'static,
 {
     if !matches!(spec.input, InputSpec::Freeform { .. }) {
         return Err(Error::Invalid(

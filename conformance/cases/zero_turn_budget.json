@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "name": "zero_turn_budget",
+  "kind": "runtime",
+  "case": {
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "kind": "text",
+            "text": "go"
+          }
+        ]
+      }
+    ],
+    "steps": [],
+    "tools": [],
+    "expected": {
+      "state": "limited"
+    },
+    "max_model_turns": 0
+  }
+}

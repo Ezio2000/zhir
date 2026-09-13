@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "name": "state_suspended",
+  "kind": "value",
+  "schema": "state",
+  "value": {
+    "kind": "suspended",
+    "suspension": {
+      "reason": "InputRequired",
+      "source": "runtime",
+      "wait_id": null,
+      "metadata": {}
+    }
+  },
+  "valid": true
+}

@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "name": "resource_inline",
+  "kind": "value",
+  "schema": "resource",
+  "value": {
+    "id": "resource",
+    "media_type": "video/mp4",
+    "name": null,
+    "source": {
+      "kind": "inline",
+      "bytes": [
+        0,
+        128,
+        255
+      ]
+    },
+    "metadata": {}
+  },
+  "valid": true
+}

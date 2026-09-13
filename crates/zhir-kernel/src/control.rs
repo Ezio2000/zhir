@@ -1,45 +1,83 @@
-use tokio::sync::mpsc;
-use zhir_core::{Result, error::Error, message::Message, run::Suspension};
-#[derive(Debug)]
-pub(crate) enum Control {
-    Pause(Suspension),
-    Insert(Message, String),
-    CancelTool(String),
-    Abort,
+use tokio::sync::{mpsc, oneshot};
+use zhir_core::{
+    Cancellation, Result, error::Error, message::Message, profile::RequestProfile, run::Suspension,
+};
+#[derive(Debug, Clone)]
+pub struct ControlReceipt {
+    pub command_id: String,
+    pub revision: u64,
 }
-#[derive(Clone, Debug)]
+#[derive(Debug)]
+pub(crate) enum ControlBody {
+    Pause(Suspension),
+    Input(Message, String),
+    CancelOperation(String),
+    ReplyOperation(String, serde_json::Value),
+    UpdateProfile(RequestProfile),
+    Interrupt,
+    EndInput,
+}
+pub(crate) struct Control {
+    pub body: ControlBody,
+    pub reply: oneshot::Sender<Result<ControlReceipt>>,
+}
+#[derive(Clone)]
 pub struct ControlHandle {
-    pub(crate) sender: mpsc::UnboundedSender<Control>,
+    pub(crate) sender: mpsc::Sender<Control>,
+    pub(crate) cancellation: Cancellation,
 }
 impl ControlHandle {
-    pub fn pause(&self, suspension: Suspension) -> Result<()> {
-        suspension.validate()?;
-        let _ = self.sender.send(Control::Pause(suspension));
-        Ok(())
+    async fn send(&self, body: ControlBody) -> Result<ControlReceipt> {
+        let (tx, rx) = oneshot::channel();
+        self.sender
+            .send(Control { body, reply: tx })
+            .await
+            .map_err(|_| Error::Cancelled)?;
+        rx.await.map_err(|_| Error::Cancelled)?
     }
-    pub fn insert(&self, message: Message, source: impl Into<String>) -> Result<()> {
-        if !matches!(message, Message::External { .. }) {
+    pub async fn pause(&self, suspension: Suspension) -> Result<ControlReceipt> {
+        suspension.validate()?;
+        self.send(ControlBody::Pause(suspension)).await
+    }
+    pub async fn input(
+        &self,
+        message: Message,
+        source: impl Into<String>,
+    ) -> Result<ControlReceipt> {
+        if !matches!(message, Message::User { .. } | Message::External { .. }) {
             return Err(Error::Invalid(
-                "live insertion requires an external message".into(),
+                "live input requires user or external content".into(),
             ));
         }
         message.validate()?;
         let source = source.into();
         if source.is_empty() {
-            return Err(Error::Invalid("empty insertion source".into()));
+            return Err(Error::Invalid("empty input source".into()));
         }
-        let _ = self.sender.send(Control::Insert(message, source));
-        Ok(())
+        self.send(ControlBody::Input(message, source)).await
     }
-    pub fn cancel_tool(&self, call_id: impl Into<String>) -> Result<()> {
-        let id = call_id.into();
-        if id.is_empty() {
-            return Err(Error::Invalid("empty call id".into()));
-        }
-        let _ = self.sender.send(Control::CancelTool(id));
-        Ok(())
+    pub async fn cancel_operation(&self, id: impl Into<String>) -> Result<ControlReceipt> {
+        self.send(ControlBody::CancelOperation(id.into())).await
     }
+    pub async fn reply_operation(
+        &self,
+        id: impl Into<String>,
+        value: serde_json::Value,
+    ) -> Result<ControlReceipt> {
+        self.send(ControlBody::ReplyOperation(id.into(), value))
+            .await
+    }
+    pub async fn update_profile(&self, profile: RequestProfile) -> Result<ControlReceipt> {
+        self.send(ControlBody::UpdateProfile(profile)).await
+    }
+    pub async fn interrupt(&self) -> Result<ControlReceipt> {
+        self.send(ControlBody::Interrupt).await
+    }
+    pub async fn end_input(&self) -> Result<ControlReceipt> {
+        self.send(ControlBody::EndInput).await
+    }
+    /// Cancellation bypasses bounded input queues.
     pub fn cancel(&self) {
-        let _ = self.sender.send(Control::Abort);
+        self.cancellation.cancel();
     }
 }

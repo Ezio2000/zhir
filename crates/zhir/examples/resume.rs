@@ -1,126 +1,74 @@
-//! Offline demonstration of a durable question, native export, and explicit resume.
-use serde_json::{Value, json};
+//! Persist a waiting operation and explicitly resolve it through a suspension ticket.
+use serde_json::json;
 use std::sync::Arc;
 use zhir::{
-    BoxFuture, Result, ResumeRequest, Runtime, SuspensionSelector,
+    ResumeRequest, RunRequest, Runtime, SuspensionTicket,
     builtins::interaction,
     message::{Message, Output},
-    model::{Capabilities, Model, ModelContext, ModelRequest, ModelResponse},
-    run::State,
+    model::TurnOutput,
+    models::FunctionModel,
     runtime_tools::RuntimeToolRegistry,
-    storage::RunStore,
-    stores::memory::MemoryRunStore,
+    stores::MemoryRunStore,
     tool::{RuntimeToolCall, RuntimeToolInput},
-    wire,
 };
-struct QuestionModel(Capabilities);
-impl Model for QuestionModel {
-    fn capabilities(&self) -> &Capabilities {
-        &self.0
-    }
-    fn invoke(
-        &self,
-        request: ModelRequest,
-        _: ModelContext,
-    ) -> BoxFuture<'_, Result<ModelResponse>> {
-        Box::pin(async move {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let model = FunctionModel::new(
+        zhir::models::capabilities::text_tool_calling(),
+        |request, _| async move {
             if request
                 .messages
                 .iter()
-                .any(|message| matches!(message, Message::External { .. }))
+                .any(|m| matches!(m, Message::RuntimeTool { .. }))
             {
-                return Ok(ModelResponse::text("Proceeding with Rust"));
+                return Ok(TurnOutput::text("Proceeding with Rust"));
             }
-            let mut response = ModelResponse::text("");
-            response.output = vec![Output::RuntimeToolCall {
-                call: RuntimeToolCall {
-                    id: "question-1".into(),
-                    name: "ask_question".into(),
-                    input: RuntimeToolInput::Structured(
-                        json!({"questions":[{"id":"language","title":"Which language?","options":["Rust","Swift"]}]}),
-                    ),
-                },
-            }];
-            Ok(response)
-        })
-    }
-}
-#[tokio::main]
-async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let store = Arc::new(MemoryRunStore::new());
-    let tools = Arc::new(RuntimeToolRegistry::from_tools([
-        interaction::ask_question()?,
-    ])?);
-    let runtime = Runtime::builder(Arc::new(QuestionModel(capabilities())))
-        .runtime_tools(tools)
-        .store(store.clone())
+            Ok(TurnOutput {
+                output: vec![Output::RuntimeToolCall {
+                    call: RuntimeToolCall {
+                        id: "question".into(),
+                        name: "ask_question".into(),
+                        input: RuntimeToolInput::Structured(
+                            json!({"questions":[{"id":"language","title":"Which language?","options":["Rust","Swift"]}]}),
+                        ),
+                    },
+                }],
+                ..TurnOutput::text("")
+            })
+        },
+    );
+    let runtime = Runtime::builder(Arc::new(model))
+        .runtime_tools(Arc::new(RuntimeToolRegistry::from_tools([
+            interaction::ask_question()?,
+        ])?))
+        .store(Arc::new(MemoryRunStore::new()))
         .build()?;
-    let suspended = runtime
-        .start(zhir::RunRequest::new(vec![Message::user(
-            "Start a project",
-        )]))?
+    let checkpoint = runtime
+        .start(RunRequest::new([Message::user("Start a project")]))?
         .result()
         .await?
         .into_checkpoint();
-    assert!(matches!(suspended.state, State::Suspended { .. }));
-    println!(
-        "{} at revision {}",
-        suspended.state.kind(),
-        suspended.revision
-    );
-
-    // A UI may persist/export this native envelope while waiting for a response.
-    let bytes = wire::encode_checkpoint(&suspended)?;
-    let restored = Arc::new(wire::decode_checkpoint(&bytes)?);
-    let head = store
-        .load_head(&restored.context.run_id)
-        .await?
-        .expect("stored head");
-    assert_eq!(head.id, restored.id);
-    let answers: Value = json!({"language":"Rust"});
-    let answer = interaction::response(&restored, answers)?;
-    let checkpoint = runtime
+    let bytes = zhir::wire::encode_checkpoint(&checkpoint)?;
+    let restored = zhir::wire::decode_checkpoint(&bytes)?;
+    let operation_id = restored
+        .active
+        .operations
+        .keys()
+        .next()
+        .expect("waiting question");
+    let resolution = interaction::response(&restored, operation_id, json!({"language":"Rust"}))?;
+    let completed = runtime
         .resume(
-            ResumeRequest::from_ticket(zhir::SuspensionTicket::from_checkpoint(&restored)?)
-                .matching(SuspensionSelector {
-                    source: Some("ask_question".into()),
-                    ..Default::default()
-                })
-                .message(answer),
+            ResumeRequest::from_ticket(SuspensionTicket::from_checkpoint(&restored)?)
+                .resolve(resolution),
         )
         .await?
         .result()
-        .await?
-        .into_checkpoint();
-    assert!(matches!(checkpoint.state, State::Completed { .. }));
-    assert_eq!(checkpoint.metrics.runtime_tool_calls, 1);
+        .await?;
     println!(
-        "{} at revision {}; question executed once",
-        checkpoint.state.kind(),
-        checkpoint.revision
+        "{}; {} tool call",
+        completed.checkpoint().state.kind(),
+        completed.checkpoint().metrics.runtime_tool_calls
     );
     Ok(())
-}
-
-fn capabilities() -> Capabilities {
-    Capabilities {
-        input_modalities: vec!["text".into()],
-        output_modalities: vec!["text".into()],
-        structured_runtime_tools: true,
-        freeform_runtime_tools: false,
-        provider_tools: false,
-        parallel_runtime_tools: true,
-        parallel_control: true,
-        streaming: true,
-        usage: true,
-        structured_output: false,
-        json_mode: false,
-        seed: false,
-        tool_choices: vec![
-            "auto".into(),
-            "none".into(),
-            "required".into(),
-            "runtime_tool".into(),
-        ],
-    }
 }

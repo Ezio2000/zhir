@@ -15,24 +15,25 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace --all-features --locked
       - run: cargo check -p zhir-core --no-default-features --locked
-      - run: cargo test -p zhir-policies --locked
-      - run: cargo test -p zhir-builtins --no-default-features --features agent --locked
-      - run: cargo test -p zhir-builtins --no-default-features --features agent-runtime --locked
+      - run: cargo check -p zhir-policies --no-default-features --locked
+      - run: cargo check -p zhir-builtins --no-default-features --features agent --locked
+      - run: cargo check -p zhir-builtins --no-default-features --features agent-runtime --locked
       - run: cargo check -p zhir-testing --no-default-features --locked
       - run: cargo check -p zhir-testing --no-default-features --features http --locked
-      - run: cargo run -p zhir-conformance --bin schemas -- --check
+      - run: cargo run -p zhir-conformance --bin zhir-conformance --locked
+      - run: cargo run -p zhir-conformance --bin schemas --locked -- --check
       - run: cargo run -p zhir --no-default-features --example custom_tool --features models,typed-tools
       - run: cargo test -p zhir --no-default-features --features models,typed-tools,memory --test developer_api
       - run: cargo test -p zhir --no-default-features --features models,typed-tools,memory --test consumer_ten
       - run: cargo test -p zhir --no-default-features --features models,typed-tools,memory --test core_boundaries
       - run: cargo test -p zhir --no-default-features --features models,typed-tools,typed-output,memory --test convenience
-      - run: cargo run -p zhir --example resume --features interaction,memory
+      - run: cargo run -p zhir --example resume --features models,interaction,memory
       - run: cargo package --workspace --allow-dirty --locked --target-dir "$RUNNER_TEMP/zhir-package"
   features:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        feature: [default, policies, tools, typed-tools, typed-output, models, filesystem, shell, interaction, agent, agent-runtime, openai-chat, openai-responses, anthropic, memory, sqlite, mysql, redis, artifacts-filesystem]
+        feature: [default, policies, tools, typed-tools, typed-output, models, filesystem, shell, interaction, agent, agent-runtime, openai-chat, openai-responses, anthropic, memory, sqlite, mysql, redis, resources-filesystem]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -75,4 +76,4 @@ jobs:
         with:
           toolchain: 1.95.0
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p zhir-storage --all-features --test stores -- --ignored
+      - run: cargo test -p zhir --all-features --test storage_stores -- --ignored

@@ -1,20 +1,13 @@
 # zhir
 
-The public Rust Agent SDK facade. Select model protocols, tool components and
-stores through Cargo features; core and kernel form the default execution foundation.
+The public composable Rust SDK facade. Default features are empty and include core
+and kernel. Opt into models, tools, policies, typed tools/output, builtins, protocols
+and storage as needed. APIs use ModelSession, ToolExecution/OperationHandle,
+ResourceRef, RequestProfile and v2 checkpoints. This crate adds convenience methods
+over the same kernel, not another runtime.
 
-The policies feature exposes shared retry strategies and policies::history::HistoryWindow; models and tools enable it
-automatically. The models feature provides model composition without an HTTP client. typed-tools
-adds type-derived tool schemas; typed-output adds JsonOutput<T>. Protocol, builtin
-and storage features enable their respective crates.
+See the workspace README and docs/developer-api.md for composition, explicit
+recovery, credential injection and media streams. Offline examples: custom_tool
+(features models,typed-tools) and resume (features models,interaction,memory).
 
-Kernel RunRequest configures one run; ResumeRequest resumes a checkpoint or suspension
-ticket. Output decoding, policy-provided history windows and event consumption compose the same
-runtime and extension ports. Applications own configuration and resource lifecycle.
-
-```toml
-[dependencies]
-zhir = { path = "../zhir/crates/zhir", features = ["openai-chat", "typed-tools", "sqlite"] }
-```
-
-[Quick start and feature list](../../README.md) · [Developer guide](../../docs/developer-api.md)
+Part of the zhir workspace, version 0.2.0.

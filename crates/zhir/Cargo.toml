@@ -40,12 +40,22 @@ openai-chat = ["models", "zhir-models/openai-chat"]
 openai-responses = ["models", "zhir-models/openai-responses"]
 anthropic = ["models", "zhir-models/anthropic"]
 memory = ["dep:zhir-storage"]
-artifacts-filesystem = ["dep:zhir-storage", "zhir-storage/artifacts-filesystem"]
+resources-filesystem = ["dep:zhir-storage", "zhir-storage/resources-filesystem"]
 sqlite = ["dep:zhir-storage", "zhir-storage/sqlite"]
 mysql = ["dep:zhir-storage", "zhir-storage/mysql"]
 redis = ["dep:zhir-storage", "zhir-storage/redis"]
 
 [dev-dependencies]
+zhir-core.workspace = true
+zhir-policies.workspace = true
+zhir-tools = { workspace = true, features = ["typed"] }
+zhir-builtins = { workspace = true, features = ["filesystem", "shell", "interaction", "agent-runtime"] }
+zhir-models = { workspace = true, features = ["openai-chat", "openai-responses", "anthropic"] }
+zhir-storage = { workspace = true, features = ["resources-filesystem", "sqlite", "mysql", "redis"] }
+zhir-kernel.workspace = true
+jsonschema.workspace = true
+sqlx = { workspace = true, features = ["sqlite", "mysql"] }
+redis.workspace = true
 uuid.workspace = true
 tokio = { workspace = true, features = ["fs"] }
 schemars.workspace = true
@@ -64,7 +74,7 @@ required-features = ["typed-tools", "models"]
 
 [[example]]
 name = "resume"
-required-features = ["interaction", "memory"]
+required-features = ["models", "interaction", "memory"]
 
 [[test]]
 name = "live_protocols"

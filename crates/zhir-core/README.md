@@ -1,30 +1,9 @@
 # zhir-core
 
-Public values, extension traits, immutable history, checkpoints and native v1 wire
-contracts. Core contains shared validation and consistency rules. It has no executor,
-HTTP client, database, generated identities, runtime presets or zhir dependency.
-Enable `schema` when generating JSON Schema contracts.
+Public Rust values and extension ports for model sessions, asynchronous operations,
+resources, credentials, profiles, tool catalogs and atomic run storage. Explicit v2
+wire DTOs are separate from provider payloads and database layouts. Core has no
+executor, I/O adapters, environment-derived defaults or dependency on another zhir
+crate. Enable `schema` to generate JSON Schemas during development.
 
-RunOptions stores fully resolved parameters; numeric limits are required on decode.
-RunContext::new takes explicit identity and start time. Capabilities must be supplied
-explicitly. SuspensionTicket identifies a paused revision. ResumeTarget, SuspensionSelector,
-runtime request builders and environment defaults belong to kernel.
-
-ContextKey<T> provides typed JSON metadata access; it can insert metadata without
-creating a run. RunCompletion/RunOutcome project settled checkpoints. CatalogContext
-and RuntimeToolSelection carry catalog parameters; kernel implements selection.
-Structured errors, ApprovalPolicy and BatchPolicy contracts stay here; concrete
-retry strategies belong to zhir-policies.
-
-PendingCalls identifies an unresolved call range in an assistant history message.
-Use History::resolve_pending to borrow its payloads; advancing the cursor does not
-copy the remaining calls. History caches order validation and prefix digests during
-append. History::appended_since validates a prefix and returns only added messages.
-StateKind, RuntimeToolOutcomeKind, ControlAction and ApprovalDecisionKind provide
-closed classifications for facts and events. BatchPolicy takes specifications in a
-BTreeMap keyed by tool name.
-
-Commit::validate_against validates the compact previous CheckpointCore and accepted
-history delta for all adapters. check_deadline takes an explicit Instant; core never
-reads the clock. Content::source and RuntimeToolOutcome::content borrow value data;
-failure text and JSON/waiting reply presets belong to model/tool implementations.
+Part of the zhir workspace, version 0.2.0.

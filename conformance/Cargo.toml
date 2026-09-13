@@ -10,6 +10,9 @@ workspace = true
 [dependencies]
 zhir-core = { workspace = true, features = ["schema"] }
 zhir-kernel.workspace = true
+zhir-testing.workspace = true
+zhir-models.workspace = true
+zhir-policies.workspace = true
 zhir-tools.workspace = true
 zhir-storage.workspace = true
 serde.workspace = true

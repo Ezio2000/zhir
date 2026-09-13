@@ -1,10 +1,8 @@
 mod completion;
 mod context;
 mod history;
-mod pending;
 pub use completion::{RunCompletion, RunOutcome};
 pub use context::ContextKey;
-pub use pending::PendingCalls;
 mod options;
 mod ticket;
 use crate::{
@@ -13,7 +11,7 @@ use crate::{
     message::{Content, Message},
     model::{ModelDelta, Usage},
 };
-pub use history::{History, append_digest as append_history_digest};
+pub use history::{History, HistoryEntry, append_digest as append_history_digest};
 pub use options::RunOptions;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -67,65 +65,31 @@ impl Suspension {
     }
 }
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ActiveState {
-    Planning {
-        provider_turn_pending: bool,
-    },
-    RuntimeToolsPending {
-        calls: PendingCalls,
-        provider_turn_pending: bool,
-    },
-}
-impl ActiveState {
-    pub fn provider_pending(&self) -> bool {
-        match self {
-            Self::Planning {
-                provider_turn_pending,
-            }
-            | Self::RuntimeToolsPending {
-                provider_turn_pending,
-                ..
-            } => *provider_turn_pending,
-        }
-    }
-    pub fn into_state(self) -> State {
-        match self {
-            Self::Planning {
-                provider_turn_pending,
-            } => State::Planning {
-                provider_turn_pending,
-            },
-            Self::RuntimeToolsPending {
-                calls,
-                provider_turn_pending,
-            } => State::RuntimeToolsPending {
-                calls,
-                provider_turn_pending,
-            },
-        }
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunMode {
+    Task,
+    Interactive,
 }
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StateKind {
-    Planning,
-    RuntimeToolsPending,
+    Running,
     Suspended,
     Completed,
     Failed,
+    Cancelled,
     Limited,
 }
 impl StateKind {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Planning => "planning",
-            Self::RuntimeToolsPending => "runtime_tools_pending",
+            Self::Running => "running",
             Self::Suspended => "suspended",
             Self::Completed => "completed",
             Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
             Self::Limited => "limited",
         }
     }
@@ -139,89 +103,121 @@ impl std::fmt::Display for StateKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum State {
-    Planning {
-        provider_turn_pending: bool,
-    },
-    RuntimeToolsPending {
-        calls: PendingCalls,
-        provider_turn_pending: bool,
-    },
-    Suspended {
-        resume_to: ActiveState,
-        suspension: Suspension,
-    },
-    Completed {
-        content: Vec<Content>,
-    },
-    Failed {
-        error: Failure,
-    },
-    Limited {
-        reason: LimitReason,
-    },
+    Running,
+    Suspended { suspension: Suspension },
+    Completed { content: Vec<Content> },
+    Failed { error: Failure },
+    Cancelled,
+    Limited { reason: LimitReason },
 }
 impl State {
     pub fn kind(&self) -> StateKind {
         match self {
-            Self::Planning { .. } => StateKind::Planning,
-            Self::RuntimeToolsPending { .. } => StateKind::RuntimeToolsPending,
+            Self::Running => StateKind::Running,
             Self::Suspended { .. } => StateKind::Suspended,
             Self::Completed { .. } => StateKind::Completed,
             Self::Failed { .. } => StateKind::Failed,
+            Self::Cancelled => StateKind::Cancelled,
             Self::Limited { .. } => StateKind::Limited,
         }
     }
-    pub fn active(&self) -> Option<ActiveState> {
-        match self {
-            Self::Planning {
-                provider_turn_pending,
-            } => Some(ActiveState::Planning {
-                provider_turn_pending: *provider_turn_pending,
-            }),
-            Self::RuntimeToolsPending {
-                calls,
-                provider_turn_pending,
-            } => Some(ActiveState::RuntimeToolsPending {
-                calls: *calls,
-                provider_turn_pending: *provider_turn_pending,
-            }),
-            _ => None,
-        }
+    pub fn active(&self) -> bool {
+        matches!(self, Self::Running)
     }
     pub fn terminal(&self) -> bool {
-        matches!(
-            self,
-            Self::Completed { .. } | Self::Failed { .. } | Self::Limited { .. }
-        )
+        !matches!(self, Self::Running | Self::Suspended { .. })
     }
     pub fn validate(&self) -> Result<()> {
-        let active = match self {
-            Self::Suspended {
-                resume_to,
-                suspension,
-            } => {
-                suspension.validate()?;
-                Some(resume_to.clone())
+        match self {
+            Self::Suspended { suspension } => suspension.validate(),
+            Self::Completed { content } => {
+                for c in content {
+                    c.validate()?;
+                }
+                Ok(())
             }
-            _ => self.active(),
-        };
-        if let Some(ActiveState::RuntimeToolsPending { calls, .. }) = active {
-            calls.validate()?;
+            _ => Ok(()),
         }
-        if let Self::Completed { content } = self {
-            for c in content {
-                c.validate()?;
-            }
-        }
-        Ok(())
     }
+}
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CommandIntent {
+    StartTurn {
+        turn_id: String,
+        history_count: usize,
+        profile: crate::profile::RequestProfile,
+        runtime_tools: Vec<crate::tool::RuntimeToolSpec>,
+    },
+    Input {
+        entry: usize,
+    },
+    ToolResult {
+        operation_id: String,
+        entry: usize,
+    },
+    UpdateProfile {
+        revision: u64,
+        profile: crate::profile::RequestProfile,
+    },
+    Interrupt {
+        turn_id: String,
+    },
+    EndInput,
+    Close,
+}
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PendingCommand {
+    pub id: String,
+    pub intent: CommandIntent,
+    pub sent: bool,
+}
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionSnapshot {
+    pub capabilities: Option<crate::model::CapabilitySet>,
+    pub id: String,
+    pub turn_id: Option<String>,
+    pub turn_start: usize,
+    pub last_sequence: Option<u64>,
+    pub disposition: Option<crate::model::TurnDisposition>,
+    pub recovery: Option<crate::operation::RecoveryRef>,
+    pub epoch: u64,
+    pub input_closed: bool,
+    pub closing: bool,
+    pub closed: bool,
+    pub profile_revision: u64,
+    pub profile: crate::profile::RequestProfile,
+    pub negotiated: crate::profile::NegotiatedProfile,
+    pub effective: crate::profile::EffectiveProfile,
+}
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StreamCursor {
+    pub sequence: u64,
+    pub epoch: u64,
+    pub sealed: crate::resource::ResourceRef,
+}
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActiveState {
+    pub session: SessionSnapshot,
+    pub operations: BTreeMap<String, crate::operation::OperationRecord>,
+    pub commands: Vec<PendingCommand>,
+    pub media: BTreeMap<String, StreamCursor>,
 }
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LimitReason {
     Deadline,
-    PlanningSteps,
+    ModelTurns,
     RuntimeToolCalls,
     TotalTokens,
 }
@@ -229,24 +225,42 @@ pub enum LimitReason {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Limits {
-    pub max_planning_steps: u64,
+    pub max_model_turns: u64,
     pub max_runtime_tool_calls: u64,
-    pub max_runtime_tool_batch_size: usize,
+    pub max_inflight_operations: usize,
+    pub max_control_commands: usize,
+    pub max_session_events: usize,
+    pub max_media_streams: usize,
+    pub max_media_chunk_bytes: usize,
+    pub max_buffered_media_bytes: usize,
     pub max_runtime_tool_concurrency: usize,
-    pub max_progress_events: usize,
-    pub max_buffered_progress: usize,
+    pub max_observer_events: usize,
     pub max_total_tokens: Option<u64>,
     pub elapsed_ms: Option<u64>,
     pub commit_timeout_ms: u64,
 }
 impl Limits {
     pub fn validate(&self) -> Result<()> {
-        if self.max_runtime_tool_batch_size == 0
+        if self.max_inflight_operations == 0
+            || self.max_control_commands == 0
+            || self.max_session_events == 0
+            || self.max_observer_events == 0
+            || self.max_media_streams == 0
+            || [
+                self.max_control_commands,
+                self.max_session_events,
+                self.max_observer_events,
+            ]
+            .iter()
+            .any(|size| *size > u32::MAX as usize)
+            || self.max_buffered_media_bytes > u32::MAX as usize
+            || self.max_media_chunk_bytes == 0
+            || self.max_buffered_media_bytes < self.max_media_chunk_bytes
             || self.max_runtime_tool_concurrency == 0
             || self.commit_timeout_ms == 0
         {
             Err(Error::Invalid(
-                "batch, concurrency and commit timeout must be positive".into(),
+                "invalid queue, media, concurrency or commit limits".into(),
             ))
         } else {
             Ok(())
@@ -257,7 +271,7 @@ impl Limits {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Metrics {
-    pub planning_steps: u64,
+    pub model_turns: u64,
     pub runtime_tool_calls: u64,
     pub usage: Usage,
 }
@@ -265,16 +279,20 @@ pub struct Metrics {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlAction {
+    Finished,
     Failed,
     Limited,
     Suspended,
+    Cancelled,
 }
 impl ControlAction {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Finished => "finished",
             Self::Failed => "failed",
             Self::Limited => "limited",
             Self::Suspended => "suspended",
+            Self::Cancelled => "cancelled",
         }
     }
 }
@@ -284,19 +302,21 @@ impl std::fmt::Display for ControlAction {
     }
 }
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Fact {
     Started,
-    Resumed,
-    ModelTurn {
-        runtime_tool_call_ids: Vec<String>,
-        result: StateKind,
+    Attached,
+    Session {
+        session_id: String,
+        sequence: u64,
     },
-    RuntimeToolBatch {
-        call_ids: Vec<String>,
-        outcomes: Vec<crate::tool::RuntimeToolOutcomeKind>,
-        parallel: bool,
+    Operation {
+        operation_id: String,
+        state: crate::operation::OperationState,
+    },
+    Command {
+        command_id: String,
     },
     ConversationInsert {
         source: String,
@@ -307,17 +327,23 @@ pub enum Fact {
     Control {
         action: ControlAction,
     },
+    Media {
+        stream_id: String,
+        sequence: u64,
+    },
 }
 impl Fact {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Started => "started",
-            Self::Resumed => "resumed",
-            Self::ModelTurn { .. } => "model_turn",
-            Self::RuntimeToolBatch { .. } => "runtime_tool_batch",
+            Self::Attached => "attached",
+            Self::Session { .. } => "session",
+            Self::Operation { .. } => "operation",
+            Self::Command { .. } => "command",
             Self::ConversationInsert { .. } => "conversation_insert",
             Self::HistoryRewrite { .. } => "history_rewrite",
             Self::Control { .. } => "control",
+            Self::Media { .. } => "media",
         }
     }
 }
@@ -330,6 +356,7 @@ pub struct Checkpoint {
     pub context: RunContext,
     pub history: History,
     pub state: State,
+    pub active: ActiveState,
     pub metrics: Metrics,
     pub fact: Fact,
 }
@@ -343,33 +370,128 @@ impl Checkpoint {
             return Err(Error::Invalid("revision and parent disagree".into()));
         }
         self.state.validate()?;
-        let active = self.state.active().or_else(|| {
-            if let State::Suspended { resume_to, .. } = &self.state {
-                Some(resume_to.clone())
-            } else {
-                None
+        self.history.validate()?;
+        if self.active.session.turn_start > self.history.len() {
+            return Err(Error::Invalid("turn start exceeds history".into()));
+        }
+        if self.active.session.id.is_empty() {
+            return Err(Error::Invalid("empty session identity".into()));
+        }
+        let mut ids = std::collections::HashSet::new();
+        for command in &self.active.commands {
+            if command.id.is_empty() || !ids.insert(&command.id) {
+                return Err(Error::Invalid("invalid pending command identity".into()));
             }
-        });
-        validate_history(&self.history, active.as_ref())
+        }
+        if self.active.commands.len() > self.options.limits.max_control_commands
+            || self.active.operations.len() > self.options.limits.max_inflight_operations
+            || self.active.media.len() > self.options.limits.max_media_streams
+        {
+            return Err(Error::Invalid("active capacity exceeded".into()));
+        }
+        for command in &self.active.commands {
+            match &command.intent {
+                CommandIntent::StartTurn {
+                    history_count,
+                    turn_id,
+                    ..
+                } if *history_count > self.history.len()
+                    || self.active.session.turn_id.as_ref() != Some(turn_id) =>
+                {
+                    return Err(Error::Invalid("invalid turn command".into()));
+                }
+                CommandIntent::Input { entry }
+                    if self.history.get(*entry).is_none_or(|e| {
+                        !matches!(e.message, Message::User { .. } | Message::External { .. })
+                    }) =>
+                {
+                    return Err(Error::Invalid("invalid input command".into()));
+                }
+                CommandIntent::ToolResult {
+                    operation_id,
+                    entry,
+                } if self
+                    .active
+                    .operations
+                    .get(operation_id)
+                    .is_none_or(|op| !op.state.terminal() || op.result_entry != Some(*entry)) =>
+                {
+                    return Err(Error::Invalid("invalid result command".into()));
+                }
+                CommandIntent::UpdateProfile { revision, .. }
+                    if *revision <= self.active.session.profile_revision =>
+                {
+                    return Err(Error::Invalid("non-increasing profile revision".into()));
+                }
+                _ => (),
+            }
+        }
+        for (origin, call) in self.history.pending_calls() {
+            if !self.active.operations.values().any(|op| &op.origin == origin && matches!(&op.owner, crate::operation::OperationOwner::RuntimeTool { name } if name == &call.name) && !op.state.terminal()) { return Err(Error::Invalid("pending call has no active operation".into())); }
+        }
+        for (id, operation) in &self.active.operations {
+            operation.validate()?;
+            let call_entry = self
+                .history
+                .get(operation.call_entry)
+                .ok_or_else(|| Error::Invalid("missing operation call".into()))?;
+            if call_entry.origin.as_ref() != Some(&operation.origin) {
+                return Err(Error::Invalid(
+                    "operation origin differs from history".into(),
+                ));
+            }
+            if let crate::operation::OperationOwner::RuntimeTool { name } = &operation.owner {
+                if !matches!(&call_entry.message, Message::Assistant { output, .. } if output.iter().any(|item| matches!(item, crate::message::Output::RuntimeToolCall { call } if &call.name == name && call.id == operation.origin.call_id)))
+                {
+                    return Err(Error::Invalid("operation call mismatch".into()));
+                }
+                if let Some(index) = operation.result_entry {
+                    let valid = self.history.get(index).is_some_and(|entry| entry.origin.as_ref() == Some(&operation.origin) && matches!(&entry.message, Message::RuntimeTool { name: result_name, call_id, outcome } if name == result_name && call_id == &operation.origin.call_id && match outcome { crate::tool::RuntimeToolOutcome::Success { .. } => operation.state == crate::operation::OperationState::Succeeded, crate::tool::RuntimeToolOutcome::Failure { .. } => operation.state == crate::operation::OperationState::Failed, crate::tool::RuntimeToolOutcome::Cancelled { .. } => operation.state == crate::operation::OperationState::Cancelled }));
+                    if !valid {
+                        return Err(Error::Invalid("operation outcome mismatch".into()));
+                    }
+                }
+            }
+            if id != &operation.id
+                || operation.call_entry >= self.history.len()
+                || operation
+                    .result_entry
+                    .is_some_and(|i| i >= self.history.len())
+            {
+                return Err(Error::Invalid(
+                    "operation history reference mismatch".into(),
+                ));
+            }
+        }
+        if matches!(self.state, State::Completed { .. })
+            && (!self.active.commands.is_empty()
+                || self.active.session.disposition != Some(crate::model::TurnDisposition::Finished))
+        {
+            return Err(Error::Invalid(
+                "completed run has pending session work".into(),
+            ));
+        }
+        if matches!(self.state, State::Completed { .. })
+            && self
+                .active
+                .operations
+                .values()
+                .any(|op| !op.state.terminal())
+        {
+            return Err(Error::Invalid(
+                "completed run has unfinished operations".into(),
+            ));
+        }
+        Ok(())
     }
 }
-pub fn validate_history(history: &History, active: Option<&ActiveState>) -> Result<()> {
-    let pending = history.pending()?;
-    match active {
-        Some(ActiveState::RuntimeToolsPending { calls, .. }) if Some(*calls) == pending => Ok(()),
-        Some(ActiveState::RuntimeToolsPending { .. }) => {
-            Err(Error::Invalid("pending state differs from history".into()))
-        }
-        Some(ActiveState::Planning { .. }) if pending.is_some() => Err(Error::Invalid(
-            "planning history has unresolved tools".into(),
-        )),
-        _ => Ok(()),
-    }
+pub fn validate_history(history: &History) -> Result<()> {
+    history.validate()
 }
 
 #[derive(Debug, Clone)]
 pub struct HistoryRewrite {
-    pub messages: Vec<Message>,
+    pub entries: Vec<HistoryEntry>,
     pub reason: String,
 }
 pub trait HistoryReducer: Send + Sync {
@@ -380,31 +502,19 @@ pub trait HistoryReducer: Send + Sync {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EventData {
-    ModelStarted,
-    ModelFinished,
-    ApprovalRequested {
-        call_id: String,
+    ObservationGap {
+        count: usize,
     },
-    ApprovalDecided {
-        call_id: String,
-        decision: crate::tool::ApprovalDecisionKind,
-    },
-    RuntimeToolCancelRequested {
-        call_id: String,
+    OperationChanged {
+        operation_id: String,
+        state: crate::operation::OperationState,
     },
     ModelDelta {
         delta: ModelDelta,
     },
-    RuntimeToolStarted {
-        call_id: String,
-    },
-    RuntimeToolProgress {
-        call_id: String,
+    OperationProgress {
+        operation_id: String,
         value: Value,
-    },
-    RuntimeToolFinished {
-        call_id: String,
-        outcome: crate::tool::RuntimeToolOutcomeKind,
     },
     CheckpointCommitted {
         checkpoint_id: String,
@@ -412,14 +522,6 @@ pub enum EventData {
         state: StateKind,
         fact: Fact,
     },
-}
-impl EventData {
-    pub fn lossy(&self) -> bool {
-        matches!(
-            self,
-            Self::ModelDelta { .. } | Self::RuntimeToolProgress { .. }
-        )
-    }
 }
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "name": "model_script_exhausted",
+  "kind": "runtime",
+  "case": {
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "kind": "text",
+            "text": "go"
+          }
+        ]
+      }
+    ],
+    "steps": [],
+    "tools": [],
+    "expected": {
+      "state": "failed"
+    }
+  }
+}

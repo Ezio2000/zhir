@@ -4,7 +4,6 @@
     feature = "openai-responses",
     feature = "anthropic"
 ))]
-use base64::Engine as _;
 use serde_json::{Value, json};
 use std::{
     sync::{Arc, Mutex},
@@ -15,10 +14,10 @@ use zhir::{
     BoxFuture, Result,
     core::Cancellation,
     error::Error,
-    message::{Content, MediaSource, Message, Output, visible_content},
+    message::{Content, Message, Output, visible_content},
     model::{
-        Capabilities, DeltaSink, Model, ModelContext, ModelDelta, ModelOptions, ModelRequest,
-        ModelResponse, ResponseFormat, ToolChoice,
+        CapabilitySet, DeltaSink, Model, ModelContext, ModelDelta, ModelRequest, ResponseFormat,
+        ToolChoice, TurnOutput,
     },
     models::{
         HttpModel, ModelConfig, Protocol, ProtocolExtension, anthropic, openai, transport::SseEvent,
@@ -33,7 +32,7 @@ fn request() -> ModelRequest {
         messages: vec![Message::user("hello")],
         runtime_tools: vec![],
         provider_tools: vec![],
-        options: ModelOptions::default(),
+        profile: Default::default(),
         tool_choice: ToolChoice::Auto,
         response_format: None,
         stream: false,
@@ -58,14 +57,17 @@ fn spec() -> RuntimeToolSpec {
     }
 }
 fn image() -> Content {
-    Content::Image {
-        source: MediaSource::Inline {
-            mime_type: "image/png".into(),
-            base64: base64::engine::general_purpose::STANDARD
-                .encode(include_bytes!("fixtures/vision.png")),
+    Content::resource(zhir_core::resource::ResourceRef {
+        id: "image".into(),
+        media_type: "image/png".into(),
+        name: None,
+        source: zhir_core::resource::ResourceSource::Inline {
+            bytes: include_bytes!("fixtures/vision.png").to_vec(),
         },
-    }
+        metadata: Default::default(),
+    })
 }
+
 fn with_tool_image(mut r: ModelRequest) -> ModelRequest {
     r.runtime_tools = vec![spec()];
     r.messages = vec![
@@ -159,10 +161,19 @@ impl DeltaSink for Deltas {
 async fn public_extension_boundaries() {
     let mut findings = Vec::new();
     let (url, wire) = server(json!({"output":[],"status":"completed"}), false).await;
-    let model = openai::responses::model(ModelConfig::new(url, "fixture", "fixture")).unwrap();
+    let model = openai::responses::model(ModelConfig::new(
+        url,
+        std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+            "Bearer", "fixture",
+        )),
+        "fixture",
+    ))
+    .unwrap();
     let mut r = request();
-    r.options
-        .extra
+    r.profile
+        .extensions
+        .entry("responses".into())
+        .or_default()
         .insert("future_option".into(), json!({"strength":"new"}));
     r.messages.push(Message::User {
         content: vec![Content::Opaque {
@@ -170,7 +181,7 @@ async fn public_extension_boundaries() {
             data: json!({"type":"input_image","file_id":"file-test","detail":"original"}),
         }],
     });
-    model.invoke(r, context()).await.unwrap();
+    model.turn(r, context()).await.unwrap();
     let sent = wire.await.unwrap();
     assert_eq!(sent["future_option"]["strength"], "new");
     assert_eq!(sent["input"][1]["content"][0]["file_id"], "file-test");
@@ -179,9 +190,16 @@ async fn public_extension_boundaries() {
     );
 
     let (url, wire) = server(json!({"output":[],"status":"completed"}), false).await;
-    let model = openai::responses::model(ModelConfig::new(url, "fixture", "fixture")).unwrap();
+    let model = openai::responses::model(ModelConfig::new(
+        url,
+        std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+            "Bearer", "fixture",
+        )),
+        "fixture",
+    ))
+    .unwrap();
     model
-        .invoke(with_tool_image(request()), context())
+        .turn(with_tool_image(request()), context())
         .await
         .unwrap();
     let sent = wire.await.unwrap();
@@ -197,13 +215,23 @@ async fn public_extension_boundaries() {
     findings.push(json!({"feature":"Responses image tool output","supported":image_preserved,"wire_content_type":sent["input"][2]["output"][0]["type"]}));
 
     let (url, wire)=server(json!({"choices":[{"message":{"role":"assistant","content":"ok"},"logprobs":{"content":[{"token":"ok","logprob":-0.1}]}}]}),false).await;
-    let model = openai::chat::model(ModelConfig::new(url, "fixture", "fixture"))
-        .unwrap()
-        .with_extension(|_| Ok(StrictDeclarations));
+    let model = openai::chat::model(ModelConfig::new(
+        url,
+        std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+            "Bearer", "fixture",
+        )),
+        "fixture",
+    ))
+    .unwrap()
+    .with_extension(|_| Ok(StrictDeclarations));
     let mut r = request();
-    r.options.extra.insert("logprobs".into(), json!(true));
+    r.profile
+        .extensions
+        .entry("chat".into())
+        .or_default()
+        .insert("logprobs".into(), json!(true));
     r.runtime_tools = vec![spec()];
-    let response = model.invoke(r, context()).await.unwrap();
+    let response = model.turn(r, context()).await.unwrap();
     let sent = wire.await.unwrap();
     assert_eq!(sent["logprobs"], true);
     let logprobs_preserved = response.provider_data.to_string().contains("logprobs");
@@ -217,12 +245,22 @@ async fn public_extension_boundaries() {
         .push(json!({"feature":"Chat logprobs response metadata","supported":logprobs_preserved}));
     findings.push(json!({"feature":"strict flag on registered tool declaration","supported":true,"via":"user ProtocolExtension::encode_request"}));
 
-    let model =
-        openai::chat::model(ModelConfig::new("http://127.0.0.1:1", "fixture", "fixture")).unwrap();
+    let model = openai::chat::model(ModelConfig::new(
+        "http://127.0.0.1:1",
+        std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+            "Bearer", "fixture",
+        )),
+        "fixture",
+    ))
+    .unwrap();
     let mut r = request();
-    r.options.extra.insert("tools".into(), json!([]));
+    r.profile
+        .extensions
+        .entry("chat".into())
+        .or_default()
+        .insert("tools".into(), json!([]));
     assert!(matches!(
-        model.invoke(r, context()).await,
+        model.turn(r, context()).await,
         Err(Error::Invalid(_))
     ));
     findings.push(
@@ -231,13 +269,20 @@ async fn public_extension_boundaries() {
 
     let stream = "data: {\"type\":\"response.future_feature.delta\",\"delta\":\"new\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{}}}\n\n";
     let (url, wire) = server(json!(stream), true).await;
-    let model = openai::responses::model(ModelConfig::new(url, "fixture", "fixture")).unwrap();
+    let model = openai::responses::model(ModelConfig::new(
+        url,
+        std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+            "Bearer", "fixture",
+        )),
+        "fixture",
+    ))
+    .unwrap();
     let observed = Arc::new(Deltas::default());
     let mut ctx = context();
     ctx.deltas = Some(observed.clone());
     let mut r = request();
     r.stream = true;
-    model.invoke(r, ctx).await.unwrap();
+    model.turn(r, ctx).await.unwrap();
     wire.await.unwrap();
     let preserved=observed.0.lock().unwrap().iter().any(|d|matches!(d,ModelDelta::ProtocolEvent {data,..} if data["data"]["type"]=="response.future_feature.delta"));
     assert!(preserved);
@@ -273,8 +318,15 @@ async fn multimodal_tool_results_preserve_order_for_both_responses_tool_kinds() 
             };
         }
         let (url, wire) = server(json!({"output":[],"status":"completed"}), false).await;
-        let model = openai::responses::model(ModelConfig::new(url, "fixture", "fixture")).unwrap();
-        model.invoke(r, context()).await.unwrap();
+        let model = openai::responses::model(ModelConfig::new(
+            url,
+            std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+                "Bearer", "fixture",
+            )),
+            "fixture",
+        ))
+        .unwrap();
+        model.turn(r, context()).await.unwrap();
         let sent = wire.await.unwrap();
         assert_eq!(
             sent["input"][2]["type"],
@@ -337,7 +389,10 @@ impl ProtocolExtension for Session {
         request: &ModelRequest,
         body: &mut Value,
     ) -> Result<()> {
-        self.tag = request.options.extra["tag"].as_str().unwrap().into();
+        self.tag = request.profile.extensions["consumer"]["tag"]
+            .as_str()
+            .unwrap()
+            .into();
         body["messages"][0]["consumer_tag"] = json!(self.tag);
         Ok(())
     }
@@ -356,8 +411,8 @@ impl ProtocolExtension for Session {
         &mut self,
         _: Protocol,
         _: &Value,
-        decoded: Result<ModelResponse>,
-    ) -> Result<ModelResponse> {
+        decoded: Result<TurnOutput>,
+    ) -> Result<TurnOutput> {
         let mut response = decoded?;
         response.provider_data["consumer"] = json!({"tag":self.tag,"fragments":self.fragments});
         Ok(response)
@@ -385,20 +440,30 @@ async fn extension_sessions_are_isolated_during_overlapping_calls() {
         "data: [DONE]\n\n",
     );
     let (url, wire) = batch_server(json!(stream), true, 2).await;
-    let model = openai::chat::model(ModelConfig::new(url, "fixture", "fixture"))
-        .unwrap()
-        .with_extension(|_| Ok(Session::default()));
+    let model = openai::chat::model(ModelConfig::new(
+        url,
+        std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+            "Bearer", "fixture",
+        )),
+        "fixture",
+    ))
+    .unwrap()
+    .with_extension(|_| Ok(Session::default()));
     let barrier = Arc::new(tokio::sync::Barrier::new(2));
     let invoke = |tag: &'static str| {
         let mut r = request();
         r.stream = true;
-        r.options.extra.insert("tag".into(), json!(tag));
+        r.profile
+            .extensions
+            .entry("consumer".into())
+            .or_default()
+            .insert("tag".into(), json!(tag));
         let mut ctx = context();
         ctx.deltas = Some(Arc::new(Rendezvous {
             barrier: barrier.clone(),
             seen: false.into(),
         }));
-        model.invoke(r, ctx)
+        model.turn(r, ctx)
     };
     let (a, b) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         tokio::join!(invoke("first"), invoke("second"))
@@ -419,7 +484,8 @@ async fn extension_sessions_are_isolated_during_overlapping_calls() {
     let sent = wire.await.unwrap();
     assert_eq!(sent.len(), 2);
     for body in sent {
-        assert_eq!(body["messages"][0]["consumer_tag"], body["tag"]);
+        assert!([json!("first"), json!("second")].contains(&body["messages"][0]["consumer_tag"]));
+        assert!(body.get("tag").is_none());
     }
 }
 struct ResponseMapping {
@@ -430,10 +496,10 @@ impl ProtocolExtension for ResponseMapping {
         &mut self,
         _: Protocol,
         raw: &Value,
-        decoded: Result<ModelResponse>,
-    ) -> Result<ModelResponse> {
+        decoded: Result<TurnOutput>,
+    ) -> Result<TurnOutput> {
         assert!(decoded.is_err()); // New response shape, standard codec cannot decode it.
-        let mut response = ModelResponse::text(raw["answer"].as_str().unwrap());
+        let mut response = TurnOutput::text(raw["answer"].as_str().unwrap());
         if self.invalid {
             response.output.push(Output::RuntimeToolCall {
                 call: RuntimeToolCall {
@@ -450,10 +516,16 @@ impl ProtocolExtension for ResponseMapping {
 async fn response_mapping_handles_new_shapes_and_still_validates_results() {
     for invalid in [false, true] {
         let (url, wire) = server(json!({"answer":"mapped"}), false).await;
-        let model = openai::chat::model(ModelConfig::new(url, "fixture", "fixture"))
-            .unwrap()
-            .with_extension(move |_| Ok(ResponseMapping { invalid }));
-        let response = model.invoke(request(), context()).await;
+        let model = openai::chat::model(ModelConfig::new(
+            url,
+            std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+                "Bearer", "fixture",
+            )),
+            "fixture",
+        ))
+        .unwrap()
+        .with_extension(move |_| Ok(ResponseMapping { invalid }));
+        let response = model.turn(request(), context()).await;
         if invalid {
             assert!(response.is_err());
         } else {
@@ -476,27 +548,39 @@ impl ProtocolExtension for RejectEvent {
 }
 #[tokio::test]
 async fn extension_errors_abort_before_http_or_response_completion() {
-    let model = openai::chat::model(ModelConfig::new("http://127.0.0.1:1", "fixture", "fixture"))
-        .unwrap()
-        .with_extension(|_| Ok(RejectRequest));
+    let model = openai::chat::model(ModelConfig::new(
+        "http://127.0.0.1:1",
+        std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+            "Bearer", "fixture",
+        )),
+        "fixture",
+    ))
+    .unwrap()
+    .with_extension(|_| Ok(RejectRequest));
     assert!(
-        matches!(model.invoke(request(), context()).await, Err(Error::Invalid(s)) if s=="consumer rejected request")
+        matches!(model.turn(request(), context()).await, Err(Error::Invalid(s)) if s=="consumer rejected request")
     );
     let (url, wire) = server(
         json!("data: {\"choices\":[{\"delta\":{\"content\":\"hidden\"}}]}\n\ndata: [DONE]\n\n"),
         true,
     )
     .await;
-    let model = openai::chat::model(ModelConfig::new(url, "fixture", "fixture"))
-        .unwrap()
-        .with_extension(|_| Ok(RejectEvent));
+    let model = openai::chat::model(ModelConfig::new(
+        url,
+        std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+            "Bearer", "fixture",
+        )),
+        "fixture",
+    ))
+    .unwrap()
+    .with_extension(|_| Ok(RejectEvent));
     let observed = Arc::new(Deltas::default());
     let mut ctx = context();
     ctx.deltas = Some(observed.clone());
     let mut r = request();
     r.stream = true;
     assert!(
-        matches!(model.invoke(r, ctx).await, Err(Error::Protocol(s)) if s=="consumer rejected event")
+        matches!(model.turn(r, ctx).await, Err(Error::Protocol(s)) if s=="consumer rejected event")
     );
     assert!(observed.0.lock().unwrap().is_empty());
     wire.await.unwrap();
@@ -516,21 +600,27 @@ async fn response_metadata_is_retained_but_only_assistant_output_is_replayed() {
             }
         };
         let (url, wire) = batch_server(raw.clone(), false, 2).await;
-        let config = ModelConfig::new(url, "fixture", "fixture");
+        let config = ModelConfig::new(
+            url,
+            std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+                "Bearer", "fixture",
+            )),
+            "fixture",
+        );
         let model = match protocol {
             Protocol::Chat => openai::chat::model(config),
             Protocol::Responses => openai::responses::model(config),
             Protocol::Messages => anthropic::messages::model(config),
         }
         .unwrap();
-        let response = model.invoke(request(), context()).await.unwrap();
+        let response = model.turn(request(), context()).await.unwrap();
         assert_eq!(response.provider_data["response"], raw);
         let mut r = request();
         r.messages.push(Message::Assistant {
             output: response.output,
             provider_data: response.provider_data,
         });
-        model.invoke(r, context()).await.unwrap();
+        model.turn(r, context()).await.unwrap();
         let sent = wire.await.unwrap();
         assert!(!sent[1].to_string().contains("future_metadata"));
         assert!(!sent[1].to_string().contains("logprobs"));
@@ -545,7 +635,13 @@ fn live_model(protocol: Protocol, key: &str, beta: bool) -> HttpModel {
         _ if beta => "https://api.deepseek.com/beta",
         _ => "https://api.deepseek.com",
     };
-    let mut config = ModelConfig::new(base, key, "deepseek-flash");
+    let mut config = ModelConfig::new(
+        base,
+        std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+            "Bearer", key,
+        )),
+        "deepseek-flash",
+    );
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
         "anthropic-beta",
@@ -564,40 +660,63 @@ fn live_model(protocol: Protocol, key: &str, beta: bool) -> HttpModel {
 }
 fn live_request(protocol: Protocol, effort: &str) -> ModelRequest {
     let mut r = request();
-    r.options.max_output_tokens = (protocol != Protocol::Chat).then_some(1024);
+    r.profile.generation.max_output_tokens = (protocol != Protocol::Chat).then_some(1024);
+    let namespace = match protocol {
+        Protocol::Chat => "chat",
+        Protocol::Responses => "responses",
+        Protocol::Messages => "messages",
+    };
     match protocol {
         Protocol::Chat => {
-            r.options.extra.insert("max_tokens".into(), json!(1024));
-            r.options.extra.insert(
-                "thinking".into(),
-                json!({"type":if effort=="none" {"disabled"} else {"enabled"}}),
-            );
+            r.profile
+                .extensions
+                .entry(namespace.into())
+                .or_default()
+                .insert("max_tokens".into(), json!(1024));
+            r.profile
+                .extensions
+                .entry(namespace.into())
+                .or_default()
+                .insert(
+                    "thinking".into(),
+                    json!({"type":if effort=="none" {"disabled"} else {"enabled"}}),
+                );
             if effort != "none" {
-                r.options
-                    .extra
+                r.profile
+                    .extensions
+                    .entry(namespace.into())
+                    .or_default()
                     .insert("reasoning_effort".into(), json!(effort));
             }
         }
         Protocol::Responses => {
-            r.options
-                .extra
+            r.profile
+                .extensions
+                .entry(namespace.into())
+                .or_default()
                 .insert("reasoning".into(), json!({"effort":effort}));
         }
         Protocol::Messages => {
-            r.options.extra.insert(
-                "thinking".into(),
-                json!({"type":if effort=="none" {"disabled"} else {"enabled"}}),
-            );
+            r.profile
+                .extensions
+                .entry(namespace.into())
+                .or_default()
+                .insert(
+                    "thinking".into(),
+                    json!({"type":if effort=="none" {"disabled"} else {"enabled"}}),
+                );
             if effort != "none" {
-                r.options
-                    .extra
+                r.profile
+                    .extensions
+                    .entry(namespace.into())
+                    .or_default()
                     .insert("output_config".into(), json!({"effort":effort}));
             }
         }
     }
     r
 }
-fn output(response: &ModelResponse) -> String {
+fn output(response: &TurnOutput) -> String {
     visible_content(&response.output)
         .iter()
         .filter_map(Content::as_text)
@@ -617,7 +736,7 @@ async fn invoke_model_check(model: HttpModel, r: ModelRequest, expected: &str) -
     let deltas = Arc::new(Deltas::default());
     let mut ctx = context();
     ctx.deltas = Some(deltas.clone());
-    match model.invoke(r, ctx).await {
+    match model.turn(r, ctx).await {
         Ok(response) => {
             let text = output(&response);
             json!({"passed":text.trim()==expected,"text":text,"model":response.model_id,"response_id":response.response_id,"usage":response.usage,"reasoning_deltas":deltas.0.lock().unwrap().iter().filter(|d|matches!(d,ModelDelta::Reasoning {..})).count(),"elapsed_ms":started.elapsed().as_millis()})
@@ -631,8 +750,16 @@ async fn invoke_model_check(model: HttpModel, r: ModelRequest, expected: &str) -
 #[ignore = "paid consumer-side capability audit; requires DEEPSEEK_API_KEY"]
 async fn live_consumer_capability_audit() {
     let key = std::env::var("DEEPSEEK_API_KEY").unwrap();
-    let report = std::env::var("ZHIR_LIVE_AUDIT_REPORT")
-        .unwrap_or_else(|_| "/tmp/zhir-capability-live.json".into());
+    let report = std::env::var("ZHIR_LIVE_AUDIT_REPORT").unwrap_or_else(|_| {
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../test-results/zhir-capability-live.json"
+        )
+        .into()
+    });
+    if let Some(parent) = std::path::Path::new(&report).parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
     let mut rows = Vec::new();
     let client = reqwest::Client::new();
     let bytes = include_bytes!("fixtures/vision.png");
@@ -740,7 +867,7 @@ async fn live_consumer_capability_audit() {
     });
     r.messages = vec![Message::user("Return JSON with code SCHEMA_OK.")];
     let response = live_model(Protocol::Responses, &key, false)
-        .invoke(r, context())
+        .turn(r, context())
         .await;
     rows.push(match response {Ok(response)=>json!({"scenario":"responses_json_schema","passed":serde_json::from_str::<Value>(&output(&response)).ok()==Some(json!({"code":"SCHEMA_OK"})),"usage":response.usage}),Err(e)=>json!({"scenario":"responses_json_schema","passed":false,"error":e.to_string()})});
     let mut r = live_request(Protocol::Chat, "none");
@@ -769,7 +896,7 @@ async fn live_consumer_capability_audit() {
     r.messages = vec![Message::user("Call observe with code STRICT_OK.")];
     let response = live_model(Protocol::Chat, &key, true)
         .with_extension(|_| Ok(StrictDeclarations))
-        .invoke(r, context())
+        .turn(r, context())
         .await;
     rows.push(match response {
         Ok(response) => json!({"scenario":"strict_tool_via_user_extension","passed":response.output.iter().any(|o| matches!(o,Output::RuntimeToolCall{call} if call.name=="observe" && call.input==RuntimeToolInput::Structured(json!({"code":"STRICT_OK"})))),"response_id":response.response_id,"usage":response.usage}),
@@ -822,33 +949,39 @@ async fn live_consumer_capability_audit() {
 }
 
 // A user-defined model can carry new semantics through the unchanged kernel.
-struct ConsumerModel(Capabilities);
+struct ConsumerModel(CapabilitySet);
 impl Model for ConsumerModel {
-    fn capabilities(&self) -> &Capabilities {
+    fn capabilities(&self) -> &CapabilitySet {
         &self.0
     }
-    fn invoke(
+    fn negotiate(&self, request: &ModelRequest) -> Result<zhir_core::profile::NegotiatedProfile> {
+        zhir_policies::negotiation::negotiate(request, &self.0)
+    }
+    fn open_session(
         &self,
-        _: ModelRequest,
-        context: ModelContext,
-    ) -> BoxFuture<'_, Result<ModelResponse>> {
+        open: zhir_core::model::SessionOpen,
+    ) -> BoxFuture<'_, Result<zhir_core::model::ModelSession>> {
         Box::pin(async move {
-            if let Some(sink) = context.deltas {
-                sink.emit(ModelDelta::ProtocolEvent {
-                    output_index: 0,
-                    data: json!({"type":"consumer.new_event","payload":123}),
-                })
-                .await?;
-            }
-            let mut response = ModelResponse::text("custom model completed");
-            response.output.push(Output::Content {
-                content: Content::Opaque {
-                    provider: "consumer".into(),
-                    data: json!({"type":"consumer.new_output","payload":123}),
-                },
-            });
-            response.provider_data = json!({"new_response_metadata":456});
-            Ok(response)
+            zhir_models::FunctionModel::new(self.0.clone(), |_, context| async move {
+                if let Some(sink) = context.deltas {
+                    sink.emit(ModelDelta::ProtocolEvent {
+                        output_index: 0,
+                        data: json!({"type":"consumer.new_event","payload":123}),
+                    })
+                    .await?;
+                }
+                let mut response = TurnOutput::text("custom model completed");
+                response.output.push(Output::Content {
+                    content: Content::Opaque {
+                        provider: "consumer".into(),
+                        data: json!({"type":"consumer.new_output","payload":123}),
+                    },
+                });
+                response.provider_data = json!({"new_response_metadata":456});
+                Ok(response)
+            })
+            .open_session(open)
+            .await
         })
     }
 }
@@ -878,3 +1011,5 @@ async fn user_model_new_events_and_content_survive_kernel_and_wire() {
             .unwrap();
     assert!(decoded.history.messages().iter().any(|message|matches!(message,Message::Assistant {provider_data,..} if provider_data["new_response_metadata"]==456)));
 }
+
+use zhir_testing::ModelTestExt;

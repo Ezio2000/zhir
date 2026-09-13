@@ -1,9 +1,11 @@
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use zhir_core::resource::{ResourceRef, ResourceSource};
 use zhir_core::{
     Result,
     error::Error,
-    message::{Content, MediaSource, Output, ProviderToolCall, ProviderToolStatus},
+    message::{Content, Output, ProviderToolCall, ProviderToolStatus},
 };
 
 /// Builds normalized output and its canonical native replay together in the decoder.
@@ -69,12 +71,7 @@ impl ProviderOutput {
     }
     /// Copy a base64 field from the last native item into normalized media and
     /// remember its local binding. No response-wide array positions are exposed.
-    pub fn media(
-        mut self,
-        pointer: &str,
-        mime_type: impl Into<String>,
-        make: impl FnOnce(MediaSource) -> Content,
-    ) -> Result<Self> {
+    pub fn media(mut self, pointer: &str, mime_type: impl Into<String>) -> Result<Self> {
         let index =
             self.replay.items.len().checked_sub(1).ok_or_else(|| {
                 Error::Invalid("append a native item before binding media".into())
@@ -89,16 +86,18 @@ impl ProviderOutput {
                 )
             })?
             .to_owned();
-        let source = MediaSource::Inline {
-            mime_type: mime_type.into(),
-            base64,
+        let source = ResourceRef {
+            id: format!("{}:{index}:{pointer}", self.call.id),
+            media_type: mime_type.into(),
+            name: None,
+            source: ResourceSource::Inline {
+                bytes: base64::engine::general_purpose::STANDARD
+                    .decode(&base64)
+                    .map_err(|e| Error::Protocol(e.to_string()))?,
+            },
+            metadata: Default::default(),
         };
-        let content = make(source.clone());
-        if content.source() != Some(&source) {
-            return Err(Error::Invalid(
-                "media constructor must retain the supplied source".into(),
-            ));
-        }
+        let content = Content::resource(source);
         let pointer = format!("/items/{index}{pointer}");
         if !self.media_paths.insert(pointer.clone()) {
             return Err(Error::Invalid("native media path is already bound".into()));
@@ -109,9 +108,6 @@ impl ProviderOutput {
         });
         self.call.output.push(content);
         Ok(self)
-    }
-    pub fn image(self, pointer: &str, mime_type: impl Into<String>) -> Result<Self> {
-        self.media(pointer, mime_type, |source| Content::Image { source })
     }
     pub fn finish(mut self) -> Result<Output> {
         self.call.data = json!({ REPLAY_KEY: self.replay });

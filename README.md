@@ -1,30 +1,26 @@
 # zhir
 
-zhir 是可嵌入的 Rust Agent SDK，也是后续独立产品的公共基础。
+zhir 是可嵌入的 Rust Agent SDK，为研发平台提供模型会话、异步操作、资源流、运行控制和持久化恢复。宿主提供 Tokio 运行环境、模型客户端、凭据、工具与存储。
 
-它提供模型与工具循环、流式事件、暂停恢复、运行中控制、原子 checkpoint、
-模型适配器、四种存储和官方工具。执行由宿主的 Tokio 运行环境承载。
+当前工作区版本为 **0.2.0**，checkpoint 和存储格式为 **v2**。这是一次直接替换公共契约的重构；使用新的数据库、Redis namespace 和资源目录。
 
 ## 组件
 
 | Crate | 职责 |
 | --- | --- |
-| `zhir-core` | 公共类型、扩展 trait、原生 wire DTO |
-| `zhir-policies` | 共享重试策略、退避计算与历史窗口，不依赖执行器 |
-| `zhir-kernel` | 唯一执行引擎、调度、控制、提交、诊断 |
-| `zhir-models` | 函数式模型、异步请求变换、扩展组合；可选 HTTP 协议 |
-| `zhir-tools` | 工具注册、函数与强类型适配、校验、重试、熔断 |
-| `zhir-builtins` | 文件、Shell、交互、子 Agent 工具 |
-| `zhir-storage` | Memory、SQLite、MySQL、Redis |
-| `zhir` | SDK 统一入口与精选导出 |
-| `zhir-testing` | 供研发测试使用的脚本模型、记录、HTTP/SSE 夹具与故障注入，只作为开发依赖 |
-
-工具协议只定义在 core。tools 管理工具的装配，builtins 提供具体实现，kernel
-管理执行生命周期。模型、工具装配和存储之间不互相依赖。
+| `zhir-core` | 公共值、扩展 trait、会话/操作/资源/凭据契约、wire DTO |
+| `zhir-policies` | 能力协商、重试策略、退避与历史窗口；只依赖 core |
+| `zhir-kernel` | 唯一执行状态机、调度、控制、outbox、checkpoint 提交 |
+| `zhir-models` | 会话装饰器、资源解析、凭据刷新及可选 HTTP 协议 |
+| `zhir-tools` | 工具注册、结构化/自由文本输入、类型适配、执行结果校验 |
+| `zhir-builtins` | 文件、Shell、交互工具，以及基于 operation 的子 Agent |
+| `zhir-storage` | Memory、SQLite、MySQL、Redis 运行存储；内存/文件资源存储 |
+| `zhir` | SDK facade 与便利 API |
+| `zhir-testing` | 测试模型、HTTP/SSE 夹具、记录、轨迹验收与基准；仅用于研发测试 |
 
 ## 使用
 
-本仓库初始版本为 0.1.0，尚未发布到 crates.io。本地产品可以使用路径依赖：
+在本地产品中使用路径依赖：
 
 ```toml
 [dependencies]
@@ -34,23 +30,23 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 ```rust,no_run
 use std::sync::Arc;
-use zhir::{RunRequest, Runtime, message::Message, RunOutcome};
-use zhir::models::{ModelConfig, openai};
+use zhir::{RunRequest, Runtime, RunOutcome, message::Message};
+use zhir::models::{ModelConfig, credentials::StaticCredential, openai};
 use zhir::stores::sqlite::SqliteRunStore;
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 let model = openai::chat::model(ModelConfig::new(
     "https://api.openai.com/v1",
-    std::env::var("OPENAI_API_KEY")?,
+    Arc::new(StaticCredential::new("Bearer", std::env::var("OPENAI_API_KEY")?)),
     std::env::var("OPENAI_MODEL")?,
 ))?;
-let store = SqliteRunStore::connect("sqlite://runs.db?mode=rwc").await?;
+let store = SqliteRunStore::connect("sqlite://runs-v2.db?mode=rwc").await?;
 let runtime = Runtime::builder(Arc::new(model))
     .store(Arc::new(store))
     .defaults(|run| run.stream(true))
     .build()?;
-let mut run = runtime.start(RunRequest::new([Message::user("Hello")]))?;
-let result = run.result().await?;
+let result = runtime.start(RunRequest::new([Message::user("Hello")]))?
+    .result().await?;
 if let RunOutcome::Completed(content) = result.outcome() {
     for part in content {
         if let Some(text) = part.as_text() { print!("{text}"); }
@@ -60,35 +56,22 @@ if let RunOutcome::Completed(content) = result.outcome() {
 # }
 ```
 
-默认 SDK 仅启用 core 和 kernel 两个执行组件。可选 feature 为 `policies`、`tools`、`typed-tools`、`typed-output`、`models`、`filesystem`、`shell`、
-`interaction`、`agent`、`agent-runtime`、`openai-chat`、`openai-responses`、`anthropic`、`memory`、
-`sqlite`、`mysql`、`redis`、`artifacts-filesystem`。
+默认 feature 为空，只引入 core 与 kernel。按需启用 `policies`、`tools`、`typed-tools`、`typed-output`、`models`、`filesystem`、`shell`、`interaction`、`agent`、`agent-runtime`、`openai-chat`、`openai-responses`、`anthropic`、`memory`、`sqlite`、`mysql`、`redis`、`resources-filesystem`。
 
-`policies` 提供共享策略和 `policies::history::HistoryWindow`，`models` 和 `tools` 自动启用它。
-`agent` 提供子 Agent 工具与后端接口；`agent-runtime` 另外提供带显式并发上限的本地 kernel 后端。
-`models` 提供通用模型组件，不引入 HTTP 客户端；具体协议 feature 自动启用它。
-`typed-tools` 从 Rust 类型生成工具 Schema；`typed-output` 提供请求与本地校验共用的
-`JsonOutput<T>`。完整用法与扩展方法见[研发接入指南](docs/developer-api.md)。
+模型统一实现 `Model::open_session`。应用工具统一实现 `RuntimeTool::start/recover`，返回最终结果或可恢复的 `OperationHandle`。服务端工具仍由模型适配器执行，kernel 记录其 operation；两种执行归属不会混淆。
 
-应用执行的能力统一使用 `RuntimeTool` 类型族；服务端能力使用 `ProviderToolSpec`、
-`ProviderToolCall` 和用户实现的 `ProviderToolAdapter`。具体能力声明、事件解析及回放
-由消费项目实现。SDK 提供适配器组合、完整历史窗口、共享模型并发、目录快照选择和产物存取接口。
+`RequestProfile` 区分必须满足与偏好，资源使用要求保存在 `ResourceUsage`。协商结果与服务端实际确认分开保存，没有确认的字段保持 `Unknown`。双向媒体使用独立、有界的分块通道。
 
-完整示例在 [SDK examples](crates/zhir/examples)。配置、凭据、存储路径和客户端
-生命周期由调用方提供；SDK 不读取全局配置，不自动启动服务。
+HTTP 适配器提供 Chat、Responses、Messages 的轮次协议。原生双向会话、具体供应商视频/语音任务和 OAuth 登录流程由接入方实现对应接口。测试中的供应商场景验证接入机制，不代表已经集成某个最新模型的全部线上能力。
 
-无需模型凭据即可运行自定义工具与暂停恢复示例：
+无需凭据即可运行示例：
 
 ```sh
 cargo run -p zhir --no-default-features --example custom_tool --features models,typed-tools
-cargo run -p zhir --example resume --features interaction,memory
+cargo run -p zhir --no-default-features --example resume --features models,interaction,memory
 ```
 
-`chat` 示例需要 `OPENAI_API_KEY` 和 `OPENAI_MODEL`，运行时启用 `openai-chat,sqlite`。
-
 ## 开发与验证
-
-使用 `rust-toolchain.toml` 指定的工具链，通过工作区 `Cargo.lock` 固定依赖。
 
 ```sh
 cargo fmt --all --check
@@ -96,7 +79,6 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features --locked
 ```
 
-独立 feature、契约、真实数据库、模型接入及包验证入口见[测试说明](docs/testing.md)。
+验收、故障注入、trace 校验和基准只放在 `zhir-testing`、`crates/zhir/tests` 与 `conformance`。独立 feature、契约、真实数据库和包验证方法见[测试说明](docs/testing.md)。
 
-[架构与职责](docs/architecture.md) · [研发接入](docs/developer-api.md) ·
-[运行契约](contracts/v1/behavior/runtime.md) · [测试说明](docs/testing.md)
+[架构与职责](docs/architecture.md) · [研发接入](docs/developer-api.md) · [运行契约](contracts/v2/behavior/runtime.md) · [测试说明](docs/testing.md)

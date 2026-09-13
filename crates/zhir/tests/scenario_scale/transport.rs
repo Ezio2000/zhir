@@ -10,7 +10,7 @@ use zhir::{
     Result, Runtime,
     error::{Error, Failure},
     message::{Content, Message, Output},
-    model::{DeltaSink, Model, ModelDelta, ModelRequest, ModelResponse},
+    model::{DeltaSink, Model, ModelDelta, ModelRequest, TurnOutput},
     models::{
         Protocol, ProtocolExtension,
         decorators::{FallbackModel, ObservedModel, RetryingModel},
@@ -224,8 +224,8 @@ impl ProtocolExtension for FeatureSession {
         &mut self,
         _: Protocol,
         _: &Value,
-        decoded: Result<ModelResponse>,
-    ) -> Result<ModelResponse> {
+        decoded: Result<TurnOutput>,
+    ) -> Result<TurnOutput> {
         let mut response = decoded?;
         response.output.push(Output::Content {
             content: Content::Opaque {
@@ -326,7 +326,7 @@ async fn wire_case(
         hold_after: None,
     };
     let response = match family {
-        "retry_429" => vec![
+        "no_replay_429" => vec![
             Reply {
                 status: 429,
                 body: "busy".into(),
@@ -334,7 +334,7 @@ async fn wire_case(
             },
             good.clone(),
         ],
-        "fallback_503" => vec![
+        "no_switch_503" => vec![
             Reply {
                 status: 503,
                 body: "busy".into(),
@@ -393,7 +393,7 @@ async fn wire_case(
     }
     if matches!(
         family,
-        "retry_429" | "permanent_400" | "visible_error_no_retry" | "observer_failure"
+        "no_replay_429" | "permanent_400" | "visible_error_no_retry" | "observer_failure"
     ) {
         model = Arc::new(
             RetryingModel::new(
@@ -405,20 +405,23 @@ async fn wire_case(
             .unwrap(),
         );
     }
-    if family == "fallback_503" {
+    if family == "no_switch_503" {
         model = Arc::new(
             FallbackModel::new(vec![
-                model,
-                Arc::new(http(protocol, &server.url, "fixture", "backup").unwrap()),
+                zhir_models::decorators::FallbackCandidate::new("primary", model),
+                zhir_models::decorators::FallbackCandidate::new(
+                    "backup",
+                    Arc::new(http(protocol, &server.url, "fixture", "backup").unwrap()),
+                ),
             ])
             .unwrap(),
         );
     }
     let mut checks = std::collections::BTreeMap::new();
     let mut detail = json!({});
-    if matches!(family, "retry_429" | "fallback_503" | "permanent_400") {
+    if matches!(family, "no_replay_429" | "no_switch_503" | "permanent_400") {
         let result = model
-            .invoke(
+            .turn(
                 empty_request(false),
                 zhir::model::ModelContext {
                     run: zhir::kernel::defaults::context(),
@@ -430,11 +433,13 @@ async fn wire_case(
         checks.insert(
             "expected_result",
             match &result {
-                Ok(response) => {
-                    family != "permanent_400" && response.output == vec![Output::text("ok")]
-                }
                 Err(Error::Model(failure)) => {
-                    family == "permanent_400" && failure.code == "http_400"
+                    failure.code
+                        == match family {
+                            "no_replay_429" => "http_429",
+                            "no_switch_503" => "http_503",
+                            _ => "http_400",
+                        }
                 }
                 _ => false,
             },
@@ -445,9 +450,9 @@ async fn wire_case(
             .defaults(|run| run.stream(true))
             .defaults(|run| {
                 run.limits(Limits {
-                    max_planning_steps: 2,
+                    max_model_turns: 2,
                     max_runtime_tool_calls: 0,
-                    max_progress_events: if slow { 16 } else { 16384 },
+                    max_observer_events: if slow { 16 } else { 16384 },
                     elapsed_ms: Some(10_000),
                     ..zhir::kernel::defaults::limits()
                 })
@@ -547,7 +552,10 @@ async fn wire_case(
             checks.insert(
                 "expected_failure_code",
                 if family == "cancel_stream" {
-                    matches!(error, Some(Error::Cancelled))
+                    checkpoint
+                        .as_ref()
+                        .is_some_and(|c| matches!(c.state, State::Cancelled))
+                        && error.is_none()
                 } else {
                     failure.as_ref().is_some_and(|f| {
                         f.code
@@ -580,9 +588,9 @@ async fn wire_case(
             checks.insert(
                 "failure_settled",
                 error.is_some()
-                    || checkpoint
-                        .as_ref()
-                        .is_some_and(|c| matches!(c.state, State::Failed { .. })),
+                    || checkpoint.as_ref().is_some_and(|c| {
+                        matches!(c.state, State::Failed { .. } | State::Cancelled)
+                    }),
             );
             checks.insert(
                 "no_partial_assistant_commit",
@@ -607,7 +615,13 @@ async fn wire_case(
                     "cancel_after_first_text",
                     cancelled && summary.counts.get("delta_text") == Some(&1),
                 );
-                checks.insert("cancelled", matches!(error, Some(Error::Cancelled)));
+                checks.insert(
+                    "cancelled",
+                    checkpoint
+                        .as_ref()
+                        .is_some_and(|c| matches!(c.state, State::Cancelled))
+                        && error.is_none(),
+                );
             }
             if family == "visible_error_no_retry" {
                 checks.insert(
@@ -634,20 +648,16 @@ async fn wire_case(
         }
     }
     let requests = server.requests.lock().unwrap().clone();
-    let expected_requests = if matches!(family, "retry_429" | "fallback_503") {
-        2
-    } else {
-        1
-    };
+    let expected_requests = 1;
     checks.insert("exact_http_attempts", requests.len() == expected_requests);
-    if family == "fallback_503" {
+    if family == "no_switch_503" {
         checks.insert(
-            "fallback_routing",
+            "session_stays_bound",
             requests
                 .iter()
                 .map(|r| r["model"].as_str().unwrap())
                 .collect::<Vec<_>>()
-                == vec!["primary", "backup"],
+                == vec!["primary"],
         );
     }
     if family == "custom_events" {
@@ -668,8 +678,8 @@ async fn local_transport_scale() {
     let mut cases = vec![];
     for protocol in [Protocol::Chat, Protocol::Responses, Protocol::Messages] {
         for family in [
-            "retry_429",
-            "fallback_503",
+            "no_replay_429",
+            "no_switch_503",
             "permanent_400",
             "truncated_stream",
             "visible_error_no_retry",
@@ -701,7 +711,7 @@ async fn local_transport_scale() {
         }
     }
     let path = std::env::var("ZHIR_SCALE_LOCAL_REPORT")
-        .unwrap_or_else(|_| "/tmp/zhir-scenario-local.json".into());
+        .unwrap_or_else(|_| "test-results/zhir-scenario-local.json".into());
     let mut jobs = stream::iter(
         cases
             .into_iter()
@@ -770,7 +780,7 @@ async fn messages_groups_tool_results_without_extensions() {
             cancellation: Default::default(),
             deltas: None,
         };
-        plain.invoke(request, context()).await.unwrap();
+        plain.turn(request, context()).await.unwrap();
         let sent = server.requests.lock().unwrap();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0]["messages"].as_array().unwrap().len(), 3);
@@ -781,30 +791,35 @@ async fn messages_groups_tool_results_without_extensions() {
         }
         rows.push(json!({"tool_results":count,"default_grouping_supported":true,"messages":3}));
     }
-    save("/tmp/zhir-scenario-grouping.json", &rows);
+    save("test-results/zhir-scenario-grouping.json", &rows);
 }
 
 /// A separate application protocol, implemented entirely in this test module.
 struct RpcModel {
     url: String,
     client: reqwest::Client,
-    capabilities: zhir::model::Capabilities,
+    capabilities: zhir::model::CapabilitySet,
 }
 impl Model for RpcModel {
-    fn capabilities(&self) -> &zhir::model::Capabilities {
+    fn capabilities(&self) -> &zhir::model::CapabilitySet {
         &self.capabilities
     }
-    fn invoke(
+    fn negotiate(&self, request: &ModelRequest) -> Result<zhir_core::profile::NegotiatedProfile> {
+        zhir_policies::negotiation::negotiate(request, &self.capabilities)
+    }
+    fn open_session(
         &self,
-        request: ModelRequest,
-        context: zhir::model::ModelContext,
-    ) -> zhir::BoxFuture<'_, Result<ModelResponse>> {
+        open: zhir::model::SessionOpen,
+    ) -> zhir::BoxFuture<'_, Result<zhir::model::ModelSession>> {
+        let client = self.client.clone();
+        let url = self.url.clone();
         Box::pin(async move {
+            zhir::models::FunctionModel::new(self.capabilities.clone(),move |request,context| {
+                let client=client.clone();let url=url.clone();async move {
             context.cancellation.check()?;
             let body = json!({"jsonrpc":"2.0","id":context.run.run_id,"method":"agent.next","params":{"conversation":request.messages,"catalog":request.runtime_tools}});
-            let envelope: Value = self
-                .client
-                .post(&self.url)
+            let envelope: Value = client
+                .post(&url)
                 .json(&body)
                 .send()
                 .await
@@ -827,7 +842,7 @@ impl Model for RpcModel {
                 })
                 .await?;
             }
-            let mut response = ModelResponse::text(value["text"].as_str().unwrap_or_default());
+            let mut response = TurnOutput::text(value["text"].as_str().unwrap_or_default());
             if let Some(action) = value.get("action") {
                 response.output = vec![Output::RuntimeToolCall {
                     call: zhir::tool::RuntimeToolCall {
@@ -840,6 +855,8 @@ impl Model for RpcModel {
             response.provider_data = envelope;
             response.validate()?;
             Ok(response)
+                }
+            }).open_session(open).await
         })
     }
 }
@@ -891,8 +908,7 @@ async fn rpc_case(index: usize, client: reqwest::Client) -> Value {
     let model = Arc::new(RpcModel {
         url: server.url.clone(),
         client,
-        capabilities: zhir::model::Capabilities {
-            usage: false,
+        capabilities: zhir::model::CapabilitySet {
             ..zhir_testing::model_capabilities()
         },
     });
@@ -924,9 +940,11 @@ async fn user_owned_rpc_model_tool_workflows() {
     while let Some(row) = jobs.next().await {
         rows.push(row);
     }
-    save("/tmp/zhir-scenario-rpc.json", &rows);
+    save("test-results/zhir-scenario-rpc.json", &rows);
     assert!(
         rows.iter().all(|r| r["passed"] == true),
         "RPC integration failures: {rows:#?}"
     );
 }
+
+use zhir_testing::ModelTestExt;

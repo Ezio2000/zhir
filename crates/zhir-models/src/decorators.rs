@@ -1,25 +1,9 @@
 use std::sync::Arc;
 use zhir_core::{
-    BoxFuture, Result,
-    error::Error,
-    model::{
-        Capabilities, DeltaSink, Model, ModelContext, ModelDelta, ModelRequest, ModelResponse,
-    },
-    run::RunContext,
+    BoxFuture, Result, error::Error, model::*, profile::NegotiatedProfile, run::RunContext,
 };
 type ObserverFactory =
     dyn Fn(&ModelRequest, &RunContext) -> Result<Arc<dyn DeltaSink>> + Send + Sync;
-
-/// Observe emitted model deltas independently of a runtime's lossy progress queue.
-///
-/// The factory runs once per invocation of this wrapper. Each successful emission
-/// awaits the observer; this wrapper has no queue or background task. The observer
-/// owns retention. Its errors abort the model call, and it may retain partial
-/// output from failed calls: observation is not a checkpoint transaction.
-///
-/// Wrap this inside RetryingModel for a separate observer per attempt, or outside
-/// it to observe the logical call. Existing downstream sinks run first so retry
-/// trackers see a delta before an observer can perform an external side effect.
 pub struct ObservedModel {
     inner: Arc<dyn Model>,
     factory: Arc<ObserverFactory>,
@@ -38,57 +22,46 @@ impl ObservedModel {
         }
     }
 }
-struct ObservedSink {
-    downstream: Option<Arc<dyn DeltaSink>>,
+struct ObservedEvents {
+    inner: Box<dyn SessionReceiver>,
     observer: Arc<dyn DeltaSink>,
 }
-impl DeltaSink for ObservedSink {
-    fn emit(&self, delta: ModelDelta) -> BoxFuture<'_, Result<()>> {
+impl SessionReceiver for ObservedEvents {
+    fn receive(&mut self) -> BoxFuture<'_, Result<Option<SessionEvent>>> {
         Box::pin(async move {
-            if let Some(sink) = &self.downstream {
-                sink.emit(delta.clone()).await?;
+            let event = self.inner.receive().await?;
+            if let Some(SessionEvent {
+                body: SessionEventBody::Delta { delta, .. },
+                ..
+            }) = &event
+            {
+                self.observer.emit(delta.clone()).await?;
             }
-            self.observer.emit(delta).await
+            Ok(event)
         })
     }
 }
 impl Model for ObservedModel {
-    fn capabilities(&self) -> &Capabilities {
+    fn capabilities(&self) -> &CapabilitySet {
         self.inner.capabilities()
     }
-    fn invoke(
-        &self,
-        request: ModelRequest,
-        mut context: ModelContext,
-    ) -> BoxFuture<'_, Result<ModelResponse>> {
+    fn negotiate(&self, request: &ModelRequest) -> Result<NegotiatedProfile> {
+        self.inner.negotiate(request)
+    }
+    fn open_session(&self, open: SessionOpen) -> BoxFuture<'_, Result<ModelSession>> {
         Box::pin(async move {
-            context.cancellation.check()?;
-            let observer = (self.factory)(&request, &context.run)?;
-            context.cancellation.check()?;
-            context.deltas = Some(Arc::new(ObservedSink {
-                downstream: context.deltas,
+            open.context.cancellation.check()?;
+            let observer = (self.factory)(&open.request, &open.context.run)?;
+            let mut session = self.inner.open_session(open).await?;
+            session.output = Box::new(ObservedEvents {
+                inner: session.output,
                 observer,
-            }));
-            self.inner.invoke(request, context).await
+            });
+            Ok(session)
         })
     }
 }
-
-struct Tracker {
-    inner: Option<Arc<dyn DeltaSink>>,
-    seen: std::sync::atomic::AtomicBool,
-}
-impl DeltaSink for Tracker {
-    fn emit(&self, delta: ModelDelta) -> BoxFuture<'_, Result<()>> {
-        Box::pin(async move {
-            self.seen.store(true, std::sync::atomic::Ordering::Release);
-            if let Some(inner) = &self.inner {
-                inner.emit(delta).await?;
-            }
-            Ok(())
-        })
-    }
-}
+/// Retries session establishment only. A sent command is never transparently replayed.
 pub struct RetryingModel {
     inner: Arc<dyn Model>,
     policy: zhir_policies::RetryPolicy,
@@ -99,80 +72,97 @@ impl RetryingModel {
     }
 }
 impl Model for RetryingModel {
-    fn capabilities(&self) -> &Capabilities {
+    fn capabilities(&self) -> &CapabilitySet {
         self.inner.capabilities()
     }
-    fn invoke(
-        &self,
-        request: ModelRequest,
-        context: ModelContext,
-    ) -> BoxFuture<'_, Result<ModelResponse>> {
+    fn negotiate(&self, request: &ModelRequest) -> Result<NegotiatedProfile> {
+        self.inner.negotiate(request)
+    }
+    fn open_session(&self, open: SessionOpen) -> BoxFuture<'_, Result<ModelSession>> {
         Box::pin(async move {
-            let deadline = crate::retry_wait::deadline(&context.run)?;
+            let deadline = crate::retry_wait::deadline(&open.context.run)?;
             for attempt in 0..self.policy.max_attempts() {
-                crate::retry_wait::check(&context.cancellation, deadline)?;
-                let tracker = Arc::new(Tracker {
-                    inner: context.deltas.clone(),
-                    seen: false.into(),
-                });
-                let mut ctx = context.clone();
-                ctx.deltas = Some(tracker.clone());
-                match self.inner.invoke(request.clone(), ctx).await {
+                crate::retry_wait::check(&open.context.cancellation, deadline)?;
+                match self.inner.open_session(open.clone()).await {
                     Err(Error::Model(error))
                         if error.retryable
-                            && attempt + 1 < self.policy.max_attempts()
-                            && !tracker.seen.load(std::sync::atomic::Ordering::Acquire) =>
+                            && open.recovery.is_none()
+                            && attempt + 1 < self.policy.max_attempts() =>
                     {
                         crate::retry_wait::wait(
                             self.policy
                                 .delay_after(attempt + 1)
                                 .expect("remaining attempt"),
-                            &context.cancellation,
+                            &open.context.cancellation,
                             deadline,
                         )
                         .await?
                     }
-                    result => {
-                        crate::retry_wait::check(&context.cancellation, deadline)?;
-                        return result;
-                    }
+                    result => return result,
                 }
             }
-            unreachable!("positive attempts")
+            unreachable!("positive retry attempts")
         })
     }
 }
+/// A stable adapter identity used to bind recovery even when candidate order changes.
+pub struct FallbackCandidate {
+    pub id: String,
+    pub model: Arc<dyn Model>,
+}
+impl FallbackCandidate {
+    pub fn new(id: impl Into<String>, model: Arc<dyn Model>) -> Self {
+        Self {
+            id: id.into(),
+            model,
+        }
+    }
+}
+/// Candidates negotiate independently. Once opened, commands and recovery remain
+/// bound to that candidate; failures after dispatch never select another model.
 pub struct FallbackModel {
-    models: Vec<Arc<dyn Model>>,
-    capabilities: Capabilities,
+    models: Vec<FallbackCandidate>,
+    capabilities: CapabilitySet,
 }
 impl FallbackModel {
-    pub fn new(models: Vec<Arc<dyn Model>>) -> Result<Self> {
-        let first = models
+    pub fn new(models: Vec<FallbackCandidate>) -> Result<Self> {
+        let mut identities = std::collections::BTreeSet::new();
+        if models
+            .iter()
+            .any(|candidate| candidate.id.is_empty() || !identities.insert(&candidate.id))
+        {
+            return Err(Error::Invalid(
+                "fallback candidates require unique nonempty identities".into(),
+            ));
+        }
+        let mut capabilities = models
             .first()
-            .ok_or_else(|| Error::Invalid("fallback requires models".into()))?;
-        let mut capabilities = first.capabilities().clone();
-        for m in models.iter().skip(1) {
-            let c = m.capabilities();
-            capabilities
-                .input_modalities
-                .retain(|v| c.input_modalities.contains(v));
-            capabilities
-                .output_modalities
-                .retain(|v| c.output_modalities.contains(v));
-            capabilities
-                .tool_choices
-                .retain(|v| c.tool_choices.contains(v));
-            capabilities.structured_runtime_tools &= c.structured_runtime_tools;
-            capabilities.freeform_runtime_tools &= c.freeform_runtime_tools;
-            capabilities.provider_tools &= c.provider_tools;
-            capabilities.parallel_runtime_tools &= c.parallel_runtime_tools;
-            capabilities.parallel_control &= c.parallel_control;
-            capabilities.streaming &= c.streaming;
-            capabilities.usage &= c.usage;
-            capabilities.structured_output &= c.structured_output;
-            capabilities.json_mode &= c.json_mode;
-            capabilities.seed &= c.seed;
+            .ok_or_else(|| Error::Invalid("fallback requires models".into()))?
+            .model
+            .capabilities()
+            .clone();
+        for candidate in models.iter().skip(1) {
+            let caps = candidate.model.capabilities();
+            capabilities.features.extend(caps.features.iter().copied());
+            for (values, added) in [
+                (&mut capabilities.input_modalities, &caps.input_modalities),
+                (&mut capabilities.output_modalities, &caps.output_modalities),
+                (&mut capabilities.tool_choices, &caps.tool_choices),
+            ] {
+                for value in added {
+                    if !values.contains(value) {
+                        values.push(value.clone());
+                    }
+                }
+            }
+            for (key, values) in &caps.constraints {
+                let supported = capabilities.constraints.entry(key.clone()).or_default();
+                for value in values {
+                    if !supported.contains(value) {
+                        supported.push(value.clone());
+                    }
+                }
+            }
         }
         Ok(Self {
             models,
@@ -180,37 +170,99 @@ impl FallbackModel {
         })
     }
 }
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FallbackRecovery {
+    candidate: String,
+    reference: zhir_core::operation::RecoveryRef,
+}
+struct BoundEvents {
+    candidate: String,
+    inner: Box<dyn SessionReceiver>,
+}
+impl SessionReceiver for BoundEvents {
+    fn receive(&mut self) -> BoxFuture<'_, Result<Option<SessionEvent>>> {
+        Box::pin(async move {
+            let Some(mut event) = self.inner.receive().await? else {
+                return Ok(None);
+            };
+            let reference = match &mut event.body {
+                SessionEventBody::Acknowledged {
+                    recovery: Some(reference),
+                    ..
+                }
+                | SessionEventBody::Recovery { reference } => Some(reference),
+                _ => None,
+            };
+            if let Some(reference) = reference {
+                *reference = zhir_core::operation::RecoveryRef {
+                    adapter: "zhir.fallback".into(),
+                    data: serde_json::to_value(FallbackRecovery {
+                        candidate: self.candidate.clone(),
+                        reference: reference.clone(),
+                    })
+                    .map_err(|error| Error::Protocol(error.to_string()))?,
+                };
+            }
+            Ok(Some(event))
+        })
+    }
+}
+fn bind(mut session: ModelSession, candidate: &str) -> ModelSession {
+    session.output = Box::new(BoundEvents {
+        candidate: candidate.into(),
+        inner: session.output,
+    });
+    session
+}
 impl Model for FallbackModel {
-    fn capabilities(&self) -> &Capabilities {
+    fn capabilities(&self) -> &CapabilitySet {
         &self.capabilities
     }
-    fn invoke(
-        &self,
-        request: ModelRequest,
-        context: ModelContext,
-    ) -> BoxFuture<'_, Result<ModelResponse>> {
+    fn negotiate(&self, request: &ModelRequest) -> Result<NegotiatedProfile> {
+        self.models
+            .iter()
+            .find_map(|candidate| candidate.model.negotiate(request).ok())
+            .ok_or_else(|| Error::Invalid("no model satisfies request".into()))
+    }
+    fn open_session(&self, mut open: SessionOpen) -> BoxFuture<'_, Result<ModelSession>> {
         Box::pin(async move {
-            request.validate(&self.capabilities)?;
-            for (index, model) in self.models.iter().enumerate() {
-                context.cancellation.check()?;
-                let tracker = Arc::new(Tracker {
-                    inner: context.deltas.clone(),
-                    seen: false.into(),
-                });
-                let mut ctx = context.clone();
-                ctx.deltas = Some(tracker.clone());
-                match model.invoke(request.clone(), ctx).await {
-                    Err(Error::Model(error))
-                        if error.retryable
-                            && index + 1 < self.models.len()
-                            && !tracker.seen.load(std::sync::atomic::Ordering::Acquire) =>
-                    {
-                        continue;
-                    }
-                    result => return result,
+            open.context.cancellation.check()?;
+            if let Some(reference) = open.recovery.take() {
+                if reference.adapter != "zhir.fallback" {
+                    return Err(Error::Invalid(
+                        "recovery does not belong to this fallback adapter".into(),
+                    ));
+                }
+                let saved: FallbackRecovery = serde_json::from_value(reference.data)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                let candidate = self
+                    .models
+                    .iter()
+                    .find(|candidate| candidate.id == saved.candidate)
+                    .ok_or_else(|| {
+                        Error::Invalid("original fallback candidate is unavailable".into())
+                    })?;
+                open.recovery = Some(saved.reference);
+                return candidate
+                    .model
+                    .open_session(open)
+                    .await
+                    .map(|session| bind(session, &candidate.id));
+            }
+            let mut error = Error::Invalid("no model satisfies request".into());
+            for candidate in &self.models {
+                open.context.cancellation.check()?;
+                if candidate.model.negotiate(&open.request).is_err() {
+                    continue;
+                }
+                match candidate.model.open_session(open.clone()).await {
+                    Ok(session) => return Ok(bind(session, &candidate.id)),
+                    Err(Error::Model(e)) if e.retryable => error = Error::Model(e),
+                    Err(e) => return Err(e),
                 }
             }
-            unreachable!("nonempty models")
+            Err(error)
         })
     }
 }

@@ -12,9 +12,19 @@ workspace = true
 [dependencies]
 zhir-core.workspace = true
 zhir-kernel.workspace = true
-tokio = { workspace = true, optional = true, features = ["net", "io-util"] }
-serde_json = { workspace = true, optional = true }
+zhir-models.workspace = true
+zhir-policies.workspace = true
+tokio = { workspace = true, features = ["net", "io-util"] }
+serde_json.workspace = true
 
 [features]
 default = []
-http = ["dep:tokio", "dep:serde_json"]
+http = []
+
+[[bench]]
+name = "trace"
+harness = false
+
+[[bench]]
+name = "history"
+harness = false

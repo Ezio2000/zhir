@@ -1,112 +1,68 @@
-use super::{AgentBackend, AgentSnapshot};
+use super::AgentBackend;
 use crate::common::spec;
 use serde::Deserialize;
-use serde_json::Value;
 use std::sync::Arc;
 use zhir_core::{
-    Result,
+    BoxFuture, Result,
     error::Error,
-    message::Message,
-    run::{Checkpoint, State},
-    tool::RuntimeTool,
+    operation::{OperationRecord, ToolExecution},
+    tool::{RuntimeTool, RuntimeToolCall, RuntimeToolContext, RuntimeToolSpec},
 };
 
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Start {
     #[schemars(length(min = 1))]
-    key: String,
-    #[schemars(length(min = 1))]
     prompt: String,
 }
-#[derive(Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct Id {
-    #[schemars(length(min = 1))]
-    id: String,
+struct AgentTool {
+    backend: Arc<dyn AgentBackend>,
+    spec: RuntimeToolSpec,
 }
-#[derive(Clone, Copy)]
-enum Operation {
-    Get,
-    Wait,
-    Cancel,
-}
-impl Operation {
-    const fn name(self) -> &'static str {
-        match self {
-            Self::Get => "agent_get",
-            Self::Wait => "agent_wait",
-            Self::Cancel => "agent_cancel",
-        }
+impl RuntimeTool for AgentTool {
+    fn spec(&self) -> &RuntimeToolSpec {
+        &self.spec
+    }
+    fn start(
+        &self,
+        call: RuntimeToolCall,
+        context: RuntimeToolContext,
+    ) -> BoxFuture<'_, Result<ToolExecution>> {
+        Box::pin(async move {
+            let args: Start = serde_json::from_value(match call.input {
+                zhir_core::tool::RuntimeToolInput::Structured(value) => value,
+                _ => return Err(Error::Invalid("agent_run requires structured input".into())),
+            })
+            .map_err(|e| Error::Invalid(e.to_string()))?;
+            if args.prompt.is_empty() {
+                return Err(Error::Invalid("child prompt is empty".into()));
+            }
+            self.backend
+                .start(args.prompt, context)
+                .await
+                .map(ToolExecution::Active)
+        })
+    }
+    fn recover(
+        &self,
+        operation: OperationRecord,
+        context: RuntimeToolContext,
+    ) -> BoxFuture<'_, Result<ToolExecution>> {
+        Box::pin(async move {
+            self.backend
+                .recover(operation, context)
+                .await
+                .map(ToolExecution::Active)
+        })
     }
 }
 pub fn tools(backend: Arc<dyn AgentBackend>) -> Result<Vec<Arc<dyn RuntimeTool>>> {
-    let mut runtime_tools: Vec<Arc<dyn RuntimeTool>> = Vec::new();
-    let start_backend = backend.clone();
-    runtime_tools.push(Arc::new(zhir_tools::function::structured(
-        spec::<Start>(
-            "agent_start",
-            "Start an idempotent child Agent task.",
+    Ok(vec![Arc::new(AgentTool {
+        backend,
+        spec: spec::<Start>(
+            "agent_run",
+            "Run a child Agent; progress, replies and cancellation use its operation handle.",
             false,
         ),
-        move |a: Start, context| {
-            let backend = start_backend.clone();
-            async move {
-                let snapshot = backend.start_or_get(a.key, a.prompt, context.run).await?;
-                Ok(zhir_tools::reply::json(
-                    serde_json::to_value(snapshot).map_err(|e| Error::Protocol(e.to_string()))?,
-                ))
-            }
-        },
-    )?));
-    for operation in [Operation::Get, Operation::Wait, Operation::Cancel] {
-        let backend = backend.clone();
-        runtime_tools.push(Arc::new(zhir_tools::function::structured(
-            spec::<Id>(
-                operation.name(),
-                "Inspect, wait for or cancel a child Agent.",
-                false,
-            ),
-            move |a: Id, context| {
-                let backend = backend.clone();
-                async move {
-                    let snapshot = if matches!(operation, Operation::Cancel) {
-                        backend.cancel(a.id, context.run).await?
-                    } else {
-                        backend.get(a.id, context.run).await?
-                    };
-                    let value = serde_json::to_value(&snapshot)
-                        .map_err(|e| Error::Protocol(e.to_string()))?;
-                    if matches!(operation, Operation::Wait) && !snapshot.terminal() {
-                        Ok(zhir_tools::reply::waiting(
-                            snapshot.id,
-                            value,
-                            Operation::Wait.name(),
-                        ))
-                    } else {
-                        Ok(zhir_tools::reply::json(value))
-                    }
-                }
-            },
-        )?));
-    }
-    Ok(runtime_tools)
-}
-pub fn response(checkpoint: &Checkpoint, snapshot: AgentSnapshot) -> Result<Message> {
-    let State::Suspended { suspension, .. } = &checkpoint.state else {
-        return Err(Error::Invalid("agent response requires suspension".into()));
-    };
-    if suspension.source != Operation::Wait.name()
-        || suspension.wait_id.as_deref() != Some(&snapshot.id)
-    {
-        return Err(Error::Invalid("agent response selector mismatch".into()));
-    }
-    if !snapshot.terminal() {
-        return Err(Error::Invalid(
-            "agent response requires settled child".into(),
-        ));
-    }
-    let value: Value =
-        serde_json::to_value(snapshot).map_err(|e| Error::Protocol(e.to_string()))?;
-    Ok(Message::external(value.to_string()))
+    })])
 }

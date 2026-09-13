@@ -1,0 +1,88 @@
+{
+  "version": 2,
+  "name": "structured_operation",
+  "kind": "runtime",
+  "case": {
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "kind": "text",
+            "text": "go"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "output": {
+          "output": [
+            {
+              "kind": "runtime_tool_call",
+              "call": {
+                "id": "c",
+                "name": "echo",
+                "input": {
+                  "kind": "structured",
+                  "value": {}
+                }
+              }
+            }
+          ],
+          "model_id": null,
+          "response_id": null,
+          "finish_reason": null
+        }
+      },
+      {
+        "output": {
+          "output": [
+            {
+              "kind": "content",
+              "content": {
+                "kind": "text",
+                "text": "done"
+              }
+            }
+          ],
+          "model_id": null,
+          "response_id": null,
+          "finish_reason": null
+        }
+      }
+    ],
+    "tools": [
+      {
+        "spec": {
+          "name": "echo",
+          "description": "echo",
+          "input": {
+            "kind": "structured",
+            "schema": {
+              "type": "object"
+            }
+          },
+          "output_schema": null,
+          "execution": {
+            "parallel": false,
+            "read_only": false,
+            "idempotent": false
+          }
+        },
+        "outcome": {
+          "kind": "success",
+          "content": [],
+          "structured": "ok"
+        }
+      }
+    ],
+    "expected": {
+      "state": "completed",
+      "text": "done",
+      "tool_outcomes": [
+        "success"
+      ]
+    }
+  }
+}

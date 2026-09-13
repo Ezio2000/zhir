@@ -14,13 +14,13 @@ use zhir::{
     BoxFuture, Result, ResumeRequest, RunOutcome, RunRequest, Runtime,
     core::{
         Cancellation,
-        artifact::{ArtifactContent, ArtifactRef, ArtifactStore},
+        resource::{ResourceRef, ResourceSource, ResourceStore},
     },
     error::{
-        ArtifactError, CatalogError, ContextError, Error, Failure, ResumeError, ValidationError,
+        CatalogError, ContextError, Error, Failure, ResourceError, ResumeError, ValidationError,
     },
     message::{Message, Output},
-    model::{Capabilities, Model, ModelContext, ModelRequest, ModelResponse},
+    model::{CapabilitySet, Model, ModelContext, ModelRequest, TurnOutput},
     models::{FunctionModel, TransformModel, decorators::RetryingModel},
     policies::{Backoff, RetryPolicy},
     run::{ContextKey, Limits, State},
@@ -28,7 +28,7 @@ use zhir::{
         CompositeRuntimeTools, FunctionApprovalPolicy, RuntimeToolRegistry, ToolReply, TypedTool,
         decorators::RetryingTool,
     },
-    stores::{MemoryArtifactStore, MemoryRunStore},
+    stores::{MemoryResourceStore, MemoryRunStore},
     tool::{
         ApprovalDecision, ApprovalPolicy, ApprovalRequest, CatalogContext, Execution, RuntimeTool,
         RuntimeToolCall, RuntimeToolCatalog, RuntimeToolCatalogProvider, RuntimeToolContext,
@@ -52,7 +52,7 @@ fn request() -> ModelRequest {
         messages: vec![Message::user("run")],
         runtime_tools: vec![],
         provider_tools: vec![],
-        options: Default::default(),
+        profile: Default::default(),
         tool_choice: Default::default(),
         response_format: None,
         stream: false,
@@ -72,8 +72,8 @@ fn call(name: &str, n: u64) -> RuntimeToolCall {
         input: RuntimeToolInput::Structured(json!({"n": n})),
     }
 }
-fn tool_response(name: &str, n: u64) -> ModelResponse {
-    let mut r = ModelResponse::text("");
+fn tool_response(name: &str, n: u64) -> TurnOutput {
+    let mut r = TurnOutput::text("");
     r.output = vec![Output::RuntimeToolCall {
         call: call(name, n),
     }];
@@ -148,20 +148,31 @@ async fn scoped_composite_tools_typed_context_and_matching_scripts_across_64_run
                 })
                 .steps([
                     ScriptStep::response(tool_response(name, index)),
-                    ScriptStep::response(ModelResponse::text(index.to_string())),
+                    ScriptStep::response(TurnOutput::text(index.to_string())),
                 ])
         }))
         .unwrap(),
     );
     let mapped = Arc::new(AtomicUsize::new(0));
     let count = mapped.clone();
-    let model = TransformModel::response(script.clone(), move |mut response, context| {
-        count.fetch_add(1, Ordering::SeqCst);
-        async move {
-            response.provider_data = json!({"job":context.run.require(JOB)?.index});
-            Ok(response)
-        }
-    });
+    let model = TransformModel::new(script.clone(), |r, _| async { Ok(r) }).map_event(
+        move |mut event, context| {
+            if matches!(
+                event.body,
+                zhir::model::SessionEventBody::TurnFinished { .. }
+            ) {
+                count.fetch_add(1, Ordering::SeqCst);
+            }
+            async move {
+                if let zhir::model::SessionEventBody::TurnFinished { provider_data, .. } =
+                    &mut event.body
+                {
+                    *provider_data = json!({"job":context.run.require(JOB)?.index});
+                }
+                Ok(event)
+            }
+        },
+    );
     let approvals = Arc::new(AtomicUsize::new(0));
     let approved = approvals.clone();
     let policy = FunctionApprovalPolicy::per_call(move |request, context| {
@@ -213,7 +224,7 @@ async fn scoped_composite_tools_typed_context_and_matching_scripts_across_64_run
     assert_eq!(opened.lock().unwrap().len(), 128);
     assert_eq!(mapped.load(Ordering::SeqCst), 128);
     assert_eq!(approvals.load(Ordering::SeqCst), 64);
-    assert_eq!(store.verify_traces().unwrap(), 256);
+    assert_eq!(store.verify_traces().unwrap(), store.commits().len());
 }
 
 #[tokio::test]
@@ -271,17 +282,18 @@ async fn catalog_snapshots_duplicates_missing_selection_and_schema_paths() {
 
 #[tokio::test]
 async fn selection_and_context_survive_ticket_resume_with_different_defaults() {
-    let wait = Arc::new(
+    let schema =
         TypedTool::<Args, u64>::new("wait", "wait", Execution::default(), |args, _| async move {
-            Ok(ToolReply::waiting("ticket", args.n, "consumer"))
+            Ok(ToolReply::success(args.n))
         })
-        .unwrap(),
-    ) as Arc<dyn RuntimeTool>;
+        .unwrap();
+    let wait =
+        Arc::new(zhir_testing::WaitingTool::new(schema.spec().clone())) as Arc<dyn RuntimeTool>;
     let registry = Arc::new(RuntimeToolRegistry::from_tools([wait, tool("extra")]).unwrap());
     let store = Arc::new(MemoryRunStore::new());
     let script = Arc::new(ScriptedModel::responses([
         tool_response("wait", 1),
-        ModelResponse::text("done"),
+        TurnOutput::text("done"),
     ]));
     let runtime = Runtime::builder(script.clone())
         .runtime_tools(registry.clone())
@@ -311,6 +323,20 @@ async fn selection_and_context_survive_ticket_resume_with_different_defaults() {
     let resumed = fresh
         .resume(
             ResumeRequest::from_ticket(ticket.clone())
+                .resolve(zhir_core::operation::RecoveryResolution::Complete {
+                    operation_id: result
+                        .checkpoint()
+                        .active
+                        .operations
+                        .keys()
+                        .next()
+                        .unwrap()
+                        .clone(),
+                    outcome: zhir::tool::RuntimeToolOutcome::Success {
+                        content: vec![],
+                        structured: json!(1),
+                    },
+                })
                 .context_value(JOB, Job { index: 2 })
                 .unwrap(),
         )
@@ -351,7 +377,7 @@ async fn selection_and_context_survive_ticket_resume_with_different_defaults() {
     assert!(matches!(failed.outcome(),RunOutcome::Failed(f) if f.code=="busy"));
     let limited = no_store
         .start(RunRequest::new([Message::user("run")]).limits(Limits {
-            max_planning_steps: 0,
+            max_model_turns: 0,
             ..zhir::kernel::defaults::limits()
         }))
         .unwrap()
@@ -360,9 +386,7 @@ async fn selection_and_context_survive_ticket_resume_with_different_defaults() {
         .unwrap();
     assert!(matches!(limited.outcome(), RunOutcome::Limited(_)));
     let mut active = resumed.checkpoint().as_ref().clone();
-    active.state = State::Planning {
-        provider_turn_pending: false,
-    };
+    active.state = State::Running;
     assert!(zhir::RunCompletion::new(Arc::new(active)).is_err());
 }
 
@@ -425,18 +449,27 @@ async fn function_approval_preserves_order_and_batch_errors() {
 
 #[tokio::test]
 async fn response_maps_run_in_order_and_do_not_recover_inner_failures() {
-    let script = Arc::new(ScriptedModel::responses([ModelResponse::text("ok")]));
-    let model = TransformModel::response(script, |mut r, _| async move {
-        r.provider_data = json!([1]);
-        Ok(r)
-    })
-    .map_response(|mut r, _| async move {
-        r.provider_data.as_array_mut().unwrap().push(json!(2));
-        Ok(r)
-    });
+    let script = Arc::new(ScriptedModel::responses([TurnOutput::text("ok")]));
+    let model = TransformModel::new(script, |r, _| async { Ok(r) })
+        .map_event(|mut event, _| async move {
+            if let zhir::model::SessionEventBody::TurnFinished { provider_data, .. } =
+                &mut event.body
+            {
+                *provider_data = json!([1]);
+            }
+            Ok(event)
+        })
+        .map_event(|mut event, _| async move {
+            if let zhir::model::SessionEventBody::TurnFinished { provider_data, .. } =
+                &mut event.body
+            {
+                provider_data.as_array_mut().unwrap().push(json!(2));
+            }
+            Ok(event)
+        });
     assert_eq!(
         model
-            .invoke(request(), context())
+            .turn(request(), context())
             .await
             .unwrap()
             .provider_data,
@@ -444,22 +477,51 @@ async fn response_maps_run_in_order_and_do_not_recover_inner_failures() {
     );
     let calls = Arc::new(AtomicUsize::new(0));
     let counted = calls.clone();
-    let model = TransformModel::response(
+    let model = TransformModel::new(
         Arc::new(ScriptedModel::new([ScriptStep::failure(temporary())])),
-        move |r, _| {
+        |r, _| async { Ok(r) },
+    )
+    .map_event(move |event, _| {
+        if matches!(
+            event.body,
+            zhir::model::SessionEventBody::TurnFinished { .. }
+        ) {
             counted.fetch_add(1, Ordering::SeqCst);
-            async { Ok(r) }
-        },
-    );
-    assert!(model.invoke(request(), context()).await.is_err());
+        }
+        async { Ok(event) }
+    });
+    assert!(model.turn(request(), context()).await.is_err());
     assert_eq!(calls.load(Ordering::SeqCst), 0);
-    let model = TransformModel::response(
-        Arc::new(ScriptedModel::responses([ModelResponse::text("ok")])),
-        |_, _| async { Err(Error::Protocol("consumer map failed".into())) },
-    );
+    let model = TransformModel::new(
+        Arc::new(ScriptedModel::responses([TurnOutput::text("ok")])),
+        |r, _| async { Ok(r) },
+    )
+    .map_event(|_, _| async { Err(Error::Protocol("consumer map failed".into())) });
     assert!(
-        matches!(model.invoke(request(),context()).await,Err(Error::Protocol(s)) if s=="consumer map failed")
+        matches!(model.turn(request(),context()).await,Err(Error::Protocol(s)) if s=="consumer map failed")
     );
+}
+
+struct Unavailable {
+    capabilities: CapabilitySet,
+    calls: Arc<AtomicUsize>,
+    entered: Arc<tokio::sync::Semaphore>,
+}
+impl Model for Unavailable {
+    fn capabilities(&self) -> &CapabilitySet {
+        &self.capabilities
+    }
+    fn negotiate(&self, request: &ModelRequest) -> Result<zhir_core::profile::NegotiatedProfile> {
+        zhir_policies::negotiation::negotiate(request, &self.capabilities)
+    }
+    fn open_session(
+        &self,
+        _: zhir::model::SessionOpen,
+    ) -> BoxFuture<'_, Result<zhir::model::ModelSession>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.entered.add_permits(1);
+        Box::pin(async { Err(temporary()) })
+    }
 }
 
 #[tokio::test]
@@ -469,11 +531,11 @@ async fn model_and_tool_backoff_are_cancelled_and_deadline_bounded() {
         let signal = entered.clone();
         let calls = Arc::new(AtomicUsize::new(0));
         let counted = calls.clone();
-        let model = FunctionModel::new(zhir_testing::model_capabilities(), move |_, _| {
-            counted.fetch_add(1, Ordering::SeqCst);
-            signal.add_permits(1);
-            async { Err(temporary()) }
-        });
+        let model = Unavailable {
+            capabilities: zhir_testing::model_capabilities(),
+            calls: counted,
+            entered: signal,
+        };
         let model = RetryingModel::new(
             Arc::new(model),
             RetryPolicy::new(4)
@@ -486,7 +548,7 @@ async fn model_and_tool_backoff_are_cancelled_and_deadline_bounded() {
             ctx.run.deadline_at_ms = Some(zhir::kernel::defaults::context().started_at_ms + 40);
         }
         let cancel = ctx.cancellation.clone();
-        let task = tokio::spawn(async move { model.invoke(request(), ctx).await });
+        let task = tokio::spawn(async move { model.turn(request(), ctx).await });
         entered.acquire().await.unwrap().forget();
         if !deadline {
             cancel.cancel();
@@ -532,9 +594,10 @@ async fn model_and_tool_backoff_are_cancelled_and_deadline_bounded() {
     let cancellation = Cancellation::default();
     let cancel = cancellation.clone();
     let task = tokio::spawn(async move {
-        tool.invoke(
+        tool.start(
             call("flaky", 0),
             RuntimeToolContext {
+                operation_id: "fixture-operation".into(),
                 run: zhir::kernel::defaults::context(),
                 cancellation,
                 progress: None,
@@ -561,7 +624,7 @@ async fn matching_retry_cases_have_independent_attempts_and_strict_verification(
                 .when(move |i| i.run.run_id == format!("run-{n}"))
                 .steps([
                     ScriptStep::failure(temporary()),
-                    ScriptStep::response(ModelResponse::text(n.to_string())),
+                    ScriptStep::response(TurnOutput::text(n.to_string())),
                 ])
         }))
         .unwrap(),
@@ -573,7 +636,8 @@ async fn matching_retry_cases_have_independent_attempts_and_strict_verification(
         tasks.push(tokio::spawn(async move {
             let mut ctx = context();
             ctx.run.run_id = format!("run-{n}");
-            model.invoke(request(), ctx).await.unwrap();
+            assert!(model.turn(request(), ctx.clone()).await.is_err());
+            model.turn(request(), ctx).await.unwrap();
         }));
     }
     for task in tasks {
@@ -581,143 +645,154 @@ async fn matching_retry_cases_have_independent_attempts_and_strict_verification(
     }
     script.verify().unwrap();
     assert_eq!(script.requests().len(), 64);
-    assert!(script.invoke(request(), context()).await.is_err());
+    assert!(script.turn(request(), context()).await.is_err());
     assert!(script.verify().is_err());
     let ambiguous = ScriptedModel::matching(["a", "b"].into_iter().map(|n| {
         ModelCase::new(n)
             .when(|_| true)
-            .steps([ScriptStep::response(ModelResponse::text("ok"))])
+            .steps([ScriptStep::response(TurnOutput::text("ok"))])
     }))
     .unwrap();
-    assert!(ambiguous.invoke(request(), context()).await.is_err());
+    assert!(ambiguous.turn(request(), context()).await.is_err());
     assert_eq!(ambiguous.remaining(), 2);
     assert!(ambiguous.verify().is_err());
     let extra = ScriptedModel::matching([ModelCase::new("one")
         .when(|_| true)
-        .steps([ScriptStep::response(ModelResponse::text("ok"))])])
+        .steps([ScriptStep::response(TurnOutput::text("ok"))])])
     .unwrap();
-    extra.invoke(request(), context()).await.unwrap();
+    extra.turn(request(), context()).await.unwrap();
     extra.verify().unwrap();
-    assert!(extra.invoke(request(), context()).await.is_err());
+    assert!(extra.turn(request(), context()).await.is_err());
     assert!(extra.verify().is_err());
 }
 
-async fn check_artifacts(store: Arc<dyn ArtifactStore>) -> ArtifactRef {
-    let content = ArtifactContent {
-        mime_type: "text/plain".into(),
-        base64: "aGVsbG8=".into(),
-    };
-    let mut tasks = vec![];
-    for _ in 0..32 {
+async fn check_resources(store: Arc<dyn ResourceStore>) -> ResourceRef {
+    let refs = futures::future::join_all((0..32).map(|_| {
         let store = store.clone();
-        let content = content.clone();
-        tasks.push(tokio::spawn(async move {
-            store.put("consumer/key".into(), content).await.unwrap()
-        }));
-    }
-    let mut refs = vec![];
-    for task in tasks {
-        refs.push(task.await.unwrap());
-    }
+        async move {
+            let mut writer = store
+                .create("consumer/key".into(), "text/plain".into())
+                .await
+                .unwrap();
+            writer.append(0, b"he".to_vec()).await.unwrap();
+            writer.append(1, b"llo".to_vec()).await.unwrap();
+            writer.finish().await.unwrap()
+        }
+    }))
+    .await;
     assert!(refs.iter().all(|r| r == &refs[0]));
-    assert_eq!(store.get(refs[0].clone()).await.unwrap(), content);
+    let mut reader = store.open(refs[0].clone()).await.unwrap();
+    let mut bytes = vec![];
+    loop {
+        let part = reader.read(2).await.unwrap();
+        if part.is_empty() {
+            break;
+        }
+        assert!(part.len() <= 2);
+        bytes.extend(part);
+    }
+    assert_eq!(bytes, b"hello");
+    let mut writer = store
+        .create("consumer/key".into(), "text/plain".into())
+        .await
+        .unwrap();
+    writer.append(0, b"different".to_vec()).await.unwrap();
     assert!(matches!(
-        store
-            .put(
-                "consumer/key".into(),
-                ArtifactContent {
-                    base64: "different".into(),
-                    ..content
-                }
-            )
-            .await,
-        Err(Error::Artifact(ArtifactError::Conflict { .. }))
+        writer.finish().await,
+        Err(Error::Resource(ResourceError::Conflict { .. }))
     ));
-    assert!(matches!(
+    assert!(
         store
-            .get(ArtifactRef {
-                mime_type: "other".into(),
+            .open(ResourceRef {
+                media_type: "other".into(),
                 ..refs[0].clone()
             })
-            .await,
-        Err(Error::Artifact(ArtifactError::Invalid { .. }))
-    ));
-    refs.remove(0)
+            .await
+            .is_err()
+    );
+    refs[0].clone()
 }
 #[tokio::test]
-async fn memory_artifacts_are_immutable_and_report_missing_references() {
-    let store = Arc::new(MemoryArtifactStore::new());
-    check_artifacts(store.clone()).await;
+async fn memory_resources_are_immutable_and_report_missing_references() {
+    let store = Arc::new(MemoryResourceStore::new());
+    check_resources(store.clone()).await;
     assert!(matches!(
         store
-            .get(ArtifactRef {
+            .open(ResourceRef {
                 id: "missing".into(),
-                mime_type: "text/plain".into()
+                media_type: "text/plain".into(),
+                name: None,
+                source: ResourceSource::Stored {
+                    key: "missing".into()
+                },
+                metadata: Default::default()
             })
             .await,
-        Err(Error::Artifact(ArtifactError::NotFound { .. }))
+        Err(Error::Resource(ResourceError::NotFound { .. }))
     ));
 }
-#[cfg(feature = "artifacts-filesystem")]
+#[cfg(feature = "resources-filesystem")]
 #[tokio::test]
-async fn filesystem_artifacts_survive_reopen_and_reject_corruption() {
-    use zhir::stores::FilesystemArtifactStore;
+async fn filesystem_resources_survive_reopen_and_reject_corruption() {
+    use zhir::stores::FilesystemResourceStore;
     let dir = tempfile::tempdir().unwrap();
-    let reference = check_artifacts(Arc::new(
-        FilesystemArtifactStore::open(dir.path()).await.unwrap(),
+    let reference = check_resources(Arc::new(
+        FilesystemResourceStore::open(dir.path()).await.unwrap(),
     ))
     .await;
-    let fresh = FilesystemArtifactStore::open(dir.path()).await.unwrap();
+    let fresh = FilesystemResourceStore::open(dir.path()).await.unwrap();
     assert_eq!(
-        fresh.get(reference.clone()).await.unwrap().base64,
-        "aGVsbG8="
+        ResourceStore::open(&fresh, reference.clone())
+            .await
+            .unwrap()
+            .read(10)
+            .await
+            .unwrap(),
+        b"hello"
     );
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-    let path = dir.path().join(format!("{}.json", reference.id));
-    std::fs::write(path, b"incomplete").unwrap();
-    assert!(matches!(
-        fresh.get(reference).await,
-        Err(Error::Artifact(ArtifactError::Invalid { .. }))
-    ));
+    std::fs::write(
+        dir.path().join(format!("{}.resource", reference.id)),
+        b"incomplete",
+    )
+    .unwrap();
+    assert!(ResourceStore::open(&fresh, reference).await.is_err());
     let blocked = dir.path().join("not-a-directory");
     std::fs::write(&blocked, b"x").unwrap();
-    assert!(matches!(
-        FilesystemArtifactStore::open(blocked).await,
-        Err(Error::Artifact(ArtifactError::Io { .. }))
-    ));
+    assert!(FilesystemResourceStore::open(blocked).await.is_err());
 }
-
-#[cfg(feature = "artifacts-filesystem")]
+#[cfg(feature = "resources-filesystem")]
 #[tokio::test]
-async fn filesystem_artifact_model_commits_references_and_rehydrates_history() {
-    use zhir::{
-        message::{Content, MediaSource},
-        models::ArtifactModel,
-        stores::FilesystemArtifactStore,
-    };
+async fn filesystem_resource_model_commits_references_and_rehydrates_history() {
+    use zhir::{message::Content, models::ResourceModel, stores::FilesystemResourceStore};
     let dir = tempfile::tempdir().unwrap();
-    let inline = Content::File {
+    let inline = Content::resource(ResourceRef {
+        id: "hello".into(),
+        media_type: "application/octet-stream".into(),
         name: Some("hello.txt".into()),
-        source: MediaSource::Inline {
-            mime_type: "text/plain".into(),
-            base64: "aGVsbG8=".into(),
+        source: ResourceSource::Inline {
+            bytes: b"hello".to_vec(),
         },
+        metadata: Default::default(),
+    });
+    let response = TurnOutput {
+        output: vec![Output::Content {
+            content: inline.clone(),
+        }],
+        ..TurnOutput::text("")
     };
-    let mut response = ModelResponse::text("");
-    response.output = vec![Output::Content {
-        content: inline.clone(),
-    }];
-    let capabilities = Capabilities {
+    let capabilities = CapabilitySet {
         input_modalities: vec!["text".into(), "file".into()],
         output_modalities: vec!["text".into(), "file".into()],
         ..zhir_testing::model_capabilities()
     };
-    let model = ArtifactModel::new(
+    let model = ResourceModel::new(
         Arc::new(ScriptedModel::responses([response]).with_capabilities(capabilities.clone())),
-        Arc::new(FilesystemArtifactStore::open(dir.path()).await.unwrap()),
-    );
+        Arc::new(FilesystemResourceStore::open(dir.path()).await.unwrap()),
+        1024,
+    )
+    .unwrap();
     let run = Runtime::builder(Arc::new(model))
-        .store(Arc::new(MemoryRunStore::new()))
         .build()
         .unwrap()
         .start(RunRequest::new([Message::user("file")]))
@@ -728,33 +803,31 @@ async fn filesystem_artifact_model_commits_references_and_rehydrates_history() {
     let RunOutcome::Completed(parts) = run.outcome() else {
         panic!("expected completion")
     };
-    assert!(matches!(
-        &parts[0],
-        Content::File {
-            source: MediaSource::Artifact { .. },
-            ..
-        }
-    ));
-    let persisted = zhir::wire::encode_checkpoint(run.checkpoint()).unwrap();
-    drop(run);
-    let checkpoint = zhir::wire::decode_checkpoint(&persisted).unwrap();
-    let mut history = checkpoint.history.messages();
-    history.push(Message::user("read this file"));
+    assert!(
+        matches!(&parts[0],Content::Resource {input} if matches!(input.resource.source,ResourceSource::Stored { .. }))
+    );
+    let checkpoint =
+        zhir::wire::decode_checkpoint(&zhir::wire::encode_checkpoint(run.checkpoint()).unwrap())
+            .unwrap();
+    let mut messages = zhir::model::conversation(checkpoint.history.entries());
+    messages.push(Message::user("read"));
     let inner = FunctionModel::new(capabilities, move |request, _| {
         let inline = inline.clone();
         async move {
-            assert!(request.messages.iter().any(|message| matches!(message, Message::Assistant { output, .. } if output.iter().any(|o| matches!(o, Output::Content { content } if content == &inline)))));
-            Ok(ModelResponse::text("hello"))
+            assert!(request.messages.iter().any(|m|matches!(m,Message::Assistant { output,..} if output.iter().any(|o|matches!(o,Output::Content {content} if content==&inline)))));
+            Ok(TurnOutput::text("hello"))
         }
     });
-    let model = ArtifactModel::new(
+    let model = ResourceModel::new(
         Arc::new(inner),
-        Arc::new(FilesystemArtifactStore::open(dir.path()).await.unwrap()),
-    );
+        Arc::new(FilesystemResourceStore::open(dir.path()).await.unwrap()),
+        1024,
+    )
+    .unwrap();
     let run = Runtime::builder(Arc::new(model))
         .build()
         .unwrap()
-        .start(RunRequest::new(history))
+        .start(RunRequest::new(messages))
         .unwrap()
         .result()
         .await
@@ -763,3 +836,4 @@ async fn filesystem_artifact_model_commits_references_and_rehydrates_history() {
         matches!(run.outcome(),RunOutcome::Completed(parts) if parts[0].as_text()==Some("hello"))
     );
 }
+use zhir_testing::ModelTestExt;

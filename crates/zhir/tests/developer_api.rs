@@ -13,15 +13,15 @@ use std::{
 use zhir::{
     Result, ResumeRequest, Runtime, SuspensionSelector,
     error::{Error, Failure},
-    message::{Content, MediaSource, Message, Output},
-    model::{Capabilities, Model, ModelContext, ModelDelta, ModelRequest, ModelResponse},
+    message::{Content, Message, Output},
+    model::{CapabilitySet, ModelContext, ModelDelta, ModelRequest, TurnOutput},
     models::{
         FunctionDeltaSink, FunctionModel, TransformModel,
         decorators::{ObservedModel, RetryingModel},
     },
     run::{EventData, State},
     runs::{DriveError, drive},
-    runtime_tools::{FunctionTool, RuntimeToolRegistry, TypedTool},
+    runtime_tools::{RuntimeToolRegistry, TypedTool},
     storage::RunStore,
     stores::memory::MemoryRunStore,
     tool::{Execution, InputSpec, RuntimeTool, RuntimeToolCall, RuntimeToolInput, RuntimeToolSpec},
@@ -32,7 +32,7 @@ fn request() -> ModelRequest {
         messages: vec![Message::user("hello")],
         runtime_tools: vec![],
         provider_tools: vec![],
-        options: Default::default(),
+        profile: Default::default(),
         tool_choice: Default::default(),
         response_format: None,
         stream: true,
@@ -52,8 +52,8 @@ fn failure() -> Error {
         retryable: true,
     })
 }
-fn tool_response(name: &str, input: Value) -> ModelResponse {
-    let mut response = ModelResponse::text("");
+fn tool_response(name: &str, input: Value) -> TurnOutput {
+    let mut response = TurnOutput::text("");
     response.output = vec![Output::RuntimeToolCall {
         call: RuntimeToolCall {
             id: "call-1".into(),
@@ -103,7 +103,7 @@ async fn typed_tools_transforms_observers_and_recording_ports_compose_across_64_
         zhir_testing::model_capabilities(),
         |request, context| async move {
             assert_eq!(
-                request.options.extra["prepared"],
+                request.profile.extensions["consumer"]["prepared"],
                 context.run.metadata["value"]
             );
             if let Some(sink) = context.deltas {
@@ -114,9 +114,7 @@ async fn typed_tools_transforms_observers_and_recording_ports_compose_across_64_
                 .await?;
             }
             if let Some(Message::RuntimeTool { outcome, .. }) = request.messages.last() {
-                Ok(ModelResponse::text(
-                    outcome.structured().unwrap().to_string(),
-                ))
+                Ok(TurnOutput::text(outcome.structured().unwrap().to_string()))
             } else {
                 Ok(tool_response(
                     "double",
@@ -128,8 +126,10 @@ async fn typed_tools_transforms_observers_and_recording_ports_compose_across_64_
     let prepared = TransformModel::new(inner, |mut request, context| async move {
         tokio::task::yield_now().await;
         request
-            .options
-            .extra
+            .profile
+            .extensions
+            .entry("consumer".into())
+            .or_default()
             .insert("prepared".into(), context.run.metadata["value"].clone());
         Ok(request)
     });
@@ -197,14 +197,15 @@ async fn typed_tools_transforms_observers_and_recording_ports_compose_across_64_
     .await;
     assert_eq!(calls.load(Ordering::SeqCst), 64);
     assert_eq!(observed.load(Ordering::SeqCst), 128);
-    assert_eq!(records.records().len(), 128);
-    assert!(
-        records
-            .records()
+    assert_eq!(records.records().len(), 64);
+    assert!(records.records().iter().all(|r| {
+        r.events
             .iter()
-            .all(|r| matches!(r.outcome, Some(Ok(_))))
-    );
-    assert_eq!(store.verify_traces().unwrap(), 256);
+            .filter(|e| matches!(e.body, zhir::model::SessionEventBody::TurnFinished { .. }))
+            .count()
+            == 2
+    }));
+    assert_eq!(store.verify_traces().unwrap(), store.commits().len());
 }
 #[tokio::test]
 async fn scripted_failures_sink_failures_and_exhaustion_remain_explicit() {
@@ -219,7 +220,7 @@ async fn scripted_failures_sink_failures_and_exhaustion_remain_explicit() {
         });
         let scripted = Arc::new(ScriptedModel::new([
             first,
-            ScriptStep::response(ModelResponse::text("done")),
+            ScriptStep::response(TurnOutput::text("done")),
         ]));
         let model = RetryingModel::new(
             scripted.clone(),
@@ -231,18 +232,19 @@ async fn scripted_failures_sink_failures_and_exhaustion_remain_explicit() {
         let sink = Arc::new(RecordingSink::default());
         let mut ctx = context();
         ctx.deltas = Some(sink.clone());
-        assert_eq!(model.invoke(request(), ctx).await.is_ok(), !emit);
-        assert_eq!(scripted.requests().len(), if emit { 1 } else { 2 });
-        assert_eq!(scripted.remaining(), usize::from(emit));
+        assert!(model.turn(request(), ctx).await.is_err());
+        assert_eq!(scripted.requests().len(), 1);
+        assert_eq!(scripted.remaining(), 1);
         assert_eq!(sink.deltas().len(), usize::from(emit));
-        if !emit {
+        model.turn(request(), context()).await.unwrap();
+        {
             assert!(
-                matches!(scripted.invoke(request(),context()).await,Err(Error::Protocol(e)) if e.contains("exhausted"))
+                matches!(scripted.turn(request(),context()).await,Err(Error::Protocol(e)) if e.contains("exhausted"))
             );
         }
     }
     let scripted = Arc::new(ScriptedModel::new([ScriptStep::response(
-        ModelResponse::text("done"),
+        TurnOutput::text("done"),
     )
     .with_deltas([
         ModelDelta::Text {
@@ -265,7 +267,7 @@ async fn scripted_failures_sink_failures_and_exhaustion_remain_explicit() {
                 .backoff(zhir_policies::Backoff::fixed(Duration::ZERO))
         )
         .unwrap()
-        .invoke(request(), ctx)
+        .turn(request(), ctx)
         .await
         .is_err()
     );
@@ -273,39 +275,41 @@ async fn scripted_failures_sink_failures_and_exhaustion_remain_explicit() {
     assert_eq!(sink.deltas().len(), 1);
 }
 #[tokio::test]
-async fn request_preparation_can_resolve_artifacts_without_changing_context() {
+async fn request_preparation_can_resolve_resources_without_changing_context() {
     let inner = Arc::new(RecordingModel::new(Arc::new(FunctionModel::new(
-        zhir_testing::model_capabilities(),
+        CapabilitySet {
+            input_modalities: vec!["text".into(), "file".into()],
+            ..zhir_testing::model_capabilities()
+        },
         |request, ctx| async move {
             assert_eq!(request.messages, vec![Message::user("resolved document")]);
             assert_eq!(ctx.run.metadata["tag"], "original");
-            Ok(ModelResponse::text("done"))
+            Ok(TurnOutput::text("done"))
         },
     ))));
-    let mut capabilities = zhir_testing::model_capabilities();
-    capabilities.input_modalities.push("file".into());
     let model = TransformModel::new(inner.clone(), |mut request, ctx| async move {
         ctx.cancellation.check()?;
         tokio::task::yield_now().await;
         request.messages = vec![Message::user("resolved document")];
         Ok(request)
-    })
-    .with_capabilities(capabilities);
+    });
     let mut req = request();
     req.messages = vec![Message::User {
-        content: vec![Content::File {
-            source: MediaSource::Artifact {
-                id: "document-1".into(),
-                mime_type: "text/plain".into(),
-            },
+        content: vec![Content::resource(zhir_core::resource::ResourceRef {
+            id: "document".into(),
+            media_type: "application/octet-stream".into(),
             name: None,
-        }],
+            source: zhir_core::resource::ResourceSource::Stored {
+                key: "document".into(),
+            },
+            metadata: Default::default(),
+        })],
     }];
     let mut ctx = context();
     ctx.run.metadata.insert("tag".into(), json!("original"));
     let run_id = ctx.run.run_id.clone();
-    model.invoke(req, ctx).await.unwrap();
-    assert_eq!(inner.records()[0].input.run.run_id, run_id);
+    model.turn(req, ctx).await.unwrap();
+    assert_eq!(inner.records()[0].opening.run.run_id, run_id);
 }
 #[tokio::test]
 async fn function_and_transform_validation_cancel_before_or_after_callbacks() {
@@ -315,13 +319,13 @@ async fn function_and_transform_validation_cancel_before_or_after_callbacks() {
         zhir_testing::model_capabilities(),
         move |_, _| {
             called.fetch_add(1, Ordering::SeqCst);
-            async { Ok(ModelResponse::text("ok")) }
+            async { Ok(TurnOutput::text("ok")) }
         },
     ));
     let ctx = context();
     ctx.cancellation.cancel();
     assert!(matches!(
-        inner.invoke(request(), ctx).await,
+        inner.turn(request(), ctx).await,
         Err(Error::Cancelled)
     ));
     let mut invalid = request();
@@ -329,7 +333,7 @@ async fn function_and_transform_validation_cancel_before_or_after_callbacks() {
         name: "missing".into(),
     };
     assert!(matches!(
-        inner.invoke(invalid, context()).await,
+        inner.turn(invalid, context()).await,
         Err(Error::Invalid(_))
     ));
     for cancel in [false, true] {
@@ -343,15 +347,15 @@ async fn function_and_transform_validation_cancel_before_or_after_callbacks() {
             }
             Ok(req)
         });
-        assert!(model.invoke(request(), context()).await.is_err());
+        assert!(model.turn(request(), context()).await.is_err());
     }
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     let model = FunctionModel::new(zhir_testing::model_capabilities(), |_, ctx| async move {
         ctx.cancellation.cancel();
-        Ok(ModelResponse::text("late"))
+        Ok(TurnOutput::text("late"))
     });
     assert!(matches!(
-        model.invoke(request(), context()).await,
+        model.turn(request(), context()).await,
         Err(Error::Cancelled)
     ));
     let malformed = FunctionModel::new(zhir_testing::model_capabilities(), |_, _| async {
@@ -361,13 +365,13 @@ async fn function_and_transform_validation_cancel_before_or_after_callbacks() {
         }
         Ok(response)
     });
-    assert!(malformed.invoke(request(), context()).await.is_err());
+    assert!(malformed.turn(request(), context()).await.is_err());
 }
 #[tokio::test]
 async fn drive_preserves_observer_failure_and_actual_settlement() {
     let model = Arc::new(FunctionModel::new(
         zhir_testing::model_capabilities(),
-        |_, _| async { std::future::pending::<Result<ModelResponse>>().await },
+        |_, _| async { std::future::pending::<Result<TurnOutput>>().await },
     ));
     let runtime = Runtime::builder(model).build().unwrap();
     let error = tokio::time::timeout(
@@ -377,7 +381,7 @@ async fn drive_preserves_observer_failure_and_actual_settlement() {
                 .start(zhir::RunRequest::new(vec![Message::user("wait")]))
                 .unwrap(),
             |event| async move {
-                if matches!(event.data, EventData::ModelStarted) {
+                if matches!(event.data, EventData::CheckpointCommitted { .. }) {
                     Err(Error::Invalid("writer failed".into()))
                 } else {
                     Ok(())
@@ -389,7 +393,7 @@ async fn drive_preserves_observer_failure_and_actual_settlement() {
     .unwrap()
     .unwrap_err();
     assert!(
-        matches!(error,DriveError::Observer {error:Error::Invalid(ref message),settled:Err(ref run)} if message=="writer failed" && matches!(run.error,Error::Cancelled) && run.last_checkpoint.is_some())
+        matches!(error,DriveError::Observer {error:Error::Invalid(ref message),settled:Ok(ref run)} if message=="writer failed" && matches!(run.checkpoint().state,State::Cancelled))
     );
     let runtime = Runtime::builder(Arc::new(ScriptedModel::new([ScriptStep::failure(
         failure(),
@@ -405,7 +409,7 @@ async fn drive_preserves_observer_failure_and_actual_settlement() {
     .await
     .unwrap();
     assert!(matches!(failed.outcome(), zhir::RunOutcome::Failed(_)));
-    let runtime = Runtime::builder(Arc::new(ScriptedModel::responses([ModelResponse::text(
+    let runtime = Runtime::builder(Arc::new(ScriptedModel::responses([TurnOutput::text(
         "done",
     )])))
     .build()
@@ -419,7 +423,7 @@ async fn drive_preserves_observer_failure_and_actual_settlement() {
 }
 #[tokio::test]
 async fn output_decoding_is_strict_and_leaves_checkpoint_intact() {
-    let runtime = Runtime::builder(Arc::new(ScriptedModel::responses([ModelResponse::text(
+    let runtime = Runtime::builder(Arc::new(ScriptedModel::responses([TurnOutput::text(
         "{\"total\":7}",
     )])))
     .build()
@@ -462,35 +466,24 @@ async fn output_decoding_is_strict_and_leaves_checkpoint_intact() {
         ],
     };
     assert!(zhir::output::decode::<Report>(&c).is_err());
-    c.state = State::Planning {
-        provider_turn_pending: false,
-    };
+    c.state = State::Running;
     assert!(zhir::output::decode::<Report>(&c).is_err());
 }
 #[tokio::test]
 async fn ticket_resume_uses_configured_store_and_does_not_retry_stale_heads() {
     let scripted = Arc::new(ScriptedModel::responses([
         tool_response("wait", json!({})),
-        ModelResponse::text("resumed"),
+        TurnOutput::text("resumed"),
     ]));
-    let tool = FunctionTool::new(
-        RuntimeToolSpec {
-            name: "wait".into(),
-            description: "Wait".into(),
-            input: InputSpec::Structured {
-                schema: json!({"type":"object"}),
-            },
-            output_schema: None,
-            execution: Default::default(),
+    let tool = zhir_testing::WaitingTool::new(RuntimeToolSpec {
+        name: "wait".into(),
+        description: "Wait".into(),
+        input: InputSpec::Structured {
+            schema: json!({"type":"object"}),
         },
-        |_, _| async {
-            Ok(zhir::runtime_tools::reply::waiting(
-                "w1",
-                json!({}),
-                "fixture",
-            ))
-        },
-    );
+        output_schema: None,
+        execution: Default::default(),
+    });
     let store = Arc::new(RecordingStore::new(Arc::new(MemoryRunStore::new())));
     let runtime = Runtime::builder(scripted.clone())
         .runtime_tools(Arc::new(
@@ -527,8 +520,11 @@ async fn ticket_resume_uses_configured_store_and_does_not_retry_stale_heads() {
             .await
             .is_err()
     );
-    let request =
-        || ResumeRequest::from_ticket(ticket.clone()).message(Message::external("answer"));
+    let request = || {
+        ResumeRequest::from_ticket(ticket.clone())
+            .resolve(complete_wait(&checkpoint, json!({})))
+            .message(Message::external("answer"))
+    };
     let mut first = runtime.resume(request()).await.unwrap();
     let mut stale = runtime.resume(request()).await.unwrap();
     let done = first.result().await.unwrap().into_checkpoint();
@@ -551,44 +547,56 @@ async fn recording_model_keeps_cancelled_calls_without_inventing_an_outcome() {
         let signal = signal.clone();
         async move {
             signal.notify_one();
-            std::future::pending::<Result<ModelResponse>>().await
+            std::future::pending::<Result<TurnOutput>>().await
         }
     });
     let recorded = Arc::new(RecordingModel::new(Arc::new(inner)));
     let model = recorded.clone();
-    let job = tokio::spawn(async move { model.invoke(request(), context()).await });
+    let job = tokio::spawn(async move { model.turn(request(), context()).await });
     tokio::time::timeout(Duration::from_secs(2), entered.notified())
         .await
         .unwrap();
     job.abort();
     assert!(job.await.unwrap_err().is_cancelled());
     assert_eq!(recorded.records().len(), 1);
-    assert!(recorded.records()[0].outcome.is_none());
+    assert!(
+        !recorded.records()[0]
+            .events
+            .iter()
+            .any(|e| matches!(e.body, zhir::model::SessionEventBody::TurnFinished { .. }))
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn run_requests_isolate_all_options_and_persist_effective_values_across_96_runs() {
     use zhir::{
         RunRequest,
-        model::{ModelOptions, ProviderToolSpec, ResponseFormat, ToolChoice},
+        model::{GenerationProfile, ProviderToolSpec, ResponseFormat, ToolChoice},
         run::Limits,
     };
     let model = Arc::new(RecordingModel::new(Arc::new(FunctionModel::new(
-        Capabilities {
-            provider_tools: true,
-            json_mode: true,
-            seed: true,
+        CapabilitySet {
+            features: [
+                zhir_core::model::Capability::ProviderTools,
+                zhir_core::model::Capability::JsonMode,
+                zhir_core::model::Capability::Streaming,
+                zhir_core::model::Capability::Seed,
+            ]
+            .into(),
+
             tool_choices: vec!["auto".into(), "provider_tool".into()],
             ..zhir_testing::model_capabilities()
         },
-        |_, _| async { Ok(ModelResponse::text("done")) },
+        |_, _| async { Ok(TurnOutput::text("done")) },
     ))));
     let store = Arc::new(RecordingStore::new(Arc::new(MemoryRunStore::new())));
     let defaults = zhir::kernel::defaults::run_options()
         .stream(true)
-        .options(ModelOptions {
-            temperature: Some(0.2),
-            extra: [("default".into(), json!(true))].into_iter().collect(),
+        .profile(zhir_core::profile::RequestProfile {
+            generation: GenerationProfile {
+                temperature: Some(0.2),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .response_format(ResponseFormat::Json);
@@ -606,17 +614,19 @@ async fn run_requests_isolate_all_options_and_persist_effective_values_across_96
             let request = RunRequest::new([Message::user("run")]).context(context);
             let request = match index % 3 {
                 0 => request,
-                1 => request
-                    .stream(false)
-                    .without_response_format()
-                    .options(ModelOptions {
-                        seed: Some(index),
+                1 => request.stream(false).without_response_format().profile(
+                    zhir_core::profile::RequestProfile {
+                        generation: GenerationProfile {
+                            seed: Some(index),
+                            ..Default::default()
+                        },
                         ..Default::default()
-                    }),
+                    },
+                ),
                 _ => request.run_options(
                     zhir::kernel::defaults::run_options()
                         .limits(Limits {
-                            max_planning_steps: 2,
+                            max_model_turns: 2,
                             ..zhir::kernel::defaults::limits()
                         })
                         .provider_tools(vec![ProviderToolSpec {
@@ -643,12 +653,12 @@ async fn run_requests_isolate_all_options_and_persist_effective_values_across_96
                 1 => {
                     assert!(!c.options.stream);
                     assert!(c.options.response_format.is_none());
-                    assert_eq!(c.options.model.seed, Some(index));
-                    assert!(c.options.model.extra.is_empty());
+                    assert_eq!(c.options.profile.generation.seed, Some(index));
+                    assert!(c.options.profile.extensions.is_empty());
                 }
                 _ => {
                     assert_eq!(c.options.provider_tools[0].options["index"], index);
-                    assert_eq!(c.options.limits.max_planning_steps, 2);
+                    assert_eq!(c.options.limits.max_model_turns, 2);
                     assert!(c.options.response_format.is_none());
                 }
             }
@@ -669,20 +679,23 @@ async fn run_requests_isolate_all_options_and_persist_effective_values_across_96
     let records = model.records();
     assert_eq!(records.len(), 96);
     for record in records {
-        let index = record.input.run.metadata["index"].as_i64().unwrap();
+        let index = record.opening.run.metadata["index"].as_i64().unwrap();
         let head = store
-            .load_head(&record.input.run.run_id)
+            .load_head(&record.opening.run.run_id)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(record.input.request.options, head.options.model);
         assert_eq!(
-            record.input.request.provider_tools,
+            record.opening.request.profile.generation,
+            head.options.profile.generation
+        );
+        assert_eq!(
+            record.opening.request.provider_tools,
             head.options.provider_tools
         );
-        assert_eq!(record.input.request.stream, index % 3 == 0);
+        assert_eq!(record.opening.request.stream, index % 3 == 0);
     }
-    assert_eq!(store.verify_traces().unwrap(), 192);
+    assert_eq!(store.verify_traces().unwrap(), store.commits().len());
     let commits = store.commits();
     let first = &commits[0];
     let mut next = commits
@@ -692,11 +705,7 @@ async fn run_requests_isolate_all_options_and_persist_effective_values_across_96
         .clone();
     Arc::make_mut(&mut next.checkpoint).options.stream = !first.checkpoint.options.stream;
     assert!(
-        zhir::kernel::diagnostics::verify_trace(&[
-            first.checkpoint.clone(),
-            next.checkpoint.clone()
-        ])
-        .is_err()
+        zhir_testing::verify_trace(&[first.checkpoint.clone(), next.checkpoint.clone()]).is_err()
     );
     assert!(
         matches!(next.validate_against(Some(&first.core())),Err(Error::Storage(e)) if e.contains("options changed"))
@@ -705,60 +714,48 @@ async fn run_requests_isolate_all_options_and_persist_effective_values_across_96
 
 #[tokio::test]
 async fn frozen_options_survive_continue_and_ticket_resume_with_different_runtime_defaults() {
-    use zhir::{RunRequest, SuspensionTicket, model::ModelOptions, runtime_tools::ToolReply};
+    use zhir::{SuspensionTicket, model::GenerationProfile, runtime_tools::ToolReply};
+    let mut capabilities = zhir_testing::model_capabilities();
+    capabilities.features.insert(zhir::model::Capability::Seed);
     let scripted = Arc::new(
-        ScriptedModel::new([
-            ScriptStep::failure(Error::Cancelled),
-            ScriptStep::response(tool_response("wait", json!({"value":1}))),
-            ScriptStep::response(ModelResponse::text("done")),
+        ScriptedModel::responses([
+            tool_response("wait", json!({"value":1})),
+            TurnOutput::text("done"),
         ])
-        .with_capabilities(Capabilities {
-            seed: true,
-            ..zhir_testing::model_capabilities()
-        }),
+        .with_capabilities(capabilities),
     );
-    let store = Arc::new(RecordingStore::new(Arc::new(MemoryRunStore::new())));
-    let tool = TypedTool::<Args, Report>::new(
+    let schema = TypedTool::<Args, Report>::new(
         "wait",
-        "external confirmation",
+        "confirm",
         Execution::default(),
-        |args, _| async move {
-            Ok(ToolReply::waiting(
-                "same-wait-id",
-                Report { total: args.value },
-                "consumer",
-            ))
-        },
+        |args, _| async move { Ok(ToolReply::success(Report { total: args.value })) },
     )
     .unwrap();
-    let registry = Arc::new(
-        RuntimeToolRegistry::from_tools([Arc::new(tool) as Arc<dyn RuntimeTool>]).unwrap(),
-    );
-    let first = Runtime::builder(scripted.clone())
-        .store(store.clone())
-        .runtime_tools(registry.clone())
-        .build()
-        .unwrap();
-    let error = first
-        .start(
-            RunRequest::new([Message::user("wait")])
-                .options(ModelOptions {
-                    seed: Some(42),
-                    ..Default::default()
-                })
-                .stream(true),
-        )
-        .unwrap()
-        .result()
+    let tool = Arc::new(zhir_testing::WaitingTool::new(schema.spec().clone()));
+    let store = Arc::new(RecordingStore::new(Arc::new(MemoryRunStore::new())));
+    let mut seed = zhir_testing::checkpoint(vec![Message::user("wait")]);
+    seed.options.profile.generation.seed = Some(42);
+    seed.options.stream = true;
+    seed.active.session.profile = seed.options.profile.clone();
+    let seed = Arc::new(seed);
+    store
+        .commit(zhir::storage::Commit::new(
+            seed.clone(),
+            zhir::storage::HistoryDelta::Initial(seed.history.entries()),
+        ))
         .await
-        .unwrap_err();
-    let checkpoint = error.last_checkpoint.unwrap();
+        .unwrap();
     let runtime = Runtime::builder(scripted.clone())
         .store(store.clone())
-        .runtime_tools(registry)
+        .runtime_tools(Arc::new(
+            RuntimeToolRegistry::from_tools([tool.clone() as Arc<dyn RuntimeTool>]).unwrap(),
+        ))
         .defaults(|run| {
-            run.options(ModelOptions {
-                seed: Some(99),
+            run.profile(zhir_core::profile::RequestProfile {
+                generation: GenerationProfile {
+                    seed: Some(99),
+                    ..Default::default()
+                },
                 ..Default::default()
             })
             .stream(false)
@@ -766,7 +763,7 @@ async fn frozen_options_survive_continue_and_ticket_resume_with_different_runtim
         .build()
         .unwrap();
     let checkpoint = runtime
-        .continue_from(checkpoint)
+        .continue_from(seed)
         .unwrap()
         .result()
         .await
@@ -799,7 +796,7 @@ async fn frozen_options_survive_continue_and_ticket_resume_with_different_runtim
     let done = runtime
         .resume(
             ResumeRequest::from_ticket(ticket.clone())
-                .message(Message::external("confirmed"))
+                .resolve(complete_wait(&checkpoint, json!({"total":1})))
                 .metadata([("answer".into(), json!(7))].into()),
         )
         .await
@@ -808,7 +805,7 @@ async fn frozen_options_survive_continue_and_ticket_resume_with_different_runtim
         .await
         .unwrap()
         .into_checkpoint();
-    assert_eq!(done.options.model.seed, Some(42));
+    assert_eq!(done.options.profile.generation.seed, Some(42));
     assert!(done.options.stream);
     assert_eq!(done.context.metadata["answer"], 7);
     assert!(
@@ -817,12 +814,14 @@ async fn frozen_options_survive_continue_and_ticket_resume_with_different_runtim
             .await
             .is_err()
     );
+    assert!(runtime.continue_from(done).is_err());
     assert!(
         scripted
             .requests()
             .iter()
-            .all(|r| r.request.options.seed == Some(42) && r.request.stream)
+            .all(|r| r.request.profile.generation.seed == Some(42) && r.request.stream)
     );
+    assert_eq!(tool.starts(), 1);
     store.verify_traces().unwrap();
 }
 
@@ -835,26 +834,17 @@ async fn reused_wait_identity_does_not_accept_a_previous_suspension_ticket() {
     let scripted = Arc::new(ScriptedModel::responses([
         tool_response("wait", json!({})),
         second,
-        ModelResponse::text("done"),
+        TurnOutput::text("done"),
     ]));
-    let tool = FunctionTool::new(
-        RuntimeToolSpec {
-            name: "wait".into(),
-            description: "wait".into(),
-            input: InputSpec::Structured {
-                schema: json!({"type":"object"}),
-            },
-            output_schema: None,
-            execution: Default::default(),
+    let tool = zhir_testing::WaitingTool::new(RuntimeToolSpec {
+        name: "wait".into(),
+        description: "wait".into(),
+        input: InputSpec::Structured {
+            schema: json!({"type":"object"}),
         },
-        |_, _| async {
-            Ok(zhir::runtime_tools::reply::waiting(
-                "reused",
-                json!({}),
-                "consumer",
-            ))
-        },
-    );
+        output_schema: None,
+        execution: Default::default(),
+    });
     let runtime = Runtime::builder(scripted.clone())
         .runtime_tools(Arc::new(
             RuntimeToolRegistry::from_tools([Arc::new(tool) as _]).unwrap(),
@@ -871,7 +861,11 @@ async fn reused_wait_identity_does_not_accept_a_previous_suspension_ticket() {
         .into_checkpoint();
     let old = zhir::SuspensionTicket::from_checkpoint(&first).unwrap();
     let second = runtime
-        .resume(ResumeRequest::from_ticket(old.clone()).message(Message::external("first answer")))
+        .resume(
+            ResumeRequest::from_ticket(old.clone())
+                .resolve(complete_wait(&first, json!({})))
+                .message(Message::external("first answer")),
+        )
         .await
         .unwrap()
         .result()
@@ -890,7 +884,11 @@ async fn reused_wait_identity_does_not_accept_a_previous_suspension_ticket() {
     assert_eq!(scripted.requests().len(), 2);
     assert!(matches!(
         runtime
-            .resume(ResumeRequest::from_ticket(current).message(Message::external("second answer")))
+            .resume(
+                ResumeRequest::from_ticket(current)
+                    .resolve(complete_wait(&second, json!({})))
+                    .message(Message::external("second answer"))
+            )
             .await
             .unwrap()
             .result()
@@ -900,4 +898,26 @@ async fn reused_wait_identity_does_not_accept_a_previous_suspension_ticket() {
             .state,
         State::Completed { .. }
     ));
+}
+
+use zhir_testing::ModelTestExt;
+
+fn complete_wait(
+    checkpoint: &zhir::run::Checkpoint,
+    structured: Value,
+) -> zhir_core::operation::RecoveryResolution {
+    zhir_core::operation::RecoveryResolution::Complete {
+        operation_id: checkpoint
+            .active
+            .operations
+            .values()
+            .find(|op| !op.state.terminal())
+            .unwrap()
+            .id
+            .clone(),
+        outcome: zhir::tool::RuntimeToolOutcome::Success {
+            content: vec![],
+            structured,
+        },
+    }
 }

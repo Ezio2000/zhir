@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "name": "reject_resource_byte_out_of_range",
+  "kind": "value",
+  "schema": "resource",
+  "value": {
+    "id": "x",
+    "media_type": "image/png",
+    "name": null,
+    "source": {
+      "kind": "inline",
+      "bytes": [
+        256
+      ]
+    },
+    "metadata": {}
+  },
+  "valid": false
+}

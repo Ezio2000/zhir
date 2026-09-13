@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "name": "reject_state_runtime_tools_pending",
+  "kind": "value",
+  "schema": "state",
+  "value": {
+    "kind": "runtime_tools_pending"
+  },
+  "valid": false
+}

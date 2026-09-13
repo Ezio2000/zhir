@@ -1,12 +1,15 @@
 # zhir-storage
 
-MemoryRunStore is always available. Enable `sqlite`, `mysql` or `redis` explicitly. Stores atomically commit checkpoint cores and history deltas, with optimistic revisions and run-scoped idempotency. They use native zhir layouts only.
+MemoryRunStore and MemoryResourceStore are always available. Enable `sqlite`,
+`mysql`, `redis` or `resources-filesystem` explicitly. Run stores atomically commit
+CheckpointCore and history deltas with optimistic revisions, identity idempotency
+and shared core validation. They never drive operations.
 
-Part of the zhir Cargo workspace, version 0.1.0.
+Wire and run-storage formats are v2. Use fresh SQL databases and Redis namespaces;
+unversioned/other-format layouts are rejected without translation. Redis connect
+requires an explicit namespace. FilesystemResourceStore publishes immutable chunk
+resources with atomic finish, explicit same-key conflicts and reconstruction reads.
+Resource retention/collection is host-owned. Integration acceptance lives in
+crates/zhir/tests/storage_stores.rs.
 
-MemoryArtifactStore is always available. Enable artifacts-filesystem for
-FilesystemArtifactStore: immutable, atomically published MIME/base64 records,
-idempotent keys, explicit conflicts and reads across process reconstruction.
-
-Every adapter uses core Commit::validate_against with a compact CheckpointCore.
-Adapters own clock reads, deadline checks at write boundaries and atomic I/O.
+Part of the zhir workspace, version 0.2.0.

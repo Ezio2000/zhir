@@ -9,30 +9,12 @@ use serde_json::Value;
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MediaSource {
-    Url { url: String },
-    Inline { mime_type: String, base64: String },
-    Artifact { id: String, mime_type: String },
-}
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Content {
     Text {
         text: String,
     },
-    Image {
-        source: MediaSource,
-    },
-    Audio {
-        source: MediaSource,
-    },
-    Video {
-        source: MediaSource,
-    },
-    File {
-        source: MediaSource,
-        name: Option<String>,
+    Resource {
+        input: crate::resource::ResourceInput,
     },
     Opaque {
         provider: String,
@@ -43,6 +25,14 @@ impl Content {
     pub fn text(text: impl Into<String>) -> Self {
         Self::Text { text: text.into() }
     }
+    pub fn resource(resource: crate::resource::ResourceRef) -> Self {
+        Self::Resource {
+            input: crate::resource::ResourceInput {
+                resource,
+                usage: Default::default(),
+            },
+        }
+    }
     pub fn as_text(&self) -> Option<&str> {
         if let Self::Text { text } = self {
             Some(text)
@@ -50,53 +40,33 @@ impl Content {
             None
         }
     }
-    pub fn source(&self) -> Option<&MediaSource> {
-        match self {
-            Self::Image { source }
-            | Self::Audio { source }
-            | Self::Video { source }
-            | Self::File { source, .. } => Some(source),
-            _ => None,
+    pub fn source(&self) -> Option<&crate::resource::ResourceRef> {
+        if let Self::Resource { input } = self {
+            Some(&input.resource)
+        } else {
+            None
         }
     }
-    pub fn modality(&self) -> Option<&'static str> {
+    pub fn modality(&self) -> Option<&str> {
         match self {
             Self::Text { .. } => Some("text"),
-            Self::Image { .. } => Some("image"),
-            Self::Audio { .. } => Some("audio"),
-            Self::Video { .. } => Some("video"),
-            Self::File { .. } => Some("file"),
+            Self::Resource { input } => Some(input.resource.modality()),
             Self::Opaque { .. } => None,
         }
     }
     pub fn validate(&self) -> Result<()> {
         match self {
+            Self::Resource { input } => {
+                input.resource.validate()?;
+                crate::profile::validate_extensions(&input.usage.extensions)
+            }
             Self::Opaque { provider, data }
                 if provider.is_empty() || data.as_object().is_none_or(|v| v.is_empty()) =>
             {
                 Err(Error::Invalid(
-                    "opaque content requires a provider and nonempty object".into(),
+                    "opaque content requires provider and nonempty object".into(),
                 ))
             }
-            Self::Image { source }
-            | Self::Audio { source }
-            | Self::Video { source }
-            | Self::File { source, .. } => match source {
-                MediaSource::Url { url } if url.is_empty() => {
-                    Err(Error::Invalid("empty media URL".into()))
-                }
-                MediaSource::Artifact { id, mime_type }
-                    if id.is_empty() || mime_type.is_empty() =>
-                {
-                    Err(Error::Invalid("invalid artifact reference".into()))
-                }
-                MediaSource::Inline { mime_type, base64 }
-                    if mime_type.is_empty() || base64.is_empty() =>
-                {
-                    Err(Error::Invalid("empty inline media".into()))
-                }
-                _ => Ok(()),
-            },
             _ => Ok(()),
         }
     }
@@ -105,6 +75,7 @@ impl Content {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderToolStatus {
+    Cancelled,
     Pending,
     Running,
     Completed,

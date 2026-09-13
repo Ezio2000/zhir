@@ -3,12 +3,13 @@ use crate::ToolReply;
 use schemars::{JsonSchema, generate::SchemaSettings};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{future::Future, sync::Arc};
+use zhir_core::operation::ToolExecution;
 use zhir_core::{
     BoxFuture, Result,
     error::Error,
     tool::{
         Execution, InputSpec, RuntimeTool, RuntimeToolCall, RuntimeToolContext, RuntimeToolInput,
-        RuntimeToolResult, RuntimeToolSpec,
+        RuntimeToolSpec,
     },
 };
 type Callback<A, O> =
@@ -18,7 +19,7 @@ type Callback<A, O> =
 ///
 /// Registration still owns schema validation. This adapter does not infer
 /// execution facts, insert JSON Schema defaults, or rewrite schemas for endpoints.
-/// ToolReply preserves media and explicit waiting/accepted lifecycle semantics.
+/// ToolReply describes final output; long-running tools implement start/recover directly.
 pub struct TypedTool<A, O> {
     spec: RuntimeToolSpec,
     callback: Arc<Callback<A, O>>,
@@ -73,11 +74,11 @@ where
     fn spec(&self) -> &RuntimeToolSpec {
         &self.spec
     }
-    fn invoke(
+    fn start(
         &self,
         call: RuntimeToolCall,
         context: RuntimeToolContext,
-    ) -> BoxFuture<'_, Result<RuntimeToolResult>> {
+    ) -> BoxFuture<'_, Result<ToolExecution>> {
         Box::pin(async move {
             context.cancellation.check()?;
             call.validate()?;
@@ -89,7 +90,7 @@ where
             let cancellation = context.cancellation.clone();
             let output = (self.callback)(args, context).await?;
             cancellation.check()?;
-            output.into_result()
+            output.into_execution()
         })
     }
 }

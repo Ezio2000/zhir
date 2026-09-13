@@ -17,7 +17,7 @@ pub(super) fn encode(
     if request.stream {
         body["stream_options"] = json!({"include_usage":true});
     }
-    if let Some(n) = request.options.max_output_tokens {
+    if let Some(n) = request.profile.generation.max_output_tokens {
         body["max_completion_tokens"] = json!(n);
     }
     if let Some(format) = &request.response_format {
@@ -82,25 +82,36 @@ fn assistant(
 fn content(value: &Content, _: bool) -> Result<Value> {
     Ok(match value {
         Content::Text { text } => json!({"type":"text","text":text}),
-        Content::Image { source } => {
-            json!({"type":"image_url","image_url":{"url":data_url(source)?}})
-        }
-        Content::File { source, name } => {
-            json!({"type":"file","file":{"filename":name,"file_data":data_url(source)?}})
-        }
-        Content::Audio {
-            source: MediaSource::Inline { mime_type, base64 },
-        } => {
-            json!({"type":"input_audio","input_audio":{"data":base64,"format":mime_type.split('/').next_back().unwrap_or("wav")}})
-        }
         Content::Opaque { data, .. } => data.clone(),
-        _ => {
-            return Err(Error::Invalid(
-                "unsupported media for selected protocol".into(),
-            ));
+        Content::Resource { input } => {
+            let resource = &input.resource;
+            let mut value = match resource.modality() {
+                "image" => {
+                    let mut image = json!({"url":data_url(resource)?});
+                    if let Some(detail) = fidelity(input) {
+                        image["detail"] = json!(detail);
+                    }
+                    json!({"type":"image_url","image_url":image})
+                }
+                "file" => {
+                    json!({"type":"file","file":{"filename":resource.name,"file_data":data_url(resource)?}})
+                }
+                "audio" => {
+                    let ResourceSource::Inline { bytes } = &resource.source else {
+                        return Err(Error::Invalid(
+                            "chat audio requires inline binary input".into(),
+                        ));
+                    };
+                    json!({"type":"input_audio","input_audio":{"data":base64::engine::general_purpose::STANDARD.encode(bytes),"format":resource.media_type.split('/').next_back().unwrap_or("wav")}})
+                }
+                _ => return Err(Error::Invalid("unsupported resource modality".into())),
+            };
+            resource_extensions(input, "chat", &mut value)?;
+            value
         }
     })
 }
+
 pub(super) fn choice(choice: &ToolChoice) -> Result<Value> {
     Ok(match choice {
         ToolChoice::Auto => json!("auto"),

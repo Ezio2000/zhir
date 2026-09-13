@@ -3,8 +3,7 @@
     feature = "typed-tools",
     feature = "memory"
 ))]
-//! Added after freezing production sources: a new consumer protocol capability,
-//! typed waiting tool and ticket workflow using only public SDK components.
+//! Consumer-owned transcript extension, typed schema and durable operation workflow.
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -88,7 +87,9 @@ async fn consumer_transcripts_and_typed_review_compose_without_production_change
     let counted = sessions.clone();
     let model = openai::responses::model(ModelConfig::new(
         format!("{}/v1", fixture.url()),
-        "fixture",
+        std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+            "Bearer", "fixture",
+        )),
         "fixture",
     ))
     .unwrap()
@@ -105,30 +106,20 @@ async fn consumer_transcripts_and_typed_review_compose_without_production_change
         counted.fetch_add(1, Ordering::SeqCst);
         Ok(adapters)
     });
-    let calls = Arc::new(AtomicUsize::new(0));
-    let invoked = calls.clone();
-    let tool = TypedTool::<Review, Receipt>::new(
+    let schema = TypedTool::<Review, Receipt>::new(
         "review",
         "Confirm transcript",
         Execution::default(),
-        move |args, _| {
-            invoked.fetch_add(1, Ordering::SeqCst);
-            async move {
-                Ok(ToolReply::waiting(
-                    "review-ticket",
-                    Receipt {
-                        document: args.document,
-                    },
-                    "consumer-review",
-                )
-                .content([Content::text("Review required")]))
-            }
+        |args, _| async move {
+            Ok(ToolReply::success(Receipt {
+                document: args.document,
+            }))
         },
     )
     .unwrap();
-    let registry = Arc::new(
-        RuntimeToolRegistry::from_tools([Arc::new(tool) as Arc<dyn RuntimeTool>]).unwrap(),
-    );
+    let tool = Arc::new(zhir_testing::WaitingTool::new(schema.spec().clone()));
+    let registry =
+        Arc::new(RuntimeToolRegistry::from_tools([tool.clone() as Arc<dyn RuntimeTool>]).unwrap());
     let runtime = Runtime::builder(Arc::new(model))
         .runtime_tools(registry)
         .store(Arc::new(MemoryRunStore::new()))
@@ -170,11 +161,19 @@ async fn consumer_transcripts_and_typed_review_compose_without_production_change
     let completed = futures::future::join_all(checkpoints.into_iter().map(|checkpoint| {
         let runtime = &runtime;
         async move {
+            let operation_id = checkpoint.active.operations.keys().next().unwrap().clone();
             let ticket = SuspensionTicket::from_checkpoint(&checkpoint).unwrap();
             let ticket = serde_json::from_slice(&serde_json::to_vec(&ticket).unwrap()).unwrap();
             runtime
                 .resume(
                     ResumeRequest::from_ticket(ticket)
+                        .resolve(zhir_core::operation::RecoveryResolution::Complete {
+                            operation_id,
+                            outcome: zhir::tool::RuntimeToolOutcome::Success {
+                                content: vec![],
+                                structured: json!({"document":"draft"}),
+                            },
+                        })
                         .message(Message::external("approved by reviewer")),
                 )
                 .await
@@ -188,7 +187,7 @@ async fn consumer_transcripts_and_typed_review_compose_without_production_change
     .await;
     assert!(completed.iter().all(|c|matches!(&c.state,State::Completed{content} if content==&vec![Content::text("approved")])));
     assert_eq!(sessions.load(Ordering::SeqCst), 32);
-    assert_eq!(calls.load(Ordering::SeqCst), 16);
+    assert_eq!(tool.starts(), 16);
     let sent = fixture.finish().await.unwrap();
     assert_eq!(sent.len(), 32);
     for request in &sent[16..] {

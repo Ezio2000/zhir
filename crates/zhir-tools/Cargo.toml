@@ -21,6 +21,3 @@ schemars = { workspace = true, optional = true }
 [features]
 default = []
 typed = ["dep:schemars"]
-
-[dev-dependencies]
-tempfile.workspace = true

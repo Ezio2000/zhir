@@ -6,7 +6,7 @@ use std::sync::Arc;
 use zhir::{
     Runtime,
     message::{Message, Output},
-    model::ModelResponse,
+    model::TurnOutput,
     models::FunctionModel,
     runtime_tools::{RuntimeToolRegistry, TypedTool},
     tool::{Execution, RuntimeToolCall, RuntimeToolInput},
@@ -34,9 +34,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 .iter()
                 .any(|m| matches!(m, Message::RuntimeTool { .. }))
             {
-                return Ok(ModelResponse::text("RuntimeTool completed"));
+                return Ok(TurnOutput::text("RuntimeTool completed"));
             }
-            let mut response = ModelResponse::text("");
+            let mut response = TurnOutput::text("");
             response.output = vec![Output::RuntimeToolCall {
                 call: RuntimeToolCall {
                     id: "echo-1".into(),

@@ -27,7 +27,10 @@ fn production_dependencies_follow_sdk_boundaries() {
             "zhir-builtins",
             vec!["zhir-core", "zhir-tools", "zhir-kernel"],
         ),
-        ("zhir-testing", vec!["zhir-core", "zhir-kernel"]),
+        (
+            "zhir-testing",
+            vec!["zhir-core", "zhir-kernel", "zhir-models", "zhir-policies"],
+        ),
         (
             "zhir",
             vec![
@@ -69,4 +72,41 @@ fn production_dependencies_follow_sdk_boundaries() {
         checked += 1;
     }
     assert_eq!(checked, expected.len());
+}
+
+#[test]
+fn acceptance_code_is_confined_to_testing_modules() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates");
+    for name in [
+        "zhir-core",
+        "zhir-kernel",
+        "zhir-policies",
+        "zhir-models",
+        "zhir-tools",
+        "zhir-storage",
+        "zhir-builtins",
+    ] {
+        let package = root.join(name);
+        for directory in ["tests", "benches"] {
+            let path = package.join(directory);
+            assert!(
+                !path.exists() || std::fs::read_dir(&path).unwrap().next().is_none(),
+                "acceptance directory in {name}: {directory}"
+            );
+        }
+        let mut pending = vec![package.join("src")];
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path.extension().is_some_and(|extension| extension == "rs") {
+                    let source = std::fs::read_to_string(&path).unwrap();
+                    for marker in ["#[test]", "#[tokio::test", "#[cfg(test)]"] {
+                        assert!(!source.contains(marker), "test code in {}", path.display());
+                    }
+                }
+            }
+        }
+    }
 }

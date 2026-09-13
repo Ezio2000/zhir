@@ -7,7 +7,7 @@ async fn all_native_behavior_cases() {
         .filter(|p| p.extension().is_some_and(|s| s == "json"))
         .collect::<Vec<_>>();
     paths.sort();
-    assert_eq!(paths.len(), 77);
+    assert_eq!(paths.len(), 41);
     let mut failures = Vec::new();
     for path in paths {
         let case = zhir_conformance::load(&path).unwrap();

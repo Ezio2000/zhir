@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "name": "outcome_success",
+  "kind": "value",
+  "schema": "tool-outcome",
+  "value": {
+    "kind": "success",
+    "content": [],
+    "structured": {
+      "ok": true
+    }
+  },
+  "valid": true
+}

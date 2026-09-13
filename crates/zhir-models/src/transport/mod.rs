@@ -11,16 +11,7 @@ use zhir_core::error::Failure;
     feature = "anthropic"
 ))]
 pub(crate) fn request_error(error: reqwest::Error) -> Error {
-    Error::Model(Failure {
-        code: if error.is_timeout() {
-            "timeout"
-        } else {
-            "transport"
-        }
-        .into(),
-        message: error.to_string(),
-        retryable: error.is_timeout() || error.is_connect(),
-    })
+    Error::Uncertain(error.to_string())
 }
 #[cfg(any(
     feature = "openai-chat",

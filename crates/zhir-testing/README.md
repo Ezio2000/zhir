@@ -1,24 +1,14 @@
 # zhir-testing
 
-Consumer test support over zhir-core and zhir-kernel. Use only as a dev-dependency;
-production SDK components do not depend on this crate.
+Development-only models, recordings, native session peers, HTTP/SSE fixtures,
+waiting-operation fixtures and trace validation. Use as a dev-dependency, never a
+production SDK dependency. Depends on core, kernel, models and policies. Enable
+`http` for the local HTTP fixture. The history and trace benchmarks live here.
 
-ScriptedModel supplies finite response/error scripts. `model_capabilities()` declares
-the text/tool fixture capabilities explicitly; it does not inherit a core preset. RecordingModel, RecordingSink
-and RecordingStore retain requests, deltas and successful commits for assertions.
-Records are in memory and unbounded; scope them to a test.
+SessionModel enables synthetic native protocol and fault tests. RecordingModel
+records opening requests, commands and events; completed_turns projects completed
+exchanges for assertions. RecordingStore verifies committed histories through
+verify_trace. None of these fixtures establish an external provider's live
+capabilities, entitlement, authentication or media quality.
 
-The optional http feature adds HttpFixture, HttpReply and HttpRequest for scripted
-JSON/SSE responses, request capture, byte fragmentation, delays and disconnects.
-Each exchange has a timeout. Dropping a fixture or pending finish future aborts its
-task. The server accepts fixed-length HTTP/1.1 requests and closes each connection.
-
-```toml
-[dev-dependencies]
-zhir-testing = { path = "../zhir/crates/zhir-testing", features = ["http"] }
-```
-
-[Developer guide](../../docs/developer-api.md) · [Test instructions](../../docs/testing.md)
-
-ScriptedModel::matching accepts named ModelCase matchers with independent step
-queues. verify checks unconsumed expectations and unexpected/ambiguous calls.
+Part of the zhir workspace, version 0.2.0.

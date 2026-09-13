@@ -3,20 +3,20 @@ members = ["crates/*", "conformance"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
 
 [workspace.dependencies]
-zhir-policies = { path = "crates/zhir-policies", version = "=0.1.0" }
-zhir-core = { path = "crates/zhir-core", version = "=0.1.0" }
-zhir-kernel = { path = "crates/zhir-kernel", version = "=0.1.0" }
-zhir-tools = { path = "crates/zhir-tools", version = "=0.1.0" }
-zhir-builtins = { path = "crates/zhir-builtins", version = "=0.1.0", default-features = false }
-zhir-models = { path = "crates/zhir-models", version = "=0.1.0", default-features = false }
-zhir-storage = { path = "crates/zhir-storage", version = "=0.1.0", default-features = false }
-zhir-testing = { path = "crates/zhir-testing", version = "=0.1.0" }
+zhir-policies = { path = "crates/zhir-policies", version = "=0.2.0" }
+zhir-core = { path = "crates/zhir-core", version = "=0.2.0" }
+zhir-kernel = { path = "crates/zhir-kernel", version = "=0.2.0" }
+zhir-tools = { path = "crates/zhir-tools", version = "=0.2.0" }
+zhir-builtins = { path = "crates/zhir-builtins", version = "=0.2.0", default-features = false }
+zhir-models = { path = "crates/zhir-models", version = "=0.2.0", default-features = false }
+zhir-storage = { path = "crates/zhir-storage", version = "=0.2.0", default-features = false }
+zhir-testing = { path = "crates/zhir-testing", version = "=0.2.0" }
 schemars = "1"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"

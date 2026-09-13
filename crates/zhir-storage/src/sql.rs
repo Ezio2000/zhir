@@ -22,6 +22,36 @@ impl SqlStore {
             .connect(url)
             .await
             .map_err(storage_error)?;
+        let sqlite = url.starts_with("sqlite:");
+        let existing: i64 = sqlx::query_scalar(if sqlite { "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='zhir_format'" } else { "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='zhir_format'" }).fetch_one(&pool).await.map_err(storage_error)?;
+        if existing == 0 {
+            let old: i64 = sqlx::query_scalar(if sqlite { "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('zhir_run_heads','zhir_commits','zhir_history')" } else { "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name IN ('zhir_run_heads','zhir_commits','zhir_history')" }).fetch_one(&pool).await.map_err(storage_error)?;
+            if old != 0 {
+                return Err(Error::Storage(
+                    "unversioned zhir database; use a fresh database".into(),
+                ));
+            }
+            sqlx::query("CREATE TABLE IF NOT EXISTS zhir_format (id BIGINT PRIMARY KEY, version BIGINT NOT NULL)").execute(&pool).await.map_err(storage_error)?;
+            let inserted = sqlx::query("INSERT INTO zhir_format(id,version) SELECT 1,2 WHERE NOT EXISTS (SELECT 1 FROM zhir_format WHERE id=1)").execute(&pool).await;
+            if inserted.is_err() {
+                let version: i64 = sqlx::query_scalar("SELECT version FROM zhir_format WHERE id=1")
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(storage_error)?;
+                if version != 2 {
+                    return Err(Error::Storage("unsupported storage format".into()));
+                }
+            }
+        }
+        let version: i64 = sqlx::query_scalar("SELECT version FROM zhir_format WHERE id=1")
+            .fetch_one(&pool)
+            .await
+            .map_err(storage_error)?;
+        if version != 2 {
+            return Err(Error::Storage(
+                "unsupported storage format; use a fresh database".into(),
+            ));
+        }
         for ddl in [
             "CREATE TABLE IF NOT EXISTS zhir_run_heads (run_id VARCHAR(255) PRIMARY KEY, revision BIGINT NOT NULL, checkpoint_id VARCHAR(255) NOT NULL, generation BIGINT NOT NULL, core LONGTEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS zhir_commits (run_id VARCHAR(255) NOT NULL, checkpoint_id VARCHAR(255) NOT NULL, revision BIGINT NOT NULL, digest VARCHAR(64) NOT NULL, PRIMARY KEY(run_id,checkpoint_id), UNIQUE(run_id,revision))",

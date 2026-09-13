@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "name": "declared_model_failure",
+  "kind": "runtime",
+  "case": {
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "kind": "text",
+            "text": "go"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "error": {
+          "code": "unavailable",
+          "message": "failed",
+          "retryable": false
+        }
+      }
+    ],
+    "tools": [],
+    "expected": {
+      "state": "failed"
+    }
+  }
+}

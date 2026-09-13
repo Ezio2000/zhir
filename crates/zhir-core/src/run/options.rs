@@ -2,7 +2,7 @@ use super::Limits;
 use crate::{
     Result,
     error::Error,
-    model::{ModelOptions, ProviderToolSpec, ResponseFormat, ToolChoice},
+    model::{ProviderToolSpec, ResponseFormat, ToolChoice},
 };
 use serde::{Deserialize, Serialize};
 
@@ -13,13 +13,18 @@ use serde::{Deserialize, Serialize};
 pub struct RunOptions {
     pub runtime_tools: crate::tool::RuntimeToolSelection,
     pub limits: Limits,
-    pub model: ModelOptions,
+    pub profile: crate::profile::RequestProfile,
+    pub mode: super::RunMode,
     pub provider_tools: Vec<ProviderToolSpec>,
     pub tool_choice: ToolChoice,
     pub response_format: Option<ResponseFormat>,
     pub stream: bool,
 }
 impl RunOptions {
+    pub fn mode(mut self, mode: super::RunMode) -> Self {
+        self.mode = mode;
+        self
+    }
     pub fn runtime_tools(mut self, value: crate::tool::RuntimeToolSelection) -> Self {
         self.runtime_tools = value;
         self
@@ -28,8 +33,8 @@ impl RunOptions {
         self.limits = value;
         self
     }
-    pub fn options(mut self, value: ModelOptions) -> Self {
-        self.model = value;
+    pub fn profile(mut self, value: crate::profile::RequestProfile) -> Self {
+        self.profile = value;
         self
     }
     pub fn provider_tools(mut self, value: Vec<ProviderToolSpec>) -> Self {
@@ -55,7 +60,12 @@ impl RunOptions {
     pub fn validate(&self) -> Result<()> {
         self.limits.validate()?;
         self.runtime_tools.validate()?;
-        if self.model.temperature.is_some_and(|v| !v.is_finite()) {
+        if self
+            .profile
+            .generation
+            .temperature
+            .is_some_and(|v| !v.is_finite())
+        {
             return Err(Error::Invalid("nonfinite model temperature".into()));
         }
         let mut identities = std::collections::HashSet::new();

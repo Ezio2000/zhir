@@ -1,6 +1,6 @@
 fn main() {
     let check = std::env::args().any(|arg| arg == "--check");
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../contracts/v1/schemas");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../contracts/v2/schemas");
     std::fs::create_dir_all(&root).unwrap();
     for (name, schema) in zhir_core::wire::schemas() {
         let value = format!("{}\n", serde_json::to_string_pretty(&schema).unwrap());

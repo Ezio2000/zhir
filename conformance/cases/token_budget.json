@@ -1,0 +1,49 @@
+{
+  "version": 2,
+  "name": "token_budget",
+  "kind": "runtime",
+  "case": {
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "kind": "text",
+            "text": "go"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "output": {
+          "output": [
+            {
+              "kind": "content",
+              "content": {
+                "kind": "text",
+                "text": "done"
+              }
+            }
+          ],
+          "model_id": null,
+          "response_id": null,
+          "finish_reason": null,
+          "usage": {
+            "input_tokens": 5,
+            "output_tokens": 5,
+            "total_tokens": 10,
+            "reasoning_tokens": null,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          }
+        }
+      }
+    ],
+    "tools": [],
+    "expected": {
+      "state": "limited"
+    },
+    "max_tokens": 10
+  }
+}

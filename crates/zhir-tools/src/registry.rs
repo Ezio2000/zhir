@@ -8,8 +8,7 @@ use zhir_core::{
     error::{CatalogError, Error, ValidationError},
     tool::{
         InputSpec, RuntimeTool, RuntimeToolBinding, RuntimeToolCall, RuntimeToolCatalog,
-        RuntimeToolCatalogProvider, RuntimeToolContext, RuntimeToolInput, RuntimeToolResult,
-        RuntimeToolSpec,
+        RuntimeToolCatalogProvider, RuntimeToolContext, RuntimeToolInput, RuntimeToolSpec,
     },
 };
 struct Entry {
@@ -125,14 +124,83 @@ impl RuntimeToolBinding for Binding {
     fn spec(&self) -> &RuntimeToolSpec {
         &self.entry.spec
     }
-    fn invoke(&self, context: RuntimeToolContext) -> BoxFuture<'_, Result<RuntimeToolResult>> {
+    fn start(
+        &self,
+        context: RuntimeToolContext,
+    ) -> BoxFuture<'_, Result<zhir_core::operation::ToolExecution>> {
         Box::pin(async move {
-            let result = self.entry.tool.invoke(self.call.clone(), context).await?;
-            result.validate()?;
-            if let (Some(schema), Some(value)) = (&self.entry.output, result.outcome.structured()) {
-                validate(schema, value)?;
-            }
-            Ok(result)
+            wrap(
+                self.entry.tool.start(self.call.clone(), context).await?,
+                self.entry.clone(),
+            )
         })
+    }
+    fn recover(
+        &self,
+        record: zhir_core::operation::OperationRecord,
+        context: RuntimeToolContext,
+    ) -> BoxFuture<'_, Result<zhir_core::operation::ToolExecution>> {
+        Box::pin(async move {
+            wrap(
+                self.entry.tool.recover(record, context).await?,
+                self.entry.clone(),
+            )
+        })
+    }
+}
+fn check_output(outcome: &zhir_core::tool::RuntimeToolOutcome, entry: &Entry) -> Result<()> {
+    outcome.validate()?;
+    if let (Some(schema), Some(value)) = (&entry.output, outcome.structured()) {
+        validate(schema, value)?;
+    }
+    Ok(())
+}
+fn wrap(
+    execution: zhir_core::operation::ToolExecution,
+    entry: Arc<Entry>,
+) -> Result<zhir_core::operation::ToolExecution> {
+    use zhir_core::operation::ToolExecution;
+    match execution {
+        ToolExecution::Finished(outcome) => {
+            Ok(ToolExecution::Finished(validated_outcome(outcome, &entry)))
+        }
+        ToolExecution::Active(mut handle) => {
+            handle.events = Box::new(ValidatedEvents {
+                inner: handle.events,
+                entry,
+            });
+            Ok(ToolExecution::Active(handle))
+        }
+    }
+}
+struct ValidatedEvents {
+    inner: Box<dyn zhir_core::operation::OperationEvents>,
+    entry: Arc<Entry>,
+}
+impl zhir_core::operation::OperationEvents for ValidatedEvents {
+    fn receive(&mut self) -> BoxFuture<'_, Result<Option<zhir_core::operation::OperationEvent>>> {
+        Box::pin(async move {
+            let mut event = self.inner.receive().await?;
+            if let Some(zhir_core::operation::OperationEvent {
+                update: zhir_core::operation::OperationUpdate::Finished { outcome },
+                ..
+            }) = &mut event
+            {
+                *outcome = validated_outcome(outcome.clone(), &self.entry);
+            }
+            Ok(event)
+        })
+    }
+}
+
+fn validated_outcome(
+    outcome: zhir_core::tool::RuntimeToolOutcome,
+    entry: &Entry,
+) -> zhir_core::tool::RuntimeToolOutcome {
+    match check_output(&outcome, entry) {
+        Ok(()) => outcome,
+        Err(error) => zhir_core::tool::RuntimeToolOutcome::Failure {
+            error: zhir_core::error::Failure::new("invalid_tool_output", error.to_string()),
+        },
     }
 }

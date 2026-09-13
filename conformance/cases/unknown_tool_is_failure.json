@@ -1,0 +1,63 @@
+{
+  "version": 2,
+  "name": "unknown_tool_is_failure",
+  "kind": "runtime",
+  "case": {
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "kind": "text",
+            "text": "go"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "output": {
+          "output": [
+            {
+              "kind": "runtime_tool_call",
+              "call": {
+                "id": "c",
+                "name": "missing",
+                "input": {
+                  "kind": "structured",
+                  "value": {}
+                }
+              }
+            }
+          ],
+          "model_id": null,
+          "response_id": null,
+          "finish_reason": null
+        }
+      },
+      {
+        "output": {
+          "output": [
+            {
+              "kind": "content",
+              "content": {
+                "kind": "text",
+                "text": "done"
+              }
+            }
+          ],
+          "model_id": null,
+          "response_id": null,
+          "finish_reason": null
+        }
+      }
+    ],
+    "tools": [],
+    "expected": {
+      "state": "completed",
+      "tool_outcomes": [
+        "failure"
+      ]
+    }
+  }
+}

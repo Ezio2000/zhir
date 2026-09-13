@@ -17,11 +17,12 @@ pub enum RunOutcome<'a> {
     Suspended(SuspensionTicket),
     Failed(&'a Failure),
     Limited(&'a LimitReason),
+    Cancelled,
 }
 impl RunCompletion {
     pub fn new(checkpoint: Arc<Checkpoint>) -> Result<Self> {
         checkpoint.validate()?;
-        if checkpoint.state.active().is_some() {
+        if checkpoint.state.active() {
             return Err(Error::Protocol(
                 "invocation settled with an active checkpoint".into(),
             ));
@@ -36,6 +37,7 @@ impl RunCompletion {
     }
     pub fn outcome(&self) -> RunOutcome<'_> {
         match &self.checkpoint.state {
+            State::Cancelled => RunOutcome::Cancelled,
             State::Completed { content } => RunOutcome::Completed(content),
             State::Failed { error } => RunOutcome::Failed(error),
             State::Limited { reason } => RunOutcome::Limited(reason),
