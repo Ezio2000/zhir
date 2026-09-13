@@ -45,9 +45,12 @@ pub fn http(protocol: Protocol, base: &str, key: &str, model: &str) -> Result<Ht
 }
 pub fn options(protocol: Protocol, tag: &str, thinking: bool) -> ModelOptions {
     let mut options = ModelOptions {
-        max_output_tokens: Some(1024),
+        max_output_tokens: (protocol != Protocol::Chat).then_some(1024),
         ..Default::default()
     };
+    if protocol == Protocol::Chat {
+        options.extra.insert("max_tokens".into(), json!(1024));
+    }
     options.extra.insert("consumer_tag".into(), json!(tag));
     match protocol {
         Protocol::Responses => {
@@ -79,26 +82,6 @@ pub fn options(protocol: Protocol, tag: &str, thinking: bool) -> ModelOptions {
         }
     }
     options
-}
-/// Test-only endpoint policy, composed separately from session observations.
-pub struct EndpointOptions;
-impl ProtocolExtension for EndpointOptions {
-    fn encode_request(
-        &mut self,
-        protocol: Protocol,
-        _: &ModelRequest,
-        body: &mut Value,
-    ) -> Result<()> {
-        if protocol == Protocol::Chat
-            && let Some(value) = body
-                .as_object_mut()
-                .unwrap()
-                .remove("max_completion_tokens")
-        {
-            body["max_tokens"] = value;
-        }
-        Ok(())
-    }
 }
 /// Test consumer owns invocation-local observations.
 #[derive(Default)]
@@ -163,7 +146,7 @@ impl Model for RecordedModel {
             let result = self.inner.invoke(request, context).await;
             let record = match &result {
                 Ok(response) => {
-                    json!({"run_id":run_id,"request_bytes":request_bytes,"requested_tag":requested_tag,"response_id":response.response_id,"model_id":response.model_id,"usage":response.usage,"session":response.provider_data["consumer_session"]})
+                    json!({"run_id":run_id,"request_bytes":request_bytes,"requested_tag":requested_tag,"response_id":response.response_id,"model_id":response.model_id,"usage":response.usage,"session":response.provider_data["consumer_session"],"output":response.output,"finish_reason":response.finish_reason})
                 }
                 Err(error) => {
                     json!({"run_id":run_id,"request_bytes":request_bytes,"error":error.to_string()})

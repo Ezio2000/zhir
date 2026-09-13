@@ -7,7 +7,7 @@ use zhir_core::{
     error::Error,
     message::Message,
     run::{Checkpoint, State},
-    tool::{RuntimeTool, RuntimeToolResult},
+    tool::RuntimeTool,
 };
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -46,7 +46,7 @@ pub fn ask_question() -> Result<Arc<dyn RuntimeTool>> {
                 ));
             }
             let wait = uuid::Uuid::new_v4().to_string();
-            Ok(RuntimeToolResult::waiting(
+            Ok(zhir_tools::reply::waiting(
                 wait,
                 json!({"questions":a.questions}),
                 NAME,

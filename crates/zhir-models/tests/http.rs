@@ -223,7 +223,7 @@ fn sse_handles_split_unicode_crlf_and_multiline_data() {
 
 #[tokio::test]
 async fn responses_freeform_call_result_keeps_its_protocol_type() {
-    use zhir_core::tool::{RuntimeToolCall, RuntimeToolInput, RuntimeToolResult};
+    use zhir_core::tool::{RuntimeToolCall, RuntimeToolInput};
     let (url, worker) = server(
         json!({"output":[],"status":"completed"}).to_string(),
         "200 OK",
@@ -245,7 +245,10 @@ async fn responses_freeform_call_result_keeps_its_protocol_type() {
     next.messages.push(Message::RuntimeTool {
         call_id: "custom-1".into(),
         name: "code".into(),
-        outcome: RuntimeToolResult::json(json!("1")).outcome,
+        outcome: zhir_core::tool::RuntimeToolOutcome::Success {
+            content: vec![zhir_core::message::Content::text("1")],
+            structured: json!("1"),
+        },
     });
     model
         .invoke(next, context(Arc::new(Deltas::default())))
@@ -480,11 +483,58 @@ async fn extra_conflicts_report_exact_paths_and_reserved_fields_remain_owned() {
     }
 }
 #[tokio::test]
+async fn textual_tool_failure_requires_text_input_capability_in_http_adapter() {
+    use zhir_core::{
+        error::{Error, Failure},
+        tool::{RuntimeToolCall, RuntimeToolInput, RuntimeToolOutcome},
+    };
+    for protocol in [
+        zhir_models::Protocol::Chat,
+        zhir_models::Protocol::Responses,
+        zhir_models::Protocol::Messages,
+    ] {
+        let model = protocol_model(protocol, "http://127.0.0.1:1".into());
+        let mut capabilities = model.capabilities().clone();
+        capabilities.input_modalities = vec!["image".into()];
+        let mut next = request(false);
+        next.messages = vec![
+            Message::Assistant {
+                output: vec![Output::RuntimeToolCall {
+                    call: RuntimeToolCall {
+                        id: "call".into(),
+                        name: "read".into(),
+                        input: RuntimeToolInput::Structured(json!({})),
+                    },
+                }],
+                provider_data: Value::Null,
+            },
+            Message::RuntimeTool {
+                call_id: "call".into(),
+                name: "read".into(),
+                outcome: RuntimeToolOutcome::Failure {
+                    error: Failure::new("missing", "missing entry"),
+                },
+            },
+        ];
+        // Core sees structured failure data; the adapter decides to render it as text.
+        next.validate(&capabilities).unwrap();
+        let error = model
+            .with_capabilities(capabilities)
+            .invoke(next, context(Arc::new(Deltas::default())))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::Invalid(ref message) if message == "model cannot receive textual tool failures")
+        );
+    }
+}
+
+#[tokio::test]
 async fn tool_result_grouping_preserves_order_content_errors_and_turn_boundaries() {
     use zhir_core::{
         error::Failure,
         message::MediaSource,
-        tool::{RuntimeToolCall, RuntimeToolInput, RuntimeToolOutcome, RuntimeToolResult},
+        tool::{RuntimeToolCall, RuntimeToolInput, RuntimeToolOutcome},
     };
     use zhir_models::Protocol;
     let assistant = |ids: &[&str]| Message::Assistant {
@@ -547,7 +597,13 @@ async fn tool_result_grouping_preserves_order_content_errors_and_turn_boundaries
                 ),
                 boundary,
                 assistant(&["c"]),
-                result("c", RuntimeToolResult::json(json!("last")).outcome),
+                result(
+                    "c",
+                    zhir_core::tool::RuntimeToolOutcome::Success {
+                        content: vec![zhir_core::message::Content::text("last")],
+                        structured: json!("last"),
+                    },
+                ),
             ]);
             let sent = capture_request(protocol, next).await;
             let messages = sent[if protocol == Protocol::Responses {

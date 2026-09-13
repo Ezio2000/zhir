@@ -12,11 +12,11 @@ use std::{
 };
 use zhir::{
     BoxFuture, Result, ResumeRequest, Runtime,
-    builtins::agent::{AgentBackend, InMemoryAgentBackend},
+    builtins::agent::{AgentBackend, runtime_backend::InMemoryAgentBackend},
     error::{Error, Failure},
     message::{Content, MediaSource, Message},
     model::{Model, ResponseFormat},
-    models::{ExtensionChain, Protocol},
+    models::Protocol,
     run::{Limits, RunContext, State, Suspension},
     runtime_tools::{FunctionTool, RuntimeToolRegistry},
     tool::{
@@ -102,20 +102,20 @@ impl ToolEnv {
             RuntimeToolInput::Freeform(patch) => json!({"patch":patch}),
         };
         match self.family {
-            "retrieve_compute" if call.name=="retrieve"=>Ok(RuntimeToolResult::json(json!({"ticket":self.ticket,"unit_price":self.price,"quantity":3,"fee":5}))),
+            "retrieve_compute" if call.name=="retrieve"=>Ok(zhir::runtime_tools::reply::json(json!({"ticket":self.ticket,"unit_price":self.price,"quantity":3,"fee":5}))),
             "retrieve_compute"=>{
                 require(args["ticket"]==self.ticket && args["total"]==self.total,"consumer backend rejected computed total or ticket")?;
-                Ok(RuntimeToolResult::json(json!({"receipt":self.receipt})))
+                Ok(zhir::runtime_tools::reply::json(json!({"receipt":self.receipt})))
             }
             "parallel_quotes"=>{
                 let active=self.active.fetch_add(1,Ordering::SeqCst)+1;self.peak.fetch_max(active,Ordering::SeqCst);
                 tokio::time::sleep(Duration::from_millis(60)).await;
                 self.active.fetch_sub(1,Ordering::SeqCst);
                 let value=match args["region"].as_str() {Some("A")=>17,Some("B")=>23,Some("C")=>31,_=>return Err(Error::Invalid("unknown region".into()))};
-                Ok(RuntimeToolResult::json(json!({"region":args["region"],"value":value})))
+                Ok(zhir::runtime_tools::reply::json(json!({"region":args["region"],"value":value})))
             }
             "tool_recovery" if attempt==1=>Ok(RuntimeToolResult::failure(Failure {code:"temporary_lookup".into(),message:"Temporary fixture lookup failure. Call fetch again with the same arguments; the next attempt will succeed.".into(),retryable:true})),
-            "wait_resume"=>Ok(RuntimeToolResult::waiting(format!("review-{}",self.ticket),json!({"status":"awaiting_reviewer"}),"consumer_review")),
+            "wait_resume"=>Ok(zhir::runtime_tools::reply::waiting(format!("review-{}",self.ticket),json!({"status":"awaiting_reviewer"}),"consumer_review")),
             "delegated_agent"=>{
                 let backend=self.child.as_ref().unwrap();
                 let prompt=format!("Reply with exactly {} and nothing else.",self.receipt);
@@ -123,18 +123,20 @@ impl ToolEnv {
                 let again=backend.start_or_get(call.id,prompt,context.run.clone()).await?;
                 require(first.id==again.id,"child idempotency mismatch")?;
                 let done=backend.wait(first.id,context.run).await?;
-                require(done.status==zhir_builtins::agent::AgentStatus::Completed && text(&done.content).trim()==self.receipt,"child result mismatch")?;
-                Ok(RuntimeToolResult::json(json!({"receipt":text(&done.content).trim(),"child_id":done.id})))
+                require(done.status==zhir_builtins::agent::AgentStatus::Completed,format!("child did not complete: {done:?}"))?;
+                let actual=text(&done.content).trim().to_owned();
+                require(actual==self.receipt,format!("child output mismatch ({}): expected {:?}, got {:?}",done.id,self.receipt,actual))?;
+                Ok(zhir::runtime_tools::reply::json(json!({"receipt":actual,"child_id":done.id})))
             }
             "multimodal_report" if call.name=="read_image"=>Ok(RuntimeToolResult {outcome:RuntimeToolOutcome::Success {content:vec![Content::text("Read the alphanumeric code, then call submit_report with that code."),Content::Image {source:MediaSource::Inline {mime_type:"image/png".into(),base64:base64::engine::general_purpose::STANDARD.encode(include_bytes!("../fixtures/vision.png"))}}],structured:Value::Null},suspension:None}),
-            "multimodal_report"=>{require(args["code"]=="K7X42","consumer report contains wrong OCR code")?;Ok(RuntimeToolResult::json(json!({"receipt":self.receipt})))},
+            "multimodal_report"=>{require(args["code"]=="K7X42","consumer report contains wrong OCR code")?;Ok(zhir::runtime_tools::reply::json(json!({"receipt":self.receipt})))},
             "freeform_pipeline" if call.name=="apply_patch"=>{
                 let patch=args["patch"].as_str().unwrap_or_default();
                 require(patch.contains("*** Begin Patch") && patch.contains("+你好"),"consumer patch format mismatch")?;
-                Ok(RuntimeToolResult::json(json!({"ticket":self.ticket})))
+                Ok(zhir::runtime_tools::reply::json(json!({"ticket":self.ticket})))
             }
-            "freeform_pipeline"=>{require(args["ticket"]==self.ticket,"consumer patch ticket mismatch")?;Ok(RuntimeToolResult::json(json!({"receipt":self.receipt})))},
-            _=>Ok(RuntimeToolResult::json(json!({"receipt":self.receipt}))),
+            "freeform_pipeline"=>{require(args["ticket"]==self.ticket,"consumer patch ticket mismatch")?;Ok(zhir::runtime_tools::reply::json(json!({"receipt":self.receipt})))},
+            _=>Ok(zhir::runtime_tools::reply::json(json!({"receipt":self.receipt}))),
         }
     }
 }
@@ -197,7 +199,8 @@ async fn workflow(
         Some(Arc::new(InMemoryAgentBackend::new(
             child_runtime,
             "Complete the user's exact reply task.",
-        )))
+            4,
+        )?))
     } else {
         None
     };
@@ -689,13 +692,7 @@ async fn live_scenario_scale() {
                     "deepseek-flash",
                 )
                 .unwrap()
-                .with_extension(|_| {
-                    Ok({
-                        ExtensionChain::new()
-                            .push(EndpointOptions)
-                            .push(ConsumerSession::default())
-                    })
-                }),
+                .with_extension(|_| Ok(ConsumerSession::default())),
             ) as Arc<dyn Model>
         })
         .collect();

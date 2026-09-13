@@ -3,10 +3,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::{path::PathBuf, process::Stdio, sync::Arc, time::Duration};
 use tokio::io::{AsyncRead, AsyncReadExt};
-use zhir_core::{
-    Result,
-    tool::{RuntimeTool, RuntimeToolResult},
-};
+use zhir_core::{Result, tool::RuntimeTool};
 #[derive(Clone)]
 pub struct ShellOptions {
     pub cwd: PathBuf,
@@ -119,7 +116,7 @@ pub fn bash(options: ShellOptions) -> Result<Arc<dyn RuntimeTool>> {
                         format!("command exceeded {} ms", options.timeout.as_millis()),
                     ));
                 };
-                Ok(RuntimeToolResult::json(
+                Ok(zhir_tools::reply::json(
                     json!({"exit_code":status.code(),"stdout":stdout.0,"stderr":stderr.0,"truncated":stdout.1||stderr.1}),
                 ))
             }

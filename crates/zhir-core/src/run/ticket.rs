@@ -1,7 +1,6 @@
 use super::{Checkpoint, State, Suspension};
 use crate::{Result, error::ResumeError};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -44,9 +43,4 @@ impl SuspensionTicket {
         }
         Ok(())
     }
-}
-#[derive(Debug, Clone)]
-pub enum ResumeTarget {
-    Checkpoint(Arc<Checkpoint>),
-    Ticket(SuspensionTicket),
 }

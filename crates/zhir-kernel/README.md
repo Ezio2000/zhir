@@ -4,7 +4,11 @@ Owns Runtime, Invocation, controls, bounded tool scheduling and checkpoint commi
 
 Part of the zhir Cargo workspace, version 0.1.0.
 
-RunRequest and ResumeRequest are kernel builders, re-exported by the SDK.
+RunRequest, ResumeRequest, ResumeTarget and SuspensionSelector belong to kernel,
+re-exported by the SDK. defaults::pause() supplies the host pause preset.
+Planning, checkpoint commits, effect interruption and individual tool calls are
+private modules over the same Engine. Defaults have separate catalog, batch and
+ephemeral-store modules.
 `defaults::context()` creates a fresh UUID and captures the start time;
 `defaults::limits()` and `defaults::run_options()` provide explicit runtime presets.
 Supplying RunContext preserves caller identity, time and metadata.

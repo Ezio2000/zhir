@@ -15,7 +15,7 @@ use zhir::{
     Result, Runtime,
     message::Message,
     model::{Model, ModelDelta, ResponseFormat},
-    models::{ExtensionChain, FunctionModel, Protocol, TransformModel, decorators::ObservedModel},
+    models::{FunctionModel, Protocol, TransformModel, decorators::ObservedModel},
     run::{Limits, State},
     runtime_tools::{RuntimeToolRegistry, TypedTool},
     storage::RunStore,
@@ -273,13 +273,7 @@ async fn live_developer_api() {
                 "deepseek-flash",
             )
             .unwrap()
-            .with_extension(|_| {
-                Ok({
-                    ExtensionChain::new()
-                        .push(EndpointOptions)
-                        .push(ConsumerSession::default())
-                })
-            }),
+            .with_extension(|_| Ok(ConsumerSession::default())),
         );
         for stream in [false, true] {
             for repeat in 0..4 {

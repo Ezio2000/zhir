@@ -49,6 +49,10 @@ Ok(ToolReply::waiting("confirmation-1", receipt, "checkout")
 // 异步受理：ToolReply::accepted("job-1", receipt)
 ```
 
+无类型 JSON 回复使用 `zhir::runtime_tools::reply::{json, waiting}`。JSON 字符串直接作为文本，
+其他 JSON 值序列化为文本；它们与 ToolReply 共用相同的默认表示。
+`RuntimeToolOutcome::content()` 借用显式内容，Failure 返回空切片；模型编码层将失败原因转换为文本。
+
 三种状态的结构化输出统一经过注册表校验。Waiting 同时生成模型可见结果和 Suspension；
 自定义暂停元数据可用 `ToolReply::suspended(payload, suspension)`。Accepted 不自动暂停。
 回调错误继续走 Result，转换为运行结果的错误行为不变。显式外部 Schema 和自由文本参数
@@ -161,7 +165,8 @@ let request = RunRequest::new([Message::user("run")])
 let checkpoint = runtime.start(request)?.result().await?.into_checkpoint();
 ```
 
-`RunRequest`、`ResumeRequest` 由 kernel 提供，SDK 顶层直接导出。
+`RunRequest`、`ResumeRequest`、`ResumeTarget`、`SuspensionSelector` 由 kernel 提供，SDK 顶层直接导出。
+宿主暂停预设使用 `zhir::kernel::defaults::pause()`。
 `RunRequest::new` 创建运行 ID 和启动时间；`.context(RunContext::new(id, started_at_ms))`
 可显式指定上下文。`zhir::kernel::defaults::{context, limits, run_options}` 提供便利构造，
 core 的上下文构造不读取时钟、不生成 ID，也不提供运行限额默认值。单独配置限额可以写：
@@ -275,11 +280,12 @@ chunked 请求或生产服务行为。响应格式、能力语义与断言仍由
 let output = zhir::output::JsonOutput::<Report>::new("report")?;
 let runtime = Runtime::builder(model)
     .defaults(|run| run.response_format(output.format()))
-    .history_reducer(Arc::new(zhir::history::HistoryWindow::last_turns(12)?))
+    .history_reducer(Arc::new(zhir::policies::history::HistoryWindow::last_turns(12)?))
     .build()?;
 let report = output.decode(&checkpoint)?;
 ```
 
+HistoryWindow 由 zhir-policies 提供，通过 SDK 使用时启用 `policies` feature。
 HistoryWindow 的 N 轮包含当前用户轮次。系统消息保留原始相对顺序，一轮中的模型调用、
 RuntimeToolCall、RuntimeTool 结果和外部回复一起保留。没有足够旧轮次时返回 None；
 只在无 provider continuation 的 Planning 状态执行。`with_dependencies` 接收 checkpoint
@@ -323,6 +329,26 @@ open_catalog 接收 CatalogContext，其中有 RunContext 和 Cancellation。组
 各来源一次，并保留各自快照；重名错误携带来源下标。kernel 将选择应用到合并快照，
 模型声明与 bind 使用同一视图，绑定规格必须与快照一致。ProviderToolSpec 仍通过
 provider_tools 配置。RuntimeToolRegistry 继续用于注册具体 RuntimeTool。
+
+## 子 Agent 工具与本地后端
+
+启用 `agent` 可使用 `zhir::builtins::agent::{AgentBackend, tools}`。直接使用
+zhir-builtins 的 `agent` feature 接入自定义后端时，不依赖 zhir-kernel；SDK facade
+本身仍提供 kernel。启用 `agent-runtime` 后，可选择本地后台任务实现：
+
+```rust
+let backend = Arc::new(
+    zhir::builtins::agent::runtime_backend::InMemoryAgentBackend::new(
+        child_runtime, "Complete the delegated task.", 4,
+    )?,
+);
+let tools = zhir::builtins::agent::tools(backend)?;
+```
+
+第三个参数限制该后端同时运行的子 Agent 数量，必须大于零。满载时新 key 返回
+`agent_capacity` 工具错误；重复 key 的查询不占新名额，复用 key 时 prompt 必须一致。
+名额在子运行完成、失败、暂停或取消结算后释放。取消会等待实际结算；单个子运行继续
+使用 kernel 的模型、工具、checkpoint 与截止时间机制。这个上限独立于父运行的工具批次并发。
 
 ## ProviderTool 接入
 
@@ -376,7 +402,8 @@ RuntimeToolCall，结果仍通过唯一的 RuntimeTool 执行与提交路径处�
 框架不会替用户部署存储服务。
 
 `ArtifactModel` 包装任意 Model，在调用前解析类型化 MediaSource::Artifact，在调用后
-保存规范化输出中的 Inline 产物。保存 key 根据 run 身份、媒体类型和内容生成，同一响应
+保存规范化输出中的 Inline 产物。重放映射错误返回 Protocol 并结算为 Failed；
+引用和内容错误返回结构化 Artifact 错误，实际存储错误原样传播。失败响应不会把部分模型输出追加到历史。保存 key 根据 run 身份、媒体类型和内容生成，同一响应
 的相同内容只写一次。读取在本次请求内缓存，并检查引用与内容的媒体类型一致。
 
 ```rust

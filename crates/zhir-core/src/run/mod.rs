@@ -18,7 +18,7 @@ pub use options::RunOptions;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
-pub use ticket::{ResumeTarget, SuspensionTicket};
+pub use ticket::SuspensionTicket;
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -55,14 +55,6 @@ pub struct Suspension {
     pub metadata: BTreeMap<String, Value>,
 }
 impl Suspension {
-    pub fn pause() -> Self {
-        Self {
-            reason: "pause".into(),
-            source: "host".into(),
-            wait_id: None,
-            metadata: BTreeMap::new(),
-        }
-    }
     pub fn validate(&self) -> Result<()> {
         if self.reason.is_empty()
             || self.source.is_empty()
@@ -72,31 +64,6 @@ impl Suspension {
         } else {
             Ok(())
         }
-    }
-}
-#[derive(Debug, Clone, Default)]
-pub struct SuspensionSelector {
-    pub reason: Option<String>,
-    pub source: Option<String>,
-    pub wait_id: Option<String>,
-    pub metadata: BTreeMap<String, Value>,
-}
-impl SuspensionSelector {
-    pub fn matches(&self, s: &Suspension) -> bool {
-        (self.reason.is_some()
-            || self.source.is_some()
-            || self.wait_id.is_some()
-            || !self.metadata.is_empty())
-            && self.reason.as_ref().is_none_or(|v| v == &s.reason)
-            && self.source.as_ref().is_none_or(|v| v == &s.source)
-            && self
-                .wait_id
-                .as_ref()
-                .is_none_or(|v| Some(v) == s.wait_id.as_ref())
-            && self
-                .metadata
-                .iter()
-                .all(|(k, v)| s.metadata.get(k) == Some(v))
     }
 }
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

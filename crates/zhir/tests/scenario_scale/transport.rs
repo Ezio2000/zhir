@@ -846,7 +846,7 @@ impl Model for RpcModel {
 async fn rpc_case(index: usize, client: reqwest::Client) -> Value {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use zhir::runtime_tools::{FunctionTool, RuntimeToolRegistry};
-    use zhir::tool::{Execution, InputSpec, RuntimeTool, RuntimeToolResult, RuntimeToolSpec};
+    use zhir::tool::{Execution, InputSpec, RuntimeTool, RuntimeToolSpec};
     let tag = format!("RPC_{index:03}_OK");
     let first = json!({"jsonrpc":"2.0","result":{"action":{"id":"read-1","name":"lookup","args":{"key":tag}},"annotation":{"phase":"lookup"}}});
     let final_value = json!({"jsonrpc":"2.0","result":{"text":tag,"annotation":{"phase":"done"}}});
@@ -883,7 +883,7 @@ async fn rpc_case(index: usize, client: reqwest::Client) -> Value {
                     call.input == zhir::tool::RuntimeToolInput::Structured(json!({"key":value})),
                     "RPC tool argument mismatch",
                 )?;
-                Ok(RuntimeToolResult::json(json!({"value":value})))
+                Ok(zhir::runtime_tools::reply::json(json!({"value":value})))
             }
         },
     )) as Arc<dyn RuntimeTool>;

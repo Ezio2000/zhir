@@ -94,7 +94,7 @@ impl ProviderOutput {
             base64,
         };
         let content = make(source.clone());
-        if crate::artifacts::source(&content) != Some(&source) {
+        if content.source() != Some(&source) {
             return Err(Error::Invalid(
                 "media constructor must retain the supplied source".into(),
             ));

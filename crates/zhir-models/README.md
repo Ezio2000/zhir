@@ -33,3 +33,8 @@ deadlines. Already emitted deltas prevent retries.
 Capabilities have no core default. `capabilities::text_tool_calling()` is an explicit
 text/structured-tool preset. HTTP adapters own protocol presets; use
 `with_capabilities` to describe the actual selected model.
+
+Artifact input resolution, output persistence and replay validation are separate
+modules. Replay errors are Protocol errors, invalid artifact references/content use
+Artifact errors, and underlying storage failures are forwarded. Tool failure text
+is produced by protocol encoding; Content::source comes from core.

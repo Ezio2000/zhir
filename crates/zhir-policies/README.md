@@ -19,3 +19,7 @@ let policy = RetryPolicy::new(4)?.backoff(Backoff::exponential(
 
 The SDK facade exposes `zhir::policies` with the `policies` feature; `models` and
 `tools` enable it automatically. Approval and batch policy traits remain in core.
+
+history::HistoryWindow implements HistoryReducer over core snapshots. It retains
+complete user turns and system-message order, and supports explicit dependencies
+that expand the retained window. It returns a rewrite proposal; kernel commits it.

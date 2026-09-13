@@ -17,11 +17,11 @@ use std::{
 use zhir::{
     Result, Runtime,
     error::Error,
-    history::HistoryWindow,
     message::{Message, Output},
     model::{Capabilities, Model, ModelContext, ModelRequest, ModelResponse},
     models::{ConcurrencyLimitedModel, FunctionModel},
     output::JsonOutput,
+    policies::history::HistoryWindow,
     run::{Checkpoint, Fact, History, HistoryReducer, State},
     runtime_tools::{RuntimeToolRegistry, TypedTool},
     tool::{Execution, RuntimeToolCall, RuntimeToolInput},
@@ -148,7 +148,7 @@ async fn history_windows_keep_runtime_results_external_replies_and_dependencies(
         Message::RuntimeTool {
             call_id: call.id,
             name: call.name,
-            outcome: zhir::tool::RuntimeToolResult::json(json!("ok")).outcome,
+            outcome: zhir::runtime_tools::reply::json(json!("ok")).outcome,
         },
         Message::external("reply"),
     ];

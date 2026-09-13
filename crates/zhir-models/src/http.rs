@@ -102,6 +102,25 @@ impl Model for HttpModel {
     ) -> BoxFuture<'_, Result<ModelResponse>> {
         Box::pin(async move {
             request.validate(&self.capabilities)?;
+            if !self
+                .capabilities
+                .input_modalities
+                .iter()
+                .any(|m| m == "text")
+                && request.messages.iter().any(|m| {
+                    matches!(
+                        m,
+                        zhir_core::message::Message::RuntimeTool {
+                            outcome: zhir_core::tool::RuntimeToolOutcome::Failure { .. },
+                            ..
+                        }
+                    )
+                })
+            {
+                return Err(zhir_core::error::Error::Invalid(
+                    "model cannot receive textual tool failures".into(),
+                ));
+            }
             context.cancellation.check()?;
             let mut extension = self
                 .extension

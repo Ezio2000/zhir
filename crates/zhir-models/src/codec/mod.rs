@@ -71,7 +71,7 @@ fn result_content(
     outcome: &zhir_core::tool::RuntimeToolOutcome,
     encode: fn(&Content, bool) -> Result<Value>,
 ) -> Result<Value> {
-    let content = outcome.content();
+    let content = outcome_content(outcome);
     if content.iter().all(|c| matches!(c, Content::Text { .. })) {
         return Ok(json!(
             content
@@ -294,4 +294,15 @@ fn parse_content(provider: &str, value: &Value) -> Result<Output> {
             },
         },
     )
+}
+
+fn outcome_content(
+    outcome: &zhir_core::tool::RuntimeToolOutcome,
+) -> std::borrow::Cow<'_, [Content]> {
+    match outcome {
+        zhir_core::tool::RuntimeToolOutcome::Failure { error } => {
+            std::borrow::Cow::Owned(vec![Content::text(&error.message)])
+        }
+        _ => std::borrow::Cow::Borrowed(outcome.content()),
+    }
 }

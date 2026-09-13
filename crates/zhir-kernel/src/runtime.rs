@@ -1,3 +1,4 @@
+use crate::ResumeTarget;
 use crate::{
     defaults::{DefaultBatch, EmptyTools},
     invocation::Invocation,
@@ -9,10 +10,7 @@ use zhir_core::{
     error::{Error, ResumeError},
     message::Message,
     model::Model,
-    run::{
-        ActiveState, Checkpoint, History, HistoryReducer, ResumeTarget, RunContext, State,
-        validate_history,
-    },
+    run::{ActiveState, Checkpoint, History, HistoryReducer, RunContext, State, validate_history},
     storage::RunStore,
     tool::{ApprovalPolicy, BatchPolicy, RuntimeToolCatalogProvider},
 };

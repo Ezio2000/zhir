@@ -5,7 +5,7 @@ pub mod defaults;
 mod environment;
 mod failure;
 mod request;
-pub use request::{ResumeRequest, RunRequest};
+pub use request::{ResumeRequest, ResumeTarget, RunRequest, SuspensionSelector};
 pub mod diagnostics;
 mod engine;
 pub mod invocation;

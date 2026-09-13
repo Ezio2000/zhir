@@ -5,7 +5,7 @@ use zhir_core::{
     run::RunContext,
     tool::{
         Execution, InputSpec, RuntimeTool, RuntimeToolCall, RuntimeToolCatalogProvider,
-        RuntimeToolContext, RuntimeToolInput, RuntimeToolResult, RuntimeToolSpec,
+        RuntimeToolContext, RuntimeToolInput, RuntimeToolSpec,
     },
 };
 use zhir_tools::{RuntimeToolRegistry, function};
@@ -28,7 +28,7 @@ struct Args {
 async fn schema_binding_and_snapshot_are_shared_for_custom_tools() {
     let tool = Arc::new(
         function::structured(spec(), |a: Args, _| async move {
-            Ok(RuntimeToolResult::json(json!(a.a + 1)))
+            Ok(zhir_tools::reply::json(json!(a.a + 1)))
         })
         .unwrap(),
     ) as Arc<dyn RuntimeTool>;
@@ -68,7 +68,7 @@ async fn schema_binding_and_snapshot_are_shared_for_custom_tools() {
 async fn function_output_is_validated() {
     let tool = Arc::new(
         function::structured(spec(), |_: Args, _| async move {
-            Ok(RuntimeToolResult::json(json!("wrong")))
+            Ok(zhir_tools::reply::json(json!("wrong")))
         })
         .unwrap(),
     ) as Arc<dyn RuntimeTool>;
@@ -131,7 +131,7 @@ fn flaky(idempotent: bool) -> (Arc<dyn RuntimeTool>, Arc<std::sync::atomic::Atom
                     },
                 ))
             } else {
-                Ok(RuntimeToolResult::json(json!(3)))
+                Ok(zhir_tools::reply::json(json!(3)))
             }
         }
     })

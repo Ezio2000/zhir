@@ -205,7 +205,7 @@ impl ModelRequest {
                         }
                     })
                     .collect(),
-                Message::RuntimeTool { outcome, .. } => outcome.content(),
+                Message::RuntimeTool { outcome, .. } => outcome.content().to_vec(),
             };
             for part in content {
                 if part

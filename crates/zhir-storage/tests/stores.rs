@@ -54,6 +54,23 @@ async fn exercise(store: Arc<dyn RunStore>) {
         store.load_head(run).await.unwrap().unwrap().id,
         first.checkpoint.id
     );
+    for fault in ["parent", "delta", "empty_append", "initial_again"] {
+        let mut invalid = append(&first, "invalid");
+        match fault {
+            "parent" => Arc::make_mut(&mut invalid.checkpoint).parent_id = Some("wrong".into()),
+            "delta" => invalid.history = HistoryDelta::Append(vec![Message::external("different")]),
+            "empty_append" => invalid.history = HistoryDelta::Append(vec![]),
+            "initial_again" => {
+                invalid.history = HistoryDelta::Initial(invalid.checkpoint.history.messages())
+            }
+            _ => unreachable!(),
+        }
+        assert!(store.commit(invalid).await.is_err(), "accepted {fault}");
+        assert_eq!(
+            store.load_head(run).await.unwrap().unwrap().id,
+            first.checkpoint.id
+        );
+    }
     let second = append(&first, "second");
     store.commit(second.clone()).await.unwrap();
     store.commit(first.clone()).await.unwrap();
@@ -108,7 +125,7 @@ async fn exercise(store: Arc<dyn RunStore>) {
 async fn pending_recovery(store: Arc<dyn RunStore>) {
     use zhir_core::{
         message::Output,
-        run::{ActiveState, ControlAction, StateKind, Suspension},
+        run::{ActiveState, ControlAction, StateKind},
         tool::{RuntimeToolCall, RuntimeToolInput, RuntimeToolOutcome, RuntimeToolOutcomeKind},
     };
     let first = initial();
@@ -217,7 +234,7 @@ async fn pending_recovery(store: Arc<dyn RunStore>) {
             pause.revision += 1;
             pause.state = State::Suspended {
                 resume_to,
-                suspension: Suspension::pause(),
+                suspension: zhir_kernel::defaults::pause(),
             };
             pause.fact = Fact::Control {
                 action: ControlAction::Suspended,

@@ -21,3 +21,6 @@ Part of the zhir Cargo workspace, version 0.1.0.
 CompositeRuntimeTools combines catalog sources without changing execution ownership.
 FunctionApprovalPolicy adapts per-call or batch functions. RetryingTool uses
 zhir_policies::RetryPolicy while retaining idempotency checks and interruptible backoff.
+
+reply::json and reply::waiting construct untyped JSON replies using the same text
+conversion as ToolReply. Core owns the result values and their consistency checks.

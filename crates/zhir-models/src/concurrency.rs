@@ -1,9 +1,6 @@
 //! Shared concurrency over complete model invocations, including streamed sinks.
-use crate::retry_wait::now_ms;
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use crate::retry_wait;
+use std::{sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 use zhir_core::{
     BoxFuture, Result,
@@ -38,26 +35,8 @@ impl Model for ConcurrencyLimitedModel {
     ) -> BoxFuture<'_, Result<ModelResponse>> {
         Box::pin(async move {
             request.validate(self.capabilities())?;
-            let deadline = context
-                .run
-                .deadline_at_ms
-                .map(|ms| {
-                    Instant::now()
-                        .checked_add(Duration::from_millis(ms.saturating_sub(now_ms())))
-                        .ok_or_else(|| {
-                            Error::Invalid(
-                                "model deadline exceeds the monotonic clock range".into(),
-                            )
-                        })
-                })
-                .transpose()?;
-            let check = || -> Result<()> {
-                context.cancellation.check()?;
-                if deadline.is_some_and(|at| Instant::now() >= at) {
-                    return Err(Error::Deadline);
-                }
-                Ok(())
-            };
+            let deadline = retry_wait::deadline(&context.run)?;
+            let check = || retry_wait::check(&context.cancellation, deadline);
             check()?;
             let acquire = self.permits.acquire();
             tokio::pin!(acquire);
