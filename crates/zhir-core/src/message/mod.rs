@@ -50,6 +50,15 @@ impl Content {
             None
         }
     }
+    pub fn source(&self) -> Option<&MediaSource> {
+        match self {
+            Self::Image { source }
+            | Self::Audio { source }
+            | Self::Video { source }
+            | Self::File { source, .. } => Some(source),
+            _ => None,
+        }
+    }
     pub fn modality(&self) -> Option<&'static str> {
         match self {
             Self::Text { .. } => Some("text"),

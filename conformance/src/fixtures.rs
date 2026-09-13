@@ -121,7 +121,7 @@ impl RuntimeTool for StandardTool {
     ) -> BoxFuture<'_, Result<RuntimeToolResult>> {
         Box::pin(async move {
             if let RuntimeToolInput::Freeform(input) = call.input {
-                return Ok(RuntimeToolResult::json(json!(input)));
+                return Ok(zhir_tools::reply::json(json!(input)));
             }
             let RuntimeToolInput::Structured(input) = call.input else {
                 unreachable!()
@@ -141,11 +141,11 @@ impl RuntimeTool for StandardTool {
                     "implementation",
                     "deterministic tool failure",
                 ))),
-                "success" => Ok(RuntimeToolResult::json(
+                "success" => Ok(zhir_tools::reply::json(
                     args.get("text").cloned().unwrap_or(json!("")),
                 )),
-                "strict" => Ok(RuntimeToolResult::json(json!(args["count"].to_string()))),
-                "invalid_output" => Ok(RuntimeToolResult::json(json!({"value":"not-an-integer"}))),
+                "strict" => Ok(zhir_tools::reply::json(json!(args["count"].to_string()))),
+                "invalid_output" => Ok(zhir_tools::reply::json(json!({"value":"not-an-integer"}))),
                 "accepted" => Ok(RuntimeToolResult {
                     outcome: RuntimeToolOutcome::Accepted {
                         task_id: args["correlation_id"].as_str().unwrap().into(),
@@ -178,7 +178,7 @@ impl RuntimeTool for StandardTool {
                         }
                         context.cancellation.check()?;
                     }
-                    Ok(RuntimeToolResult::json(args["text"].clone()))
+                    Ok(zhir_tools::reply::json(args["text"].clone()))
                 }
                 _ => Err(Error::Invalid("unknown fixture tool behavior".into())),
             }
@@ -349,7 +349,12 @@ impl RunStore for RecordingStore {
                 ));
             }
             let mut state = self.state.lock().unwrap();
-            commit.validate_against(state.head.as_deref())?;
+            commit.check_deadline(std::time::Instant::now())?;
+            let previous = state
+                .head
+                .as_deref()
+                .map(zhir_core::wire::CheckpointCore::from);
+            commit.validate_against(previous.as_ref())?;
             state.ids.insert(commit.checkpoint.id.clone(), digest);
             state.head = Some(commit.checkpoint.clone());
             state.commits.push(commit);

@@ -136,12 +136,13 @@ impl RuntimeToolOutcome {
             Self::Failure { .. } => None,
         }
     }
-    pub fn content(&self) -> Vec<Content> {
+    /// Borrow explicitly supplied content; failures retain their structured cause.
+    pub fn content(&self) -> &[Content] {
         match self {
             Self::Success { content, .. }
             | Self::Accepted { content, .. }
-            | Self::Waiting { content, .. } => content.clone(),
-            Self::Failure { error } => vec![Content::text(&error.message)],
+            | Self::Waiting { content, .. } => content,
+            Self::Failure { .. } => &[],
         }
     }
     pub fn kind(&self) -> RuntimeToolOutcomeKind {
@@ -170,39 +171,10 @@ pub struct RuntimeToolResult {
     pub suspension: Option<Suspension>,
 }
 impl RuntimeToolResult {
-    pub fn json(value: Value) -> Self {
-        let text = value
-            .as_str()
-            .map(str::to_owned)
-            .unwrap_or_else(|| value.to_string());
-        Self {
-            outcome: RuntimeToolOutcome::Success {
-                content: vec![Content::text(text)],
-                structured: value,
-            },
-            suspension: None,
-        }
-    }
     pub fn failure(error: Failure) -> Self {
         Self {
             outcome: RuntimeToolOutcome::Failure { error },
             suspension: None,
-        }
-    }
-    pub fn waiting(wait_id: impl Into<String>, value: Value, source: impl Into<String>) -> Self {
-        let wait_id = wait_id.into();
-        Self {
-            outcome: RuntimeToolOutcome::Waiting {
-                wait_id: wait_id.clone(),
-                content: vec![Content::text(value.to_string())],
-                structured: value,
-            },
-            suspension: Some(Suspension {
-                reason: "waiting".into(),
-                source: source.into(),
-                wait_id: Some(wait_id),
-                metadata: Default::default(),
-            }),
         }
     }
     pub fn validate(&self) -> Result<()> {

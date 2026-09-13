@@ -1,4 +1,4 @@
-use crate::codec::{storage_error, validate};
+use crate::codec::storage_error;
 use redis::AsyncCommands;
 use std::{collections::HashMap, sync::Arc};
 use zhir_core::{
@@ -79,7 +79,8 @@ impl RedisRunStore {
             .get("core")
             .map(|s| serde_json::from_str(s).map_err(storage_error))
             .transpose()?;
-        validate(&commit, previous.as_ref())?;
+        commit.check_deadline(std::time::Instant::now())?;
+        commit.validate_against(previous.as_ref())?;
         let revision = commit.checkpoint.revision.to_string();
         let generation = if matches!(
             commit.history,

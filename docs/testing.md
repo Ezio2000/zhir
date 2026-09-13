@@ -21,9 +21,10 @@ cargo run -p zhir-conformance --bin schemas -- --check
 
 | 入口 | 覆盖范围 |
 | --- | --- |
+| `conformance/tests/dependencies.rs` | 生产依赖边界与子 Agent feature 分离 |
 | `conformance/cases/` | 状态、控制、审批、原子提交、历史、错误和限制 |
-| `crates/zhir-core/tests/` | 值校验、完整限额序列化和历史结构 |
-| `crates/zhir-policies/tests/` | 重试预算、自定义退避与溢出边界 |
+| `crates/zhir-core/tests/` | 值校验、完整限额序列化、历史结构及显式时钟下的提交校验 |
+| `crates/zhir-policies/tests/` | 重试预算、自定义退避、溢出边界和无执行器历史窗口 |
 | `crates/zhir/tests/core_boundaries.rs` | 目录选择与绑定、运行创建、显式能力和执行错误呈现 |
 | `crates/zhir-tools/tests/` | 工具目录、Schema、类型化结果和执行装饰器 |
 | `crates/zhir-models/tests/` | 协议编码、SSE、扩展会话与模型装饰器 |
@@ -46,6 +47,8 @@ cargo run -p zhir-conformance --bin schemas -- --check
 cargo check -p zhir --no-default-features --locked
 cargo check -p zhir-core --no-default-features --locked
 cargo test -p zhir-policies --locked
+cargo test -p zhir-builtins --no-default-features --features agent --locked
+cargo test -p zhir-builtins --no-default-features --features agent-runtime --locked
 cargo check -p zhir --no-default-features --features policies --locked
 cargo check -p zhir --no-default-features --features typed-tools --locked
 cargo check -p zhir-testing --no-default-features --locked
@@ -90,6 +93,8 @@ CI 使用 MySQL 8.4 和 Redis 7 服务。测试覆盖历史追加与替换、读
 ## 真实模型接入
 
 现有消费者测试使用 `DEEPSEEK_API_KEY`，具体供应商参数和能力映射只存在于测试侧。
+Chat 测试直接通过 `ModelOptions.extra` 声明该端点的原生 `max_tokens`；
+不设置会生成 `max_completion_tokens` 的通用字段，也不在编码后改名。
 这些入口会产生真实模型调用费用，按需要选择一个入口显式运行：
 
 | 测试 target | 测试名称 | 报告路径环境变量 |
@@ -110,7 +115,15 @@ ZHIR_DEVELOPER_REPORT="$PWD/test-results/developer-live.json" \
 报告路径使用绝对路径，避免 Cargo 的包工作目录改变输出位置。基础协议矩阵还支持
 `DEEPSEEK_MODEL` 和 `DEEPSEEK_LIVE_FILTER`；规模测试支持 `ZHIR_SCALE_FILTER`、
 `ZHIR_SCALE_REPEATS`、`ZHIR_SCALE_CONCURRENCY`，具体值见对应测试源码。
+规模报告保留每次模型调用的规范化输出和 finish_reason，用于定位真实响应与预期不符的情况。
+子 Agent 用例分别检查结算状态与回执内容，内容不符时报告子运行 ID、期望值和实际值。
+复现此类失败应固定原始回执与提示词，并核对服务原始响应；重新生成随机回执不能证明原异常消失。
 
 本地 HTTP/SSE 测试验证接入机制，不证明外部能力服务的行为或媒体质量。
 HttpFixture 支持固定长度 HTTP/1.1 请求，不覆盖 TLS、WebSocket 或 chunked 请求。
 产物持久化、回收和外部副作用幂等由使用方负责；流式观察不等同于已提交结果。
+
+本地 Agent 回归测试覆盖并发启动满载拒绝、重复 key、取消与完成后的名额释放；
+agent 单独 feature 的测试使用外部 AgentBackend。模型集成测试区分未绑定媒体的协议失败
+与底层存储故障，断言 checkpoint 状态、revision 及未提交部分输出。所有存储共享的测试
+还拒绝错误 parent、不匹配的 delta、空追加及重复 initial，检查原 head 不变。

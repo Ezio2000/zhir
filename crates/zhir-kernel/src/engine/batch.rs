@@ -1,3 +1,4 @@
+use super::tool_call::run_tool;
 use super::*;
 use futures::{StreamExt, stream};
 use zhir_core::tool::{ApprovalDecision, ApprovalRequest};

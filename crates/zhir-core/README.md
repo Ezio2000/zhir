@@ -7,8 +7,8 @@ Enable `schema` when generating JSON Schema contracts.
 
 RunOptions stores fully resolved parameters; numeric limits are required on decode.
 RunContext::new takes explicit identity and start time. Capabilities must be supplied
-explicitly. SuspensionTicket identifies a paused revision and ResumeTarget names its
-source. Runtime request builders and environment defaults belong to kernel.
+explicitly. SuspensionTicket identifies a paused revision. ResumeTarget, SuspensionSelector,
+runtime request builders and environment defaults belong to kernel.
 
 ContextKey<T> provides typed JSON metadata access; it can insert metadata without
 creating a run. RunCompletion/RunOutcome project settled checkpoints. CatalogContext
@@ -23,3 +23,8 @@ append. History::appended_since validates a prefix and returns only added messag
 StateKind, RuntimeToolOutcomeKind, ControlAction and ApprovalDecisionKind provide
 closed classifications for facts and events. BatchPolicy takes specifications in a
 BTreeMap keyed by tool name.
+
+Commit::validate_against validates the compact previous CheckpointCore and accepted
+history delta for all adapters. check_deadline takes an explicit Instant; core never
+reads the clock. Content::source and RuntimeToolOutcome::content borrow value data;
+failure text and JSON/waiting reply presets belong to model/tool implementations.

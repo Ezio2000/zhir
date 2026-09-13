@@ -51,6 +51,8 @@
     settle owned work and attempt Limited(deadline), never start more model/tool work.
 14. Stores atomically check revision, parent, history delta, frozen options and checkpoint identity.
     Exact retries are idempotent. Failures leave the previous checkpoint authoritative.
+    All adapters share core validation against the compact previous checkpoint.
+    Consistency checks are pure; write adapters pass explicit monotonic time for deadline checks.
     Normal appends do not read, encode or rewrite existing history.
     Immutable history caches tool-order validation during append. Invalid order or a
     pending cursor inconsistent with history fails checkpoint validation and commit.
@@ -67,3 +69,13 @@ The SDK's Rust APIs, wire format and database layout have no legacy compatibilit
 Effective run options contain complete numeric limits; missing numeric fields are
 invalid wire data. Runtime defaults are applied by kernel before the first commit,
 never by checkpoint decoding. Capabilities are explicit model declarations.
+
+The optional local child-agent backend requires an explicit positive concurrency
+limit. New keys are rejected at capacity, existing-key lookups do not consume a
+slot, and settled invocations release capacity before publishing their snapshots.
+Every child delegates execution to the same kernel; parent tool-call concurrency
+and child-task admission are independent bounds.
+
+Default JSON tool replies share one text conversion in tools. Core stores explicit
+content and structured failures; model codecs render failure text. Invalid artifact
+replay mappings are protocol failures and do not commit partial model output.

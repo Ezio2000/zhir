@@ -405,16 +405,27 @@ async fn artifact_failure_or_missing_binding_never_commits_a_partial_provider_re
             .defaults(|run| run.provider_tools(vec![spec()]))
             .build()
             .unwrap();
-        let error = runtime
+        let result = runtime
             .start(zhir::RunRequest::new(vec![Message::user("failure")]))
             .unwrap()
             .result()
-            .await
-            .unwrap_err();
+            .await;
         worker.await.unwrap();
-        assert!(matches!(error.error, Error::Storage(_)));
-        let checkpoint = error.last_checkpoint.unwrap();
-        assert_eq!(checkpoint.revision, 0);
+        let checkpoint = if failed_store {
+            let error = result.unwrap_err();
+            assert!(matches!(error.error, Error::Storage(_)));
+            let checkpoint = error.last_checkpoint.unwrap();
+            assert_eq!(checkpoint.revision, 0);
+            checkpoint
+        } else {
+            let checkpoint = result.unwrap().into_checkpoint();
+            assert_eq!(checkpoint.revision, 1);
+            assert!(
+                matches!(&checkpoint.state, State::Failed { error } if error.code == "protocol")
+            );
+            checkpoint
+        };
+        assert_eq!(checkpoint.history.len(), 1);
         assert!(zhir::output::provider_calls(&checkpoint).is_empty());
     }
 }

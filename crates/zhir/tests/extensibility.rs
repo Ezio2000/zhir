@@ -564,10 +564,9 @@ fn live_model(protocol: Protocol, key: &str, beta: bool) -> HttpModel {
 }
 fn live_request(protocol: Protocol, effort: &str) -> ModelRequest {
     let mut r = request();
-    r.options.max_output_tokens = Some(1024);
+    r.options.max_output_tokens = (protocol != Protocol::Chat).then_some(1024);
     match protocol {
         Protocol::Chat => {
-            r.options.max_output_tokens = None;
             r.options.extra.insert("max_tokens".into(), json!(1024));
             r.options.extra.insert(
                 "thinking".into(),

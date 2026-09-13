@@ -247,3 +247,44 @@ fn pending_state_size_is_independent_of_tool_payloads_and_unknown_kinds_are_reje
         serde_json::from_str::<zhir_core::tool::RuntimeToolOutcomeKind>(r#""sucess""#).is_err()
     );
 }
+
+#[test]
+fn commit_consistency_is_pure_and_deadline_checks_use_explicit_time() {
+    use std::{
+        sync::Arc,
+        time::{Duration, Instant},
+    };
+    use zhir_core::{
+        error::Error,
+        storage::{Commit, HistoryDelta},
+    };
+    let messages = vec![Message::user("initial")];
+    let checkpoint = Arc::new(Checkpoint {
+        options: options(),
+        id: "initial".into(),
+        parent_id: None,
+        revision: 0,
+        context: RunContext::new("run", 0),
+        history: History::new(messages.clone()).unwrap(),
+        state: State::Planning {
+            provider_turn_pending: false,
+        },
+        metrics: Metrics::default(),
+        fact: Fact::Started,
+    });
+    let at = Instant::now();
+    let mut commit = Commit::new(checkpoint, HistoryDelta::Initial(messages));
+    commit.deadline = Some(at);
+    commit.validate_against(None).unwrap();
+    assert!(commit.check_deadline(at - Duration::from_millis(1)).is_ok());
+    assert!(matches!(commit.check_deadline(at), Err(Error::Deadline)));
+    assert!(matches!(
+        commit.check_deadline(at + Duration::from_millis(1)),
+        Err(Error::Deadline)
+    ));
+    commit.history = HistoryDelta::Initial(vec![Message::user("wrong")]);
+    assert!(matches!(
+        commit.validate_against(None),
+        Err(Error::Storage(_))
+    ));
+}

@@ -1,4 +1,4 @@
-use crate::codec::{storage_error, validate};
+use crate::codec::storage_error;
 use sqlx::{AnyPool, Column, Row, any::AnyPoolOptions};
 use std::sync::Arc;
 use zhir_core::{
@@ -76,7 +76,8 @@ impl SqlStore {
                 serde_json::from_str(&data).map_err(storage_error)
             })
             .transpose()?;
-        validate(&commit, previous_core.as_ref())?;
+        commit.check_deadline(std::time::Instant::now())?;
+        commit.validate_against(previous_core.as_ref())?;
         let generation = if matches!(
             commit.history,
             HistoryDelta::Initial(_) | HistoryDelta::Replace(_)
@@ -130,7 +131,7 @@ impl SqlStore {
             .await
             .map_err(storage_error)?;
         }
-        commit.check_deadline()?;
+        commit.check_deadline(std::time::Instant::now())?;
         tx.commit().await.map_err(storage_error)
     }
     pub async fn load_head(&self, run: &str) -> Result<Option<Arc<Checkpoint>>> {

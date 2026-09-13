@@ -41,7 +41,12 @@ impl RunStore for MemoryRunStore {
                     Err(Error::Storage("checkpoint id reused".into()))
                 };
             }
-            commit.validate_against(state.heads.get(&key.0).map(Arc::as_ref))?;
+            commit.check_deadline(std::time::Instant::now())?;
+            let previous = state
+                .heads
+                .get(&key.0)
+                .map(|head| zhir_core::wire::CheckpointCore::from(head.as_ref()));
+            commit.validate_against(previous.as_ref())?;
             state.ids.insert(key, digest);
             state
                 .heads

@@ -4,10 +4,7 @@ use zhir_core::{
     Result,
     message::Message,
     model::{ModelOptions, ProviderToolSpec, ResponseFormat, ToolChoice},
-    run::{
-        Checkpoint, Limits, ResumeTarget, RunContext, RunOptions, SuspensionSelector,
-        SuspensionTicket,
-    },
+    run::{Checkpoint, Limits, RunContext, RunOptions, Suspension, SuspensionTicket},
 };
 
 #[derive(Debug, Clone, Default)]
@@ -159,5 +156,37 @@ impl ResumeRequest {
     pub fn matching(mut self, value: SuspensionSelector) -> Self {
         self.selector = Some(value);
         self
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ResumeTarget {
+    Checkpoint(Arc<Checkpoint>),
+    Ticket(SuspensionTicket),
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SuspensionSelector {
+    pub reason: Option<String>,
+    pub source: Option<String>,
+    pub wait_id: Option<String>,
+    pub metadata: BTreeMap<String, Value>,
+}
+impl SuspensionSelector {
+    pub fn matches(&self, s: &Suspension) -> bool {
+        (self.reason.is_some()
+            || self.source.is_some()
+            || self.wait_id.is_some()
+            || !self.metadata.is_empty())
+            && self.reason.as_ref().is_none_or(|v| v == &s.reason)
+            && self.source.as_ref().is_none_or(|v| v == &s.source)
+            && self
+                .wait_id
+                .as_ref()
+                .is_none_or(|v| Some(v) == s.wait_id.as_ref())
+            && self
+                .metadata
+                .iter()
+                .all(|(k, v)| s.metadata.get(k) == Some(v))
     }
 }

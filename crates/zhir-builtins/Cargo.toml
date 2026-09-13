@@ -32,7 +32,8 @@ default = []
 filesystem = ["dep:schemars", "dep:fancy-regex", "dep:globset", "dep:walkdir", "tokio/fs"]
 shell = ["dep:schemars", "tokio/process", "tokio/io-util", "dep:nix"]
 interaction = ["dep:schemars", "dep:uuid"]
-agent = ["dep:schemars", "dep:zhir-kernel"]
+agent = ["dep:schemars"]
+agent-runtime = ["agent", "dep:zhir-kernel"]
 
 [dev-dependencies]
 tempfile.workspace = true

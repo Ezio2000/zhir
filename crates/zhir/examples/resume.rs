@@ -2,11 +2,11 @@
 use serde_json::{Value, json};
 use std::sync::Arc;
 use zhir::{
-    BoxFuture, Result, ResumeRequest, Runtime,
+    BoxFuture, Result, ResumeRequest, Runtime, SuspensionSelector,
     builtins::interaction,
     message::{Message, Output},
     model::{Capabilities, Model, ModelContext, ModelRequest, ModelResponse},
-    run::{State, SuspensionSelector},
+    run::State,
     runtime_tools::RuntimeToolRegistry,
     storage::RunStore,
     stores::memory::MemoryRunStore,

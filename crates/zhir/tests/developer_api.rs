@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 use zhir::{
-    Result, ResumeRequest, Runtime,
+    Result, ResumeRequest, Runtime, SuspensionSelector,
     error::{Error, Failure},
     message::{Content, MediaSource, Message, Output},
     model::{Capabilities, Model, ModelContext, ModelDelta, ModelRequest, ModelResponse},
@@ -19,15 +19,12 @@ use zhir::{
         FunctionDeltaSink, FunctionModel, TransformModel,
         decorators::{ObservedModel, RetryingModel},
     },
-    run::{EventData, State, SuspensionSelector},
+    run::{EventData, State},
     runs::{DriveError, drive},
     runtime_tools::{FunctionTool, RuntimeToolRegistry, TypedTool},
     storage::RunStore,
     stores::memory::MemoryRunStore,
-    tool::{
-        Execution, InputSpec, RuntimeTool, RuntimeToolCall, RuntimeToolInput, RuntimeToolResult,
-        RuntimeToolSpec,
-    },
+    tool::{Execution, InputSpec, RuntimeTool, RuntimeToolCall, RuntimeToolInput, RuntimeToolSpec},
 };
 use zhir_testing::{RecordingModel, RecordingSink, RecordingStore, ScriptStep, ScriptedModel};
 fn request() -> ModelRequest {
@@ -486,7 +483,13 @@ async fn ticket_resume_uses_configured_store_and_does_not_retry_stale_heads() {
             output_schema: None,
             execution: Default::default(),
         },
-        |_, _| async { Ok(RuntimeToolResult::waiting("w1", json!({}), "fixture")) },
+        |_, _| async {
+            Ok(zhir::runtime_tools::reply::waiting(
+                "w1",
+                json!({}),
+                "fixture",
+            ))
+        },
     );
     let store = Arc::new(RecordingStore::new(Arc::new(MemoryRunStore::new())));
     let runtime = Runtime::builder(scripted.clone())
@@ -696,7 +699,7 @@ async fn run_requests_isolate_all_options_and_persist_effective_values_across_96
         .is_err()
     );
     assert!(
-        matches!(next.validate_against(Some(&first.checkpoint)),Err(Error::Storage(e)) if e.contains("options changed"))
+        matches!(next.validate_against(Some(&first.core())),Err(Error::Storage(e)) if e.contains("options changed"))
     );
 }
 
@@ -844,7 +847,13 @@ async fn reused_wait_identity_does_not_accept_a_previous_suspension_ticket() {
             output_schema: None,
             execution: Default::default(),
         },
-        |_, _| async { Ok(RuntimeToolResult::waiting("reused", json!({}), "consumer")) },
+        |_, _| async {
+            Ok(zhir::runtime_tools::reply::waiting(
+                "reused",
+                json!({}),
+                "consumer",
+            ))
+        },
     );
     let runtime = Runtime::builder(scripted.clone())
         .runtime_tools(Arc::new(

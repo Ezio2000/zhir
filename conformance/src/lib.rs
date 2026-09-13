@@ -34,7 +34,7 @@ fn event_kind(event: &Event) -> String {
 }
 fn resume_request(checkpoint: Arc<Checkpoint>, request: &Value) -> Result<ResumeRequest> {
     let selector = if let Some(s) = request.get("selector").filter(|v| !v.is_null()) {
-        Some(zhir_core::run::SuspensionSelector {
+        Some(zhir_kernel::SuspensionSelector {
             reason: s.get("reason").and_then(Value::as_str).map(str::to_owned),
             source: s.get("source").and_then(Value::as_str).map(str::to_owned),
             wait_id: s.get("wait_id").and_then(Value::as_str).map(str::to_owned),
@@ -48,7 +48,7 @@ fn resume_request(checkpoint: Arc<Checkpoint>, request: &Value) -> Result<Resume
         None
     };
     Ok(ResumeRequest {
-        target: zhir_core::run::ResumeTarget::Checkpoint(checkpoint),
+        target: zhir_kernel::ResumeTarget::Checkpoint(checkpoint),
         selector,
         messages: request
             .get("messages")

@@ -2,7 +2,7 @@
     feature = "filesystem",
     feature = "shell",
     feature = "interaction",
-    feature = "agent"
+    feature = "agent-runtime"
 ))]
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -280,14 +280,14 @@ impl Model for Child {
 }
 #[tokio::test]
 async fn child_agents_are_idempotent_and_owned_tasks_cancel() {
-    use zhir_builtins::agent::{AgentBackend, InMemoryAgentBackend};
+    use zhir_builtins::agent::{AgentBackend, runtime_backend::InMemoryAgentBackend};
     let runtime = zhir_kernel::Runtime::builder(Arc::new(Child {
         caps: test_capabilities(),
         block: false,
     }))
     .build()
     .unwrap();
-    let backend = InMemoryAgentBackend::new(runtime, "child instructions");
+    let backend = InMemoryAgentBackend::new(runtime, "child instructions", 2).unwrap();
     let owner = RunContext::new("builtin-test", 0);
     let first = backend
         .start_or_get("key".into(), "work".into(), owner.clone())
@@ -320,7 +320,7 @@ async fn child_agents_are_idempotent_and_owned_tasks_cancel() {
     }))
     .build()
     .unwrap();
-    let backend = InMemoryAgentBackend::new(runtime, "");
+    let backend = InMemoryAgentBackend::new(runtime, "", 2).unwrap();
     let child = backend
         .start_or_get("key".into(), "work".into(), owner.clone())
         .await
@@ -352,7 +352,7 @@ async fn custom_tools_do_not_require_builtins_at_runtime() {
     );
 }
 
-#[cfg(feature = "agent")]
+#[cfg(feature = "agent-runtime")]
 fn test_capabilities() -> Capabilities {
     Capabilities {
         input_modalities: vec!["text".into()],

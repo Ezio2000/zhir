@@ -8,14 +8,14 @@ machine. Models, tools and storage implement those ports independently.
 zhir/
 ├── crates/
 │   ├── zhir-core/       # Values, model/tool/storage ports and native wire DTOs
-│   ├── zhir-policies/   # Shared retry budgets and backoff calculations
+│   ├── zhir-policies/   # Retry budgets, backoff and history windows
 │   ├── zhir-kernel/     # Runtime, scheduling, controls, commits and trace checks
 │   ├── zhir-models/     # Model composition, protocol codecs and extension sessions
 │   ├── zhir-tools/      # Tool registration, binding, schemas and decorators
 │   ├── zhir-builtins/   # Filesystem, shell, interaction and child-agent tools
 │   ├── zhir-storage/    # Memory, SQLite, MySQL and Redis implementations
 │   ├── zhir-testing/    # Scripted models, recordings and optional HTTP/SSE fixtures
-│   └── zhir/            # SDK facade, output/history/run helpers and examples
+│   └── zhir/            # SDK facade, output/run helpers and examples
 ├── contracts/v1/        # Runtime behavior and generated JSON Schemas
 ├── conformance/         # Native behavior fixtures and their runner
 ├── docs/                # Architecture, developer guide and test instructions
@@ -32,11 +32,26 @@ zhir/
 - Kernel and storage depend only on core among the zhir crates. Models and tools
   depend on core and policies. These are production boundaries; development
   dependencies may use kernel to exercise runtime-produced values.
-- Builtins depend on core and tools; the optional agent feature also uses kernel.
+- Builtins depend on core and tools; only the optional agent-runtime feature also uses kernel.
+  The agent feature exposes backend-independent tool contracts and adapters.
 - The facade selects components through Cargo features and adds convenience APIs
   over existing ports. It introduces no additional scheduler or commit path.
 - Consumer test support depends on core/kernel and never becomes a normal SDK
   dependency. Its optional HTTP server exists only for the lifetime of a fixture.
+
+Production crate dependencies (`A -> B` means A depends on B; brackets are optional):
+
+```text
+zhir          -> core, kernel, [policies, models, tools, builtins, storage]
+policies      -> core
+kernel        -> core
+models        -> core, policies
+tools         -> core, policies
+builtins      -> core, tools, [kernel: agent-runtime only]
+storage       -> core
+testing       -> core, kernel           (consumer test support)
+core          -> no other zhir crate
+```
 
 The only executable tool trait is RuntimeTool in core. Tools handles registration,
 immutable catalog snapshots, binding and schema validation. Builtins supplies
@@ -50,6 +65,37 @@ fields, statuses, choice and replay. Unknown output items require explicit mappi
 the SDK does not infer execution ownership from names or status strings.
 
 ## Execution and recovery
+
+Runtime calls go through core traits; these arrows describe invocation, not Cargo dependencies:
+
+```text
+Application
+    |
+    v
+zhir SDK facade: compose resources and create requests
+    |
+    v
+kernel::Runtime / Engine                 (one execution state machine)
+    |
+    +-- Model -----------------------> models ----------> model service
+    |
+    +-- RuntimeToolCatalog/RuntimeTool -> tools ----------> builtins / custom tools
+    |                                                        |
+    |                                                        +-- AgentBackend
+    |                                                             |
+    |                                          [agent-runtime: bounded child tasks]
+    |                                                             |
+    |                                                        child kernel::Runtime
+    |
+    +-- HistoryReducer --------------> policies::HistoryWindow
+    |                                   returns a proposal to kernel
+    |
+    +-- RunStore::commit ------------> storage ----------> memory / SQL / Redis
+         only kernel creates execution transitions and commits them
+
+models::ArtifactModel -- ArtifactStore --> storage / custom artifact store
+testing fixtures replace model/store ports in tests
+```
 
 Kernel owns RunRequest/ResumeRequest builders, run identity/time creation, default
 limits and default RunOptions. Core RunContext takes explicit identity and time.
@@ -72,7 +118,10 @@ resume/catalog/validation/context/artifact errors retain actionable causes.
 ContextKey<T> provides typed access to serialized metadata. RetryPolicy in policies
 holds backoff calculations; models/tools own waits and execution eligibility.
 Core error values retain structured causes; kernel maps execution failures into
-model-visible tool results or terminal checkpoints.
+structured tool results or terminal checkpoints. Models render tool failure text;
+tools owns default JSON reply text and waiting presets. Core outcome content access
+borrows only explicitly supplied content. ResumeTarget and SuspensionSelector live
+with kernel request builders; kernel defaults also owns the host pause preset.
 
 ResumeRequest accepts a snapshot or a SuspensionTicket. A ticket loads the
 configured store and matches the exact run, checkpoint, revision and suspension.
@@ -102,6 +151,10 @@ Replacements start a new generation; Memory retains shared histories in-process.
 SQL writes use transactions and revision checks. Redis uses same-slot keys and an
 atomic Lua commit. Exact retries are idempotent; conflicting identity reuse fails.
 Applications own history retention and external-effect idempotency.
+Core Commit::validate_against accepts the compact previous CheckpointCore and owns
+the shared revision, identity, options and history-delta rules for every store.
+Deadline checks take an explicit monotonic Instant; adapters read clocks at write
+boundaries. Pure consistency validation never reads the environment.
 
 ArtifactStore is a core port. Storage provides MemoryArtifactStore and the optional
 FilesystemArtifactStore; consumers may supply other implementations. ArtifactModel saves media
@@ -110,6 +163,11 @@ native replay and decoder-local media bindings with the normalized call; the raw
 response position references its call id. Reordering normalized calls retains the
 association. Input resolution restores artifact contents before protocol encoding.
 Consumers configure artifact resources and own collection of uncommitted artifacts.
+Artifact input resolution, output saving and replay binding checks are separate
+models modules. Invalid replay mappings produce Protocol errors; invalid artifact
+references/content produce structured Artifact errors; store failures are forwarded.
+A protocol failure settles a Failed checkpoint without committing partial model output.
+Content::source is a core value accessor shared by provider output and artifact code.
 
 ## Protocol and wire boundaries
 
@@ -130,7 +188,9 @@ Responses and Messages modules. Shared replay code indexes normalized provider c
 by id while preserving native replay order. Stream text grows in place; media binding
 and payload membership use sets. Kernel indexes the selected catalog once, and passes
 its name-keyed specifications to BatchPolicy. Binding, approval, execution and commit
-preparation remain phases of the same kernel engine.
+preparation remain phases of the same kernel engine. Planning, commit, interruption
+and single-tool invocation are private modules over that Engine. Default parameters,
+empty catalog, batch policy and per-invocation storage are separate default modules.
 
 StateKind, RuntimeToolOutcomeKind, ControlAction and ApprovalDecisionKind describe
 closed runtime classifications. Facts and events use these values directly. Builtins
@@ -140,6 +200,17 @@ types, including defaults, required nullable fields and numerical bounds.
 Normalized input usage includes cache reads and writes; cache counters are a
 breakdown and must not be added again. Protocol codecs normalize their native usage
 representation before it reaches the runtime.
+
+HistoryWindow belongs to policies and returns a history rewrite proposal; kernel
+validates and commits it. Models and tools retain executor-specific retry waiting;
+model concurrency limiting reuses the model module's deadline and cancellation checks.
+
+The agent tools module uses AgentBackend. Its optional runtime_backend owns bounded
+child-task admission, records and cancellation, and delegates each run to kernel.
+InMemoryAgentBackend::new requires a positive max_running bound. New keys fail with
+agent_capacity when full; lookups of an existing key use no new slot. A slot is held
+until the invocation settles, including cancellation, and is released before the
+settled snapshot is published. Children inherit the parent deadline.
 
 API examples and detailed extension behavior belong in the
 [developer guide](developer-api.md). Reproducible checks belong in

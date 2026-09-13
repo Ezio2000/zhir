@@ -21,10 +21,7 @@ use zhir::{
     models::{HttpModel, ModelConfig, Protocol, anthropic, openai},
     run::{EventData, Limits, State},
     runtime_tools::{FunctionTool, RuntimeToolRegistry},
-    tool::{
-        Execution, InputSpec, RuntimeTool, RuntimeToolCall, RuntimeToolInput, RuntimeToolResult,
-        RuntimeToolSpec,
-    },
+    tool::{Execution, InputSpec, RuntimeTool, RuntimeToolCall, RuntimeToolInput, RuntimeToolSpec},
 };
 fn require(valid: bool, message: &str) -> Result<()> {
     if valid {
@@ -56,10 +53,14 @@ fn model(protocol: Protocol, key: &str, model_id: &str) -> Result<HttpModel> {
     }
 }
 fn options(protocol: Protocol, thinking: bool) -> ModelOptions {
+    let limit = if thinking { 1024 } else { 128 };
     let mut options = ModelOptions {
-        max_output_tokens: Some(if thinking { 1024 } else { 128 }),
+        max_output_tokens: (protocol != Protocol::Chat).then_some(limit),
         ..Default::default()
     };
+    if protocol == Protocol::Chat {
+        options.extra.insert("max_tokens".into(), json!(limit));
+    }
     match protocol {
         Protocol::Responses => {
             options.extra.insert(
@@ -88,11 +89,6 @@ fn options(protocol: Protocol, thinking: bool) -> ModelOptions {
                 }
             }
         }
-    }
-    // DeepSeek's Chat API documents max_tokens; this is a provider option, not an SDK alias.
-    if protocol == Protocol::Chat {
-        let limit = options.max_output_tokens.take();
-        options.extra.insert("max_tokens".into(), json!(limit));
     }
     options
 }
@@ -245,14 +241,14 @@ async fn tool_case(
                     let b = args["b"]
                         .as_i64()
                         .ok_or_else(|| Error::Invalid("missing integer b".into()))?;
-                    Ok(RuntimeToolResult::json(json!({"answer":a+b})))
+                    Ok(zhir::runtime_tools::reply::json(json!({"answer":a+b})))
                 }
                 RuntimeToolInput::Freeform(patch) => {
                     require(
                         patch.contains("*** Begin Patch") && patch.contains("+hello"),
                         "invalid patch input",
                     )?;
-                    Ok(RuntimeToolResult::json(json!("PATCH_ACCEPTED")))
+                    Ok(zhir::runtime_tools::reply::json(json!("PATCH_ACCEPTED")))
                 }
             }
         }

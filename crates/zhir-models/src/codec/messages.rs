@@ -22,7 +22,7 @@ pub(super) fn encode(
                 messages.push(json!({"role":"assistant","content":encoded}));
             }
             Message::RuntimeTool { call_id, outcome, .. } => results.push(json!({"type":"tool_result","tool_use_id":call_id,
-                "content":parts(&outcome.content(),false,content)?,"is_error":matches!(outcome,zhir_core::tool::RuntimeToolOutcome::Failure{..})})),
+                "content":parts(&outcome_content(outcome),false,content)?,"is_error":matches!(outcome,zhir_core::tool::RuntimeToolOutcome::Failure{..})})),
         }
     }
     flush_results(&mut messages, &mut results);

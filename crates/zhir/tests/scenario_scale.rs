@@ -6,7 +6,7 @@
     feature = "anthropic",
     feature = "memory",
     feature = "sqlite",
-    feature = "agent"
+    feature = "agent-runtime"
 ))]
 #[cfg(feature = "typed-tools")]
 #[path = "scenario_scale/ergonomics.rs"]

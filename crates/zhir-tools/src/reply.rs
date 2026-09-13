@@ -34,15 +34,7 @@ impl<T> ToolReply<T> {
         }
     }
     pub fn waiting(wait_id: impl Into<String>, payload: T, source: impl Into<String>) -> Self {
-        Self::suspended(
-            payload,
-            Suspension {
-                reason: "waiting".into(),
-                source: source.into(),
-                wait_id: Some(wait_id.into()),
-                metadata: Default::default(),
-            },
-        )
+        Self::suspended(payload, waiting_suspension(wait_id.into(), source.into()))
     }
     pub fn suspended(payload: T, suspension: Suspension) -> Self {
         Self {
@@ -60,11 +52,7 @@ impl<T: Serialize> ToolReply<T> {
     pub fn into_result(self) -> Result<RuntimeToolResult> {
         let structured = serde_json::to_value(self.payload)
             .map_err(|e| Error::Invalid(format!("tool output: {e}")))?;
-        let content = self.content.unwrap_or_else(|| {
-            RuntimeToolResult::json(structured.clone())
-                .outcome
-                .content()
-        });
+        let content = self.content.unwrap_or_else(|| text_content(&structured));
         let (outcome, suspension) = match self.state {
             State::Success => (
                 RuntimeToolOutcome::Success {
@@ -101,5 +89,48 @@ impl<T: Serialize> ToolReply<T> {
         };
         result.validate()?;
         Ok(result)
+    }
+}
+
+fn text_content(value: &serde_json::Value) -> Vec<Content> {
+    vec![Content::text(
+        value
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| value.to_string()),
+    )]
+}
+fn waiting_suspension(wait_id: String, source: String) -> Suspension {
+    Suspension {
+        reason: "waiting".into(),
+        source,
+        wait_id: Some(wait_id),
+        metadata: Default::default(),
+    }
+}
+/// Construct a JSON reply with its default textual representation.
+pub fn json(value: serde_json::Value) -> RuntimeToolResult {
+    RuntimeToolResult {
+        outcome: RuntimeToolOutcome::Success {
+            content: text_content(&value),
+            structured: value,
+        },
+        suspension: None,
+    }
+}
+/// Construct a waiting reply and its matching host suspension.
+pub fn waiting(
+    wait_id: impl Into<String>,
+    value: serde_json::Value,
+    source: impl Into<String>,
+) -> RuntimeToolResult {
+    let wait_id = wait_id.into();
+    RuntimeToolResult {
+        outcome: RuntimeToolOutcome::Waiting {
+            wait_id: wait_id.clone(),
+            content: text_content(&value),
+            structured: value,
+        },
+        suspension: Some(waiting_suspension(wait_id, source.into())),
     }
 }
