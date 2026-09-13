@@ -69,11 +69,11 @@ impl Model for ConcurrencyLimitedModel {
     }
     fn open_session(&self, open: SessionOpen) -> BoxFuture<'_, Result<ModelSession>> {
         Box::pin(async move {
-            let deadline = crate::retry_wait::deadline(&open.context.run)?;
+            let deadline = zhir_policies::timing::deadline(&open.context.run)?;
             let acquire = self.permits.clone().acquire_owned();
             tokio::pin!(acquire);
             let permit = loop {
-                crate::retry_wait::check(&open.context.cancellation, deadline)?;
+                zhir_policies::timing::check(&open.context.cancellation, deadline)?;
                 tokio::select! { result = &mut acquire => break result.map_err(|_| Error::Cancelled)?, _ = tokio::time::sleep(Duration::from_millis(10)) => () }
             };
             let mut session = self.inner.open_session(open).await?;

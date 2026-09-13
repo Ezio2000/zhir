@@ -1,5 +1,6 @@
 //! Explicit endpoint mappings for negotiated semantics. Providers own their wire values.
 use serde_json::Value;
+use zhir_core::profile::keys;
 use zhir_core::{
     Result,
     error::Error,
@@ -46,10 +47,10 @@ pub(crate) fn negotiate(
 ) -> Result<NegotiatedProfile> {
     let selected = zhir_policies::negotiation::negotiate(request, caps)?;
     for (key, value) in &selected.selected {
-        if key == "interaction" && value == "turn_based" {
+        if key == keys::INTERACTION && value == "turn_based" {
             continue;
         }
-        if images && key.starts_with("resource.") && key.ends_with(".fidelity") {
+        if images && keys::is_resource_fidelity(key) {
             continue;
         }
         if !mappings
@@ -71,7 +72,7 @@ pub(crate) fn apply(request: &mut ModelRequest, selected: &NegotiatedProfile) ->
         {
             input.usage.fidelity = selected
                 .selected
-                .get(&format!("resource.{}.fidelity", input.resource.id))
+                .get(&keys::resource_fidelity(&input.resource.id))
                 .cloned()
                 .map(serde_json::from_value)
                 .transpose()

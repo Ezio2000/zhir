@@ -12,3 +12,7 @@ verify_trace. None of these fixtures establish an external provider's live
 capabilities, entitlement, authentication or media quality.
 
 Part of the zhir workspace, version 0.2.0.
+
+This workspace-only package is not published. Consumer acceptance tests live in tests/;
+SDK feature names forward to zhir for feature-specific tests. Release verification uses
+`uv run conformance/package.py` and packages only the eight production crates.

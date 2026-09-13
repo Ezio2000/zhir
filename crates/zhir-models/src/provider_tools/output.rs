@@ -46,6 +46,7 @@ impl ProviderOutput {
     ) -> Self {
         Self {
             call: ProviderToolCall {
+                outcome: None,
                 provider: provider.into(),
                 name: name.into(),
                 id: id.into(),

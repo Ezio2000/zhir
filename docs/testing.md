@@ -1,8 +1,8 @@
 # 测试与验证
 
 使用 rust-toolchain.toml 指定的 Rust 1.95 与已提交的 Cargo.lock。验收代码、故障注入、
-trace 校验、合成供应商与基准只允许位于 `crates/zhir-testing`、`crates/zhir/tests` 和
-`conformance`。生产核心包的 src/tests/benches 中不放验收代码；依赖边界测试检查这一规则。
+trace 校验、合成供应商、消费者验收与基准只允许位于 `crates/zhir-testing` 和
+`conformance`。所有生产包的 src/tests/benches 中不放验收代码，也不依赖测试包；依赖边界测试检查这一规则。
 日志和报告放在根目录被忽略的 `test-results/` 或 CI artifacts。Python 开发脚本只使用 uv。
 
 ## 必需检查
@@ -30,6 +30,7 @@ cargo run -p zhir-conformance --bin schemas --locked -- --check
 | `session_runtime` | 原生会话早发工具、provider 任务、等待恢复、媒体封存 |
 | `session_recovery` | 未确认 outbox 不重发、竞争恢复 CAS、跨轮 provider 完成、重复/冲突完成、双向流、中断及 EndInput |
 | `runtime_deadlines` | catalog/model 建立阶段截止时间、未确认 commit 超时 |
+| `refactoring` | provider operation 结算后的跨轮 replay 与 wire 往返、4096 项历史合并顺序、虚拟时钟下有界并发取消及统一退出预算 |
 | `models_*` | 请求与流协议、Unicode/分片、回放、装饰器、资源预算、会话资源输入 |
 | `profiles_credentials` | required/preferred、fast/original 映射、Unknown、401 刷新与账号头 |
 | `tools_*`、`policies_*` | 工具 Schema、Active 最终校验、重试/熔断与历史策略 |
@@ -54,19 +55,23 @@ for feature in policies tools typed-tools typed-output models filesystem shell i
 done
 cargo run -p zhir --no-default-features --example custom_tool --features models,typed-tools
 cargo run -p zhir --no-default-features --example resume --features models,interaction,memory
-cargo package --workspace --allow-dirty --locked --target-dir test-results/package
+uv run conformance/package.py
 ```
 
-包验证必须完成 archive 内源码的编译，而不只生成 archive。`conformance` 不发布。
-重复使用同版本的临时 Cargo registry 时，应使用新的 target-dir 防止旧源码缓存。
-消费者最小 feature 测试也保留在 CI；工作区 dev-dependencies 不代表生产依赖。
+包验证脚本按 allowlist 只选择 8 个生产包，完成 archive 内源码编译，并检查归档文件、
+manifest 和 lockfile 均没有测试代码或测试包依赖。`zhir-testing` 与 `conformance` 都不发布。
+`publish = false` 不代替打包选择；不要用不带排除项的 `cargo package --workspace`。
+脚本每次生成独立临时 target-dir，防止同版本 registry 复用旧源码；结束后自动清理。
+无网络验证可使用 `uv run conformance/package.py --offline`。
+消费者最小 feature 测试运行在 `zhir-testing`，同名 feature 转发到 SDK；CI 保留这些检查。
+示例仍在 `zhir/examples`，生产归档仅允许 src、examples、manifest、README 和 LICENSE（以及 Cargo 生成的元数据）。
 
 基准入口全部放在测试 crate：
 
 ```sh
 cargo bench -p zhir-testing --bench history
 cargo bench -p zhir-testing --bench trace
-cargo test -p zhir --all-features --release --test models_streaming stream_append_scale -- --ignored --nocapture
+cargo test -p zhir-testing --all-features --release --test models_streaming stream_append_scale -- --ignored --nocapture
 ```
 
 这些入口观察 history 增长、trace 校验与流式组装成本，打印规模/耗时，不用脆弱的耗时
@@ -80,7 +85,7 @@ cargo test -p zhir --all-features --release --test models_streaming stream_appen
 ```sh
 export ZHIR_TEST_MYSQL_URL='mysql://root:password@127.0.0.1:3306/zhir_test'
 export ZHIR_TEST_REDIS_URL='redis://127.0.0.1:6379/'
-cargo test -p zhir --all-features --test storage_stores -- --ignored
+cargo test -p zhir-testing --all-features --test storage_stores -- --ignored
 ```
 
 CI 使用 MySQL 8.4 与 Redis 7。测试生成独立 run ID 和 Redis namespace，校验历史
@@ -105,7 +110,7 @@ Codex OAuth 或 MiniMax 视频/语音的线上验收。
 
 ```sh
 ZHIR_DEVELOPER_REPORT="$PWD/test-results/developer-live.json" \
-  cargo test -p zhir --all-features --test scenario_scale live_developer_api -- --ignored --nocapture
+  cargo test -p zhir-testing --all-features --test scenario_scale live_developer_api -- --ignored --nocapture
 ```
 
 五类需求的本地验收分别验证：丰富模型/服务端工具扩展、跨服务 runtime operation、

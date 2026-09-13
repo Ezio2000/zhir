@@ -1,4 +1,5 @@
 [package]
+include = ["src/**", "examples/**", "Cargo.toml", "README.md", "LICENSE"]
 name = "zhir-policies"
 version.workspace = true
 edition.workspace = true

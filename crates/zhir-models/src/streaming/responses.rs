@@ -4,11 +4,11 @@ use serde_json::Value;
 use zhir_core::{Result, error::Error, model::ModelDelta};
 
 #[derive(Default)]
-pub(super) struct State {
+pub(crate) struct State {
     completed: Option<Value>,
 }
 impl State {
-    pub(super) fn push(&mut self, value: &Value) -> Result<Vec<ModelDelta>> {
+    pub(crate) fn push(&mut self, value: &Value) -> Result<Vec<ModelDelta>> {
         let index = value
             .get("output_index")
             .and_then(Value::as_u64)
@@ -55,7 +55,16 @@ impl State {
         };
         Ok(vec![delta])
     }
-    pub(super) fn finish(self) -> Result<Value> {
+    pub(crate) fn finish(self) -> Result<Value> {
         self.completed.ok_or_else(incomplete)
+    }
+}
+
+impl super::StreamState for State {
+    fn push(&mut self, value: &Value) -> Result<Vec<ModelDelta>> {
+        State::push(self, value)
+    }
+    fn finish(self: Box<Self>) -> Result<Value> {
+        State::finish(*self)
     }
 }

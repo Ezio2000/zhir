@@ -10,7 +10,7 @@ use zhir::{
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let model = openai::chat::model(ModelConfig::new(
         std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into()),
-        std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+        std::sync::Arc::new(zhir::models::credentials::StaticCredential::new(
             "Bearer",
             std::env::var("OPENAI_API_KEY")?,
         )),

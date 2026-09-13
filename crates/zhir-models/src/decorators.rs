@@ -80,21 +80,22 @@ impl Model for RetryingModel {
     }
     fn open_session(&self, open: SessionOpen) -> BoxFuture<'_, Result<ModelSession>> {
         Box::pin(async move {
-            let deadline = crate::retry_wait::deadline(&open.context.run)?;
+            let deadline = zhir_policies::timing::deadline(&open.context.run)?;
             for attempt in 0..self.policy.max_attempts() {
-                crate::retry_wait::check(&open.context.cancellation, deadline)?;
+                zhir_policies::timing::check(&open.context.cancellation, deadline)?;
                 match self.inner.open_session(open.clone()).await {
                     Err(Error::Model(error))
                         if error.retryable
                             && open.recovery.is_none()
                             && attempt + 1 < self.policy.max_attempts() =>
                     {
-                        crate::retry_wait::wait(
+                        zhir_policies::timing::wait(
                             self.policy
                                 .delay_after(attempt + 1)
                                 .expect("remaining attempt"),
                             &open.context.cancellation,
                             deadline,
+                            |at| tokio::time::sleep_until(at.into()),
                         )
                         .await?
                     }

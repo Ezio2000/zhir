@@ -3,7 +3,7 @@
 0.2.0 统一使用会话、operation 和资源契约。完整可运行示例位于
 [custom_tool.rs](../crates/zhir/examples/custom_tool.rs)、
 [resume.rs](../crates/zhir/examples/resume.rs) 和
-[chat.rs](../crates/zhir/examples/chat.rs)。验收用模型与记录器仅从开发依赖 `zhir-testing` 引入。
+[chat.rs](../crates/zhir/examples/chat.rs)。仓库验收用模型、记录器与消费者测试统一位于不发布的 `zhir-testing`；发布的 SDK 不依赖它。
 
 ## 创建运行
 

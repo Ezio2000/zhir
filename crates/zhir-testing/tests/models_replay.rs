@@ -26,6 +26,7 @@ async fn replay_indexes_calls_without_changing_native_order_or_ownership_checks(
     let mut calls: Vec<_> = (0..512)
         .map(|i| Output::ProviderToolCall {
             call: ProviderToolCall {
+                outcome: None,
                 id: format!("c{i}"),
                 provider: "test".into(),
                 name: "remote".into(),

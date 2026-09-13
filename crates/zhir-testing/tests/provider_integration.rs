@@ -822,6 +822,7 @@ impl zhir::models::provider_tools::ProviderToolAdapter for TokenAdapter {
         }
         Ok(Some(vec![Output::ProviderToolCall {
             call: zhir::message::ProviderToolCall {
+                outcome: None,
                 id: item["token"].as_str().unwrap().into(),
                 provider: "consumer.example".into(),
                 name: "token".into(),
@@ -931,6 +932,7 @@ impl zhir::models::provider_tools::ProviderToolAdapter for BlockAdapter {
             .unwrap();
         Ok(Some(vec![Output::ProviderToolCall {
             call: zhir::message::ProviderToolCall {
+                outcome: None,
                 id: item["ticket"].as_str().unwrap().into(),
                 provider: "consumer.example".into(),
                 name: "render".into(),
@@ -1041,6 +1043,7 @@ impl zhir::models::provider_tools::ProviderToolAdapter for MediaAdapter {
         }
         Ok(Some(vec![Output::ProviderToolCall {
             call: zhir::message::ProviderToolCall {
+                outcome: None,
                 id: "media-1".into(),
                 provider: "media.example".into(),
                 name: "compose".into(),

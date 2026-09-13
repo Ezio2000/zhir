@@ -24,6 +24,7 @@ async fn settle(mut invocation: zhir_kernel::Invocation) -> Arc<Checkpoint> {
 fn provider(status: ProviderToolStatus, text: Option<&str>) -> Output {
     Output::ProviderToolCall {
         call: ProviderToolCall {
+            outcome: None,
             provider: "media".into(),
             name: "video".into(),
             id: "job".into(),

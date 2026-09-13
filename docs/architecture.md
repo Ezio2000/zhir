@@ -39,8 +39,8 @@ core       -> no other zhir crate
 - **The facade** selects components through features and adds composition helpers.
 - **Testing** may depend on core, kernel, models and policies. It is a development
   dependency only. All acceptance runners, recordings, synthetic providers, fault
-  injection, trace validation and benchmarks live in `zhir-testing`,
-  `crates/zhir/tests` or `conformance`. Production packages contain no test modules.
+  injection, trace validation and benchmarks live in the unpublished `zhir-testing` or
+  `conformance` packages. Production packages contain no acceptance sources or dependencies; release archives use an explicit allowlist.
 
 ## Model session boundary
 
@@ -151,3 +151,27 @@ There is no Python wire compatibility layer, alternate scheduler or migration re
 SQL stores require format 2 in a new database; Redis requires a new format-2 namespace.
 Filesystem resources use their current format in a new directory. Older layouts are
 rejected rather than translated.
+
+## Execution and protocol implementation boundaries
+
+Kernel's private engine modules separate lifecycle decisions, checkpoint persistence,
+commands, session setup and events, admission, operations, controls, and media. They
+share one Engine snapshot and its single commit path. Shutdown cancellation uses the
+configured tool concurrency with one 50 ms cleanup budget for all external handles;
+handles still pending when the budget expires are dropped before local tasks are aborted.
+Suspension detaches without cancelling external operation handles.
+
+Conversation projection indexes each turn's provider calls by `(provider, call_id)`;
+updates retain their first output position and do not scan accumulated output. Provider
+operation settlement metadata lives in `ProviderToolCall.outcome`, separately from
+adapter-owned `data`. Success content is stored once in `output`; settlement preserves
+structured results, failures and cancellation reasons for duplicate completion checks.
+No wrapper is inserted into adapter JSON when operations finish.
+
+Built-in HTTP protocols implement one internal ProtocolAdapter per protocol. Each owns
+endpoint/authentication, capabilities, encoding/decoding, usage normalization, replay
+shape and stream state construction. Transport uses this interface without its own
+protocol branches. External protocols still implement core Model; ProtocolExtension and
+ProviderToolAdapter customize the built-ins. Retry deadlines and the waiting loop are
+shared in policies::timing; adapters supply their executor's timer. Core profile::keys
+owns construction and recognition of built-in negotiation dimension names.

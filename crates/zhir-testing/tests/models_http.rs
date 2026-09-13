@@ -774,6 +774,7 @@ impl zhir_models::provider_tools::ProviderToolAdapter for ImageFixture {
         }
         Ok(Some(vec![Output::ProviderToolCall {
             call: zhir_core::message::ProviderToolCall {
+                outcome: None,
                 id: item["id"].as_str().unwrap().into(),
                 provider: "consumer".into(),
                 name: "image".into(),

@@ -82,6 +82,31 @@ pub enum ProviderToolStatus {
     Incomplete,
     Failed,
 }
+/// Settlement metadata owned by the runtime. Content is stored once, in the
+/// provider call's output, so resource normalization cannot create two versions.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ProviderToolOutcome {
+    Success { structured: Value },
+    Failure { error: crate::error::Failure },
+    Cancelled { reason: String },
+}
+impl From<&RuntimeToolOutcome> for ProviderToolOutcome {
+    fn from(outcome: &RuntimeToolOutcome) -> Self {
+        match outcome {
+            RuntimeToolOutcome::Success { structured, .. } => Self::Success {
+                structured: structured.clone(),
+            },
+            RuntimeToolOutcome::Failure { error } => Self::Failure {
+                error: error.clone(),
+            },
+            RuntimeToolOutcome::Cancelled { reason } => Self::Cancelled {
+                reason: reason.clone(),
+            },
+        }
+    }
+}
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -90,10 +115,34 @@ pub struct ProviderToolCall {
     pub provider: String,
     pub name: String,
     pub status: ProviderToolStatus,
+    /// Kernel-owned operation settlement. Adapter data remains unchanged.
+    pub outcome: Option<ProviderToolOutcome>,
     #[serde(default)]
     pub output: Vec<Content>,
     #[serde(default)]
     pub data: Value,
+}
+impl ProviderToolCall {
+    pub fn matches_outcome(&self, outcome: &RuntimeToolOutcome) -> bool {
+        let metadata_matches = match (&self.outcome, outcome) {
+            (
+                Some(ProviderToolOutcome::Success {
+                    structured: previous,
+                }),
+                RuntimeToolOutcome::Success { structured, .. },
+            ) => previous == structured,
+            (
+                Some(ProviderToolOutcome::Failure { error: previous }),
+                RuntimeToolOutcome::Failure { error },
+            ) => previous == error,
+            (
+                Some(ProviderToolOutcome::Cancelled { reason: previous }),
+                RuntimeToolOutcome::Cancelled { reason },
+            ) => previous == reason,
+            _ => false,
+        };
+        metadata_matches && self.output == outcome.content()
+    }
 }
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -202,10 +251,28 @@ pub fn validate_output(output: &[Output]) -> Result<()> {
                 for c in &call.output {
                     c.validate()?;
                 }
+                if let Some(outcome) = &call.outcome
+                    && (call.status != ProviderToolStatus::from(outcome)
+                        || (!matches!(outcome, ProviderToolOutcome::Success { .. })
+                            && !call.output.is_empty()))
+                {
+                    return Err(Error::Invalid(
+                        "provider settlement disagrees with output".into(),
+                    ));
+                }
             }
         }
     }
     Ok(())
+}
+impl From<&ProviderToolOutcome> for ProviderToolStatus {
+    fn from(outcome: &ProviderToolOutcome) -> Self {
+        match outcome {
+            ProviderToolOutcome::Success { .. } => Self::Completed,
+            ProviderToolOutcome::Failure { .. } => Self::Failed,
+            ProviderToolOutcome::Cancelled { .. } => Self::Cancelled,
+        }
+    }
 }
 pub fn visible_content(output: &[Output]) -> Vec<Content> {
     output

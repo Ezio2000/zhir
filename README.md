@@ -79,6 +79,6 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features --locked
 ```
 
-验收、故障注入、trace 校验和基准只放在 `zhir-testing`、`crates/zhir/tests` 与 `conformance`。独立 feature、契约、真实数据库和包验证方法见[测试说明](docs/testing.md)。
+验收、故障注入、trace 校验和基准只放在不发布的 `zhir-testing` 与 `conformance`。独立 feature、契约、真实数据库和包验证方法见[测试说明](docs/testing.md)。
 
 [架构与职责](docs/architecture.md) · [研发接入](docs/developer-api.md) · [运行契约](contracts/v2/behavior/runtime.md) · [测试说明](docs/testing.md)

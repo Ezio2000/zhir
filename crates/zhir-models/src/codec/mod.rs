@@ -62,13 +62,18 @@ mod replay;
 mod responses;
 use replay::{assistant_replay, decode_items, provider_history};
 
+mod adapter;
+use adapter::{ProtocolAdapter, UsageFields};
 impl Protocol {
-    pub(crate) fn key(self) -> &'static str {
+    pub(crate) fn adapter(self) -> &'static dyn ProtocolAdapter {
         match self {
-            Self::Chat => "chat",
-            Self::Responses => "responses",
-            Self::Messages => "messages",
+            Self::Chat => &chat::Adapter,
+            Self::Responses => &responses::Adapter,
+            Self::Messages => &messages::Adapter,
         }
+    }
+    pub(crate) fn key(self) -> &'static str {
+        self.adapter().key()
     }
 }
 pub(crate) fn encode(
@@ -77,11 +82,7 @@ pub(crate) fn encode(
     request: &ModelRequest,
     extension: &mut Option<Box<dyn ProtocolExtension>>,
 ) -> Result<Value> {
-    match protocol {
-        Protocol::Chat => chat::encode(model, request, extension),
-        Protocol::Responses => responses::encode(model, request, extension),
-        Protocol::Messages => messages::encode(model, request, extension),
-    }
+    protocol.adapter().encode(model, request, extension)
 }
 fn parts(
     values: &[Content],
@@ -149,13 +150,7 @@ fn finish_request(
         body["seed"] = json!(value);
     }
     if let Some(value) = request.profile.generation.parallel_runtime_tools {
-        match protocol {
-            Protocol::Messages if body.get("tool_choice").is_some() => {
-                body["tool_choice"]["disable_parallel_tool_use"] = json!(!value)
-            }
-            Protocol::Messages => {}
-            _ => body["parallel_tool_calls"] = json!(value),
-        }
+        protocol.adapter().parallel_tools(&mut body, value);
     }
     for (key, value) in request
         .profile
@@ -196,11 +191,7 @@ fn tool_choice(
                 Error::Invalid("provider adapter does not encode explicit selection".into())
             });
     }
-    match protocol {
-        Protocol::Chat => chat::choice(&request.tool_choice),
-        Protocol::Responses => responses::choice(&request.tool_choice, &request.runtime_tools),
-        Protocol::Messages => messages::choice(&request.tool_choice),
-    }
+    protocol.adapter().choice(request)
 }
 fn merge_extra(encoded: &mut Value, extra: &Value, path: &str) -> Result<()> {
     if let (Some(encoded), Some(extra)) = (encoded.as_object_mut(), extra.as_object()) {
@@ -218,67 +209,10 @@ fn merge_extra(encoded: &mut Value, extra: &Value, path: &str) -> Result<()> {
         )))
     }
 }
-pub(crate) fn usage(protocol: Protocol, v: &Value) -> Usage {
-    let mut input = v
-        .get(if protocol == Protocol::Chat {
-            "prompt_tokens"
-        } else {
-            "input_tokens"
-        })
-        .and_then(Value::as_u64);
-    // Messages reports uncached input separately. Normalize to total processed
-    // input, matching Chat/Responses; cache fields remain a breakdown of input.
-    if protocol == Protocol::Messages {
-        input = input.map(|tokens| {
-            tokens
-                .saturating_add(
-                    v.get("cache_read_input_tokens")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0),
-                )
-                .saturating_add(
-                    v.get("cache_creation_input_tokens")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0),
-                )
-        });
-    }
-    let output = v
-        .get(if protocol == Protocol::Chat {
-            "completion_tokens"
-        } else {
-            "output_tokens"
-        })
-        .and_then(Value::as_u64);
-    Usage {
-        input_tokens: input,
-        output_tokens: output,
-        total_tokens: v
-            .get("total_tokens")
-            .and_then(Value::as_u64)
-            .or_else(|| input.zip(output).map(|(a, b)| a.saturating_add(b))),
-        reasoning_tokens: v
-            .pointer(if protocol == Protocol::Chat {
-                "/completion_tokens_details/reasoning_tokens"
-            } else {
-                "/output_tokens_details/reasoning_tokens"
-            })
-            .and_then(Value::as_u64),
-        cache_read_tokens: v
-            .get("cache_read_input_tokens")
-            .and_then(Value::as_u64)
-            .or_else(|| {
-                v.pointer(if protocol == Protocol::Chat {
-                    "/prompt_tokens_details/cached_tokens"
-                } else {
-                    "/input_tokens_details/cached_tokens"
-                })
-                .and_then(Value::as_u64)
-            }),
-        cache_write_tokens: v.get("cache_creation_input_tokens").and_then(Value::as_u64),
-    }
+pub(crate) fn usage(protocol: Protocol, value: &Value) -> Usage {
+    protocol.adapter().usage(value)
 }
-struct Decoded {
+pub(crate) struct Decoded {
     output: Vec<Output>,
     replay: Value,
     pending: bool,
@@ -291,12 +225,15 @@ pub(crate) fn decode(
     if let Some(error) = value.get("error").filter(|e| !e.is_null()) {
         return Err(protocol_error(error.to_string()));
     }
-    let decoded = match protocol {
-        Protocol::Chat => chat::decode(value)?,
-        Protocol::Responses => responses::decode(value, extension)?,
-        Protocol::Messages => messages::decode(value, extension)?,
-    };
-    let pending = decoded.pending || decoded.output.iter().any(|o| matches!(o, Output::ProviderToolCall { call } if matches!(call.status, ProviderToolStatus::Pending | ProviderToolStatus::Running)));
+    let decoded = protocol.adapter().decode(value, extension)?;
+    let pending = decoded.pending
+        || decoded.output.iter().any(|output| match output {
+            Output::ProviderToolCall { call } => matches!(
+                call.status,
+                ProviderToolStatus::Pending | ProviderToolStatus::Running
+            ),
+            _ => false,
+        });
     Ok(TurnOutput {
         output: decoded.output,
         usage: usage(protocol, &value["usage"]),
@@ -307,13 +244,11 @@ pub(crate) fn decode(
             .and_then(Value::as_str)
             .map(str::to_owned),
         response_id: value.get("id").and_then(Value::as_str).map(str::to_owned),
-        finish_reason: match protocol {
-            Protocol::Chat => value.pointer("/choices/0/finish_reason"),
-            Protocol::Responses => value.get("status"),
-            Protocol::Messages => value.get("stop_reason"),
-        }
-        .and_then(Value::as_str)
-        .map(str::to_owned),
+        finish_reason: protocol
+            .adapter()
+            .finish_reason(value)
+            .and_then(Value::as_str)
+            .map(str::to_owned),
     })
 }
 fn parse_content(provider: &str, value: &Value) -> Result<Output> {

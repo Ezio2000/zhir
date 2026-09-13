@@ -52,6 +52,21 @@ fn production_dependencies_follow_sdk_boundaries() {
         let Some(allowed) = expected.get(name) else {
             continue;
         };
+        if name == "zhir-testing" {
+            assert_eq!(package["publish"], serde_json::json!([]));
+        } else {
+            assert_ne!(package["publish"], serde_json::json!([]));
+            for dependency in package["dependencies"].as_array().unwrap() {
+                assert_ne!(
+                    dependency["name"], "zhir-testing",
+                    "test dependency in {name}"
+                );
+                assert_ne!(
+                    dependency["name"], "zhir-conformance",
+                    "conformance dependency in {name}"
+                );
+            }
+        }
         let actual: BTreeSet<_> = package["dependencies"]
             .as_array()
             .unwrap()
@@ -78,6 +93,7 @@ fn production_dependencies_follow_sdk_boundaries() {
 fn acceptance_code_is_confined_to_testing_modules() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates");
     for name in [
+        "zhir",
         "zhir-core",
         "zhir-kernel",
         "zhir-policies",

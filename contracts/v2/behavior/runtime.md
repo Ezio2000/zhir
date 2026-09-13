@@ -122,3 +122,13 @@ implementations belong to testing modules and are not exported by production cra
     rejected. Wire envelope version is exactly 2. SQL and Redis format markers are 2;
     unversioned or other-version layouts require a fresh database/namespace. There
     are no aliases, v1 readers, migration paths or compatibility execution modes.
+
+
+Provider operation completion preserves `ProviderToolCall.data` exactly. The kernel
+records `ProviderToolOutcome` metadata in `ProviderToolCall.outcome` and the visible
+result in `output`. The outcome carries success structured data, a failure, or a
+cancellation reason; it never duplicates resource content. A populated outcome must
+agree with status, and failure/cancellation settlements have no success content.
+Duplicate completion compares this typed outcome and canonical content, including after
+checkpoint encoding/decoding. Adapter replay continues to read its original top-level
+payload on subsequent turns.

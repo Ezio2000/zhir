@@ -153,3 +153,13 @@ pub enum RecoveryResolution {
         reason: String,
     },
 }
+
+impl From<&RuntimeToolOutcome> for OperationState {
+    fn from(outcome: &RuntimeToolOutcome) -> Self {
+        match outcome {
+            RuntimeToolOutcome::Success { .. } => Self::Succeeded,
+            RuntimeToolOutcome::Failure { .. } => Self::Failed,
+            RuntimeToolOutcome::Cancelled { .. } => Self::Cancelled,
+        }
+    }
+}

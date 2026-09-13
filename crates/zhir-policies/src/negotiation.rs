@@ -1,5 +1,6 @@
 //! Pure request negotiation. Concrete protocol mappings remain in adapters.
 use serde_json::{Value, json};
+use zhir_core::profile::keys;
 use zhir_core::{
     Result,
     error::Error,
@@ -49,21 +50,21 @@ pub fn negotiate(
         Ok(())
     }
     choose(
-        "serving",
+        keys::SERVING,
         &profile.serving,
         request,
         capabilities,
         &mut result,
     )?;
     choose(
-        "reasoning",
+        keys::REASONING,
         &profile.reasoning,
         request,
         capabilities,
         &mut result,
     )?;
     choose(
-        "language",
+        keys::LANGUAGE,
         &profile.language,
         request,
         capabilities,
@@ -71,7 +72,7 @@ pub fn negotiate(
     )?;
     let mut caps = capabilities.clone();
     caps.constraints.insert(
-        "interaction".into(),
+        keys::INTERACTION.into(),
         if caps.supports(Capability::Duplex) {
             vec![json!("turn_based"), json!("duplex")]
         } else {
@@ -79,7 +80,7 @@ pub fn negotiate(
         },
     );
     choose(
-        "interaction",
+        keys::INTERACTION,
         &profile.interaction,
         request,
         &caps,
@@ -106,7 +107,7 @@ pub fn negotiate(
                 if !input.usage.transforms.is_empty() {
                     return Err(Error::Invalid("resource transforms must be executed as explicit operations before model input".into()));
                 }
-                let key = format!("resource.{}.fidelity", input.resource.modality());
+                let key = keys::resource_fidelity(input.resource.modality());
                 let mut selected = NegotiatedProfile::default();
                 choose(
                     &key,
@@ -118,12 +119,12 @@ pub fn negotiate(
                 if let Some(value) = selected.selected.remove(&key) {
                     result
                         .selected
-                        .insert(format!("resource.{}.fidelity", input.resource.id), value);
+                        .insert(keys::resource_fidelity(&input.resource.id), value);
                 }
                 for (_, reason) in selected.unmet_preferences {
                     result
                         .unmet_preferences
-                        .insert(format!("resource.{}.fidelity", input.resource.id), reason);
+                        .insert(keys::resource_fidelity(&input.resource.id), reason);
                 }
             }
         }

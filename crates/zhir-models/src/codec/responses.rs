@@ -175,3 +175,64 @@ fn decode_item(item: &Value) -> Result<Vec<Output>> {
     };
     Ok(vec![output])
 }
+
+pub(super) struct Adapter;
+impl ProtocolAdapter for Adapter {
+    fn key(&self) -> &'static str {
+        "responses"
+    }
+    fn endpoint(&self) -> &'static str {
+        "responses"
+    }
+    fn capabilities(&self) -> zhir_core::model::CapabilitySet {
+        use zhir_core::model::Capability::*;
+        adapter::capabilities(
+            &[StructuredOutput, JsonMode, ProviderTools, FreeformTools],
+            false,
+            true,
+        )
+    }
+    fn encode(
+        &self,
+        model: &str,
+        request: &ModelRequest,
+        extension: &mut Option<Box<dyn ProtocolExtension>>,
+    ) -> Result<Value> {
+        encode(model, request, extension)
+    }
+    fn validate_output_item(&self, item: &Value) -> Result<()> {
+        text(item, "type").map(|_| ())
+    }
+    fn decode(
+        &self,
+        value: &Value,
+        extension: &mut Option<Box<dyn ProtocolExtension>>,
+    ) -> Result<Decoded> {
+        decode(value, extension)
+    }
+    fn choice(&self, request: &ModelRequest) -> Result<Value> {
+        choice(&request.tool_choice, &request.runtime_tools)
+    }
+    fn usage(&self, value: &Value) -> Usage {
+        UsageFields {
+            input: "input_tokens",
+            output: "output_tokens",
+            reasoning: "/output_tokens_details/reasoning_tokens",
+            cached: "/input_tokens_details/cached_tokens",
+            input_excludes_cache: false,
+        }
+        .read(value)
+    }
+    fn replay_items<'a>(&self, response: &'a Value) -> Option<&'a [Value]> {
+        response
+            .get("output")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+    }
+    fn finish_reason<'a>(&self, response: &'a Value) -> Option<&'a Value> {
+        response.get("status")
+    }
+    fn stream(&self) -> Box<dyn crate::streaming::StreamState> {
+        Box::new(crate::streaming::responses::State::default())
+    }
+}

@@ -150,3 +150,75 @@ fn decode_item(item: &Value) -> Result<Vec<Output>> {
     };
     Ok(vec![output])
 }
+
+pub(super) struct Adapter;
+impl ProtocolAdapter for Adapter {
+    fn key(&self) -> &'static str {
+        "messages"
+    }
+    fn endpoint(&self) -> &'static str {
+        "messages"
+    }
+    fn capabilities(&self) -> zhir_core::model::CapabilitySet {
+        use zhir_core::model::Capability::*;
+        adapter::capabilities(&[StructuredOutput, ProviderTools], false, true)
+    }
+    fn encode(
+        &self,
+        model: &str,
+        request: &ModelRequest,
+        extension: &mut Option<Box<dyn ProtocolExtension>>,
+    ) -> Result<Value> {
+        encode(model, request, extension)
+    }
+    fn decode(
+        &self,
+        value: &Value,
+        extension: &mut Option<Box<dyn ProtocolExtension>>,
+    ) -> Result<Decoded> {
+        decode(value, extension)
+    }
+    fn choice(&self, request: &ModelRequest) -> Result<Value> {
+        choice(&request.tool_choice)
+    }
+    fn usage(&self, value: &Value) -> Usage {
+        UsageFields {
+            input: "input_tokens",
+            output: "output_tokens",
+            reasoning: "/output_tokens_details/reasoning_tokens",
+            cached: "/input_tokens_details/cached_tokens",
+            input_excludes_cache: true,
+        }
+        .read(value)
+    }
+    fn replay_items<'a>(&self, response: &'a Value) -> Option<&'a [Value]> {
+        response
+            .get("content")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+    }
+    fn finish_reason<'a>(&self, response: &'a Value) -> Option<&'a Value> {
+        response.get("stop_reason")
+    }
+    fn stream(&self) -> Box<dyn crate::streaming::StreamState> {
+        Box::new(crate::streaming::messages::State::new())
+    }
+
+    fn supports_fidelity(&self) -> bool {
+        false
+    }
+    fn authorize(
+        &self,
+        builder: reqwest::RequestBuilder,
+        credential: &zhir_core::credential::Credential,
+    ) -> reqwest::RequestBuilder {
+        builder
+            .header("x-api-key", &credential.value)
+            .header("anthropic-version", "2023-06-01")
+    }
+    fn parallel_tools(&self, body: &mut Value, parallel: bool) {
+        if body.get("tool_choice").is_some() {
+            body["tool_choice"]["disable_parallel_tool_use"] = json!(!parallel);
+        }
+    }
+}

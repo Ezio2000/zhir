@@ -1,4 +1,5 @@
 [package]
+include = ["src/**", "examples/**", "Cargo.toml", "README.md", "LICENSE"]
 name = "zhir"
 version.workspace = true
 edition.workspace = true
@@ -46,23 +47,8 @@ mysql = ["dep:zhir-storage", "zhir-storage/mysql"]
 redis = ["dep:zhir-storage", "zhir-storage/redis"]
 
 [dev-dependencies]
-zhir-core.workspace = true
-zhir-policies.workspace = true
-zhir-tools = { workspace = true, features = ["typed"] }
-zhir-builtins = { workspace = true, features = ["filesystem", "shell", "interaction", "agent-runtime"] }
-zhir-models = { workspace = true, features = ["openai-chat", "openai-responses", "anthropic"] }
-zhir-storage = { workspace = true, features = ["resources-filesystem", "sqlite", "mysql", "redis"] }
-zhir-kernel.workspace = true
-jsonschema.workspace = true
-sqlx = { workspace = true, features = ["sqlite", "mysql"] }
-redis.workspace = true
-uuid.workspace = true
-tokio = { workspace = true, features = ["fs"] }
+tokio.workspace = true
 schemars.workspace = true
-zhir-testing = { workspace = true, features = ["http"] }
-tempfile.workspace = true
-reqwest = { workspace = true, features = ["multipart"] }
-base64 = "0.22"
 
 [[example]]
 name = "chat"
@@ -75,7 +61,3 @@ required-features = ["typed-tools", "models"]
 [[example]]
 name = "resume"
 required-features = ["models", "interaction", "memory"]
-
-[[test]]
-name = "live_protocols"
-required-features = ["tools", "openai-chat", "openai-responses", "anthropic"]

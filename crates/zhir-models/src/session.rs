@@ -71,7 +71,7 @@ pub(crate) fn open(
     open.limits.validate()?;
     open.context.cancellation.check()?;
     negotiate(&open.request)?;
-    let deadline = crate::retry_wait::deadline(&open.context.run)?;
+    let deadline = zhir_policies::timing::deadline(&open.context.run)?;
     if open.recovery.is_some() {
         return Err(Error::Protocol(
             "turn protocol has no persistent session resume".into(),
@@ -83,47 +83,20 @@ pub(crate) fn open(
         tx: event_tx,
         sequence: Arc::new(AtomicU64::new(0)),
     };
-    let validate = negotiate.clone();
+    let task = SessionTask {
+        events,
+        exchange,
+        negotiate: negotiate.clone(),
+        context: open.context,
+        deadline,
+    };
     tokio::spawn(async move {
         while let Some(command) = rx.recv().await {
-            let result: Result<bool> = async {
-                open.context.cancellation.check()?;
-                match command.body {
-                    SessionCommandBody::StartTurn { turn_id, request } => {
-                        if command.id.is_empty() || turn_id.is_empty() { return Err(Error::Invalid("empty command or turn identity".into())); }
-                        validate(&request)?;
-                        crate::retry_wait::check(&open.context.cancellation, deadline)?;
-                        events.send(SessionEventBody::Acknowledged { command_id: command.id, recovery: None }).await?;
-                        let mut context = open.context.clone();
-                        context.deltas = Some(Arc::new(Deltas { events: events.clone(), turn_id: turn_id.clone(), downstream: context.deltas.clone() }));
-                        let exchanging = exchange(*request, context);
-                        tokio::pin!(exchanging);
-                        let response = loop {
-                            tokio::select! {
-                                result = &mut exchanging => break result?,
-                                _ = events.tx.closed() => return Ok(false),
-                                _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => crate::retry_wait::check(&open.context.cancellation, deadline)?,
-                            }
-                        };
-                        crate::retry_wait::check(&open.context.cancellation, deadline)?;
-                        response.validate()?;
-                        let has_tools = response.output.iter().any(|item| matches!(item, zhir_core::message::Output::RuntimeToolCall { .. }));
-                        for (index, output) in response.output.into_iter().enumerate() { events.send(SessionEventBody::Output { turn_id: turn_id.clone(), item_id: format!("{turn_id}:{index}"), caller_id: "model".into(), output }).await?; }
-                        let effective = response.provider_data.get("effective").cloned().map(serde_json::from_value).transpose().map_err(|e| Error::Protocol(format!("effective profile: {e}")))?.unwrap_or_default();
-                        events.send(SessionEventBody::TurnFinished { turn_id, disposition: if response.provider_turn_pending { TurnDisposition::Continue } else if has_tools { TurnDisposition::AwaitingTools } else { TurnDisposition::Finished }, usage: response.usage, model_id: response.model_id, response_id: response.response_id, finish_reason: response.finish_reason, provider_data: response.provider_data, effective }).await?;
-                    }
-                    SessionCommandBody::UpdateProfile { .. } => return Err(Error::Invalid("turn protocol cannot update an active profile".into())),
-                    SessionCommandBody::Interrupt { .. } => return Err(Error::Invalid("turn protocol cannot interrupt natively".into())),
-                    SessionCommandBody::Close => { events.send(SessionEventBody::Acknowledged { command_id: command.id, recovery: None }).await?; events.send(SessionEventBody::Closed).await?; return Ok(false); }
-                    _ => events.send(SessionEventBody::Acknowledged { command_id: command.id, recovery: None }).await?,
-                }
-                Ok(true)
-            }.await;
-            match result {
+            match task.command(command).await {
                 Ok(true) => (),
                 Ok(false) => break,
                 Err(error) => {
-                    let _ = events.tx.send(Err(error)).await;
+                    let _ = task.events.tx.send(Err(error)).await;
                     break;
                 }
             }
@@ -153,4 +126,123 @@ pub(crate) fn validate_capabilities(capabilities: &CapabilitySet) -> Result<()> 
         ));
     }
     Ok(())
+}
+
+struct SessionTask {
+    events: Events,
+    exchange: Arc<Exchange>,
+    negotiate: Arc<Negotiate>,
+    context: ModelContext,
+    deadline: Option<std::time::Instant>,
+}
+impl SessionTask {
+    async fn command(&self, command: SessionCommand) -> Result<bool> {
+        self.context.cancellation.check()?;
+        match command.body {
+            SessionCommandBody::StartTurn { turn_id, request } => {
+                self.turn(command.id, turn_id, *request).await
+            }
+            SessionCommandBody::UpdateProfile { .. } => Err(Error::Invalid(
+                "turn protocol cannot update an active profile".into(),
+            )),
+            SessionCommandBody::Interrupt { .. } => Err(Error::Invalid(
+                "turn protocol cannot interrupt natively".into(),
+            )),
+            SessionCommandBody::Close => {
+                self.acknowledge(command.id).await?;
+                self.events.send(SessionEventBody::Closed).await?;
+                Ok(false)
+            }
+            _ => {
+                self.acknowledge(command.id).await?;
+                Ok(true)
+            }
+        }
+    }
+    async fn acknowledge(&self, command_id: String) -> Result<()> {
+        self.events
+            .send(SessionEventBody::Acknowledged {
+                command_id,
+                recovery: None,
+            })
+            .await
+    }
+    async fn turn(
+        &self,
+        command_id: String,
+        turn_id: String,
+        request: ModelRequest,
+    ) -> Result<bool> {
+        if command_id.is_empty() || turn_id.is_empty() {
+            return Err(Error::Invalid("empty command or turn identity".into()));
+        }
+        (self.negotiate)(&request)?;
+        zhir_policies::timing::check(&self.context.cancellation, self.deadline)?;
+        self.acknowledge(command_id).await?;
+        let mut context = self.context.clone();
+        context.deltas = Some(Arc::new(Deltas {
+            events: self.events.clone(),
+            turn_id: turn_id.clone(),
+            downstream: context.deltas.clone(),
+        }));
+        let exchanging = (self.exchange)(request, context);
+        tokio::pin!(exchanging);
+        let response = loop {
+            tokio::select! {
+                result = &mut exchanging => break result?,
+                _ = self.events.tx.closed() => return Ok(false),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => zhir_policies::timing::check(&self.context.cancellation, self.deadline)?,
+            }
+        };
+        zhir_policies::timing::check(&self.context.cancellation, self.deadline)?;
+        response.validate()?;
+        self.finish(turn_id, response).await?;
+        Ok(true)
+    }
+    async fn finish(&self, turn_id: String, response: TurnOutput) -> Result<()> {
+        let disposition = disposition(&response);
+        for (index, output) in response.output.into_iter().enumerate() {
+            self.events
+                .send(SessionEventBody::Output {
+                    turn_id: turn_id.clone(),
+                    item_id: format!("{turn_id}:{index}"),
+                    caller_id: "model".into(),
+                    output,
+                })
+                .await?;
+        }
+        let effective = response
+            .provider_data
+            .get("effective")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|e| Error::Protocol(format!("effective profile: {e}")))?
+            .unwrap_or_default();
+        self.events
+            .send(SessionEventBody::TurnFinished {
+                turn_id,
+                disposition,
+                usage: response.usage,
+                model_id: response.model_id,
+                response_id: response.response_id,
+                finish_reason: response.finish_reason,
+                provider_data: response.provider_data,
+                effective,
+            })
+            .await
+    }
+}
+fn disposition(response: &TurnOutput) -> TurnDisposition {
+    if response.provider_turn_pending {
+        return TurnDisposition::Continue;
+    }
+    if response
+        .output
+        .iter()
+        .any(|item| matches!(item, zhir_core::message::Output::RuntimeToolCall { .. }))
+    {
+        return TurnDisposition::AwaitingTools;
+    }
+    TurnDisposition::Finished
 }

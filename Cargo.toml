@@ -9,6 +9,7 @@ rust-version = "1.95"
 license = "MIT"
 
 [workspace.dependencies]
+zhir = { path = "crates/zhir", version = "=0.2.0", default-features = false }
 zhir-policies = { path = "crates/zhir-policies", version = "=0.2.0" }
 zhir-core = { path = "crates/zhir-core", version = "=0.2.0" }
 zhir-kernel = { path = "crates/zhir-kernel", version = "=0.2.0" }
@@ -16,7 +17,7 @@ zhir-tools = { path = "crates/zhir-tools", version = "=0.2.0" }
 zhir-builtins = { path = "crates/zhir-builtins", version = "=0.2.0", default-features = false }
 zhir-models = { path = "crates/zhir-models", version = "=0.2.0", default-features = false }
 zhir-storage = { path = "crates/zhir-storage", version = "=0.2.0", default-features = false }
-zhir-testing = { path = "crates/zhir-testing", version = "=0.2.0" }
+zhir-testing = { path = "crates/zhir-testing" }
 schemars = "1"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"

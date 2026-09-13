@@ -4,14 +4,14 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use zhir_core::{Result, error::Error, model::ModelDelta};
 
-pub(super) struct State {
+pub(crate) struct State {
     value: Value,
     blocks: BTreeMap<usize, Value>,
     partial: BTreeMap<usize, String>,
     done: bool,
 }
 impl State {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             value: json!({"content":[],"usage":{}}),
             blocks: BTreeMap::new(),
@@ -19,7 +19,7 @@ impl State {
             done: false,
         }
     }
-    pub(super) fn push(&mut self, value: &Value) -> Result<Vec<ModelDelta>> {
+    pub(crate) fn push(&mut self, value: &Value) -> Result<Vec<ModelDelta>> {
         let index = value.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
         match value.get("type").and_then(Value::as_str).unwrap_or("") {
             "message_start" => {
@@ -111,11 +111,20 @@ impl State {
             usage: codec::usage(Protocol::Messages, &self.value["usage"]),
         }]
     }
-    pub(super) fn finish(mut self) -> Result<Value> {
+    pub(crate) fn finish(mut self) -> Result<Value> {
         if !self.done || !self.partial.is_empty() {
             return Err(incomplete());
         }
         self.value["content"] = json!(self.blocks.into_values().collect::<Vec<_>>());
         Ok(self.value)
+    }
+}
+
+impl super::StreamState for State {
+    fn push(&mut self, value: &Value) -> Result<Vec<ModelDelta>> {
+        State::push(self, value)
+    }
+    fn finish(self: Box<Self>) -> Result<Value> {
+        State::finish(*self)
     }
 }

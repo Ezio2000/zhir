@@ -15,5 +15,3 @@ pub use registry::RuntimeToolRegistry;
 pub mod typed;
 #[cfg(feature = "typed")]
 pub use typed::TypedTool;
-
-mod retry_wait;

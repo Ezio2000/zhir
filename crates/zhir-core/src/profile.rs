@@ -127,3 +127,21 @@ pub fn validate_extensions(extensions: &Extensions) -> Result<()> {
     }
     Ok(())
 }
+
+/// Shared names for built-in negotiation dimensions. Custom dimensions stay caller-owned.
+pub mod keys {
+    pub const SERVING: &str = "serving";
+    pub const REASONING: &str = "reasoning";
+    pub const LANGUAGE: &str = "language";
+    pub const INTERACTION: &str = "interaction";
+
+    /// A modality names a capability; a resource identity names a selected value.
+    pub fn resource_fidelity(subject: &str) -> String {
+        format!("resource.{subject}.fidelity")
+    }
+    pub fn is_resource_fidelity(key: &str) -> bool {
+        key.strip_prefix("resource.")
+            .and_then(|subject| subject.strip_suffix(".fidelity"))
+            .is_some_and(|subject| !subject.is_empty())
+    }
+}

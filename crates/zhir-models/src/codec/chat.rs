@@ -168,3 +168,56 @@ pub(super) fn decode(value: &Value) -> Result<Decoded> {
         pending: false,
     })
 }
+
+pub(super) struct Adapter;
+impl ProtocolAdapter for Adapter {
+    fn key(&self) -> &'static str {
+        "chat"
+    }
+    fn endpoint(&self) -> &'static str {
+        "chat/completions"
+    }
+    fn capabilities(&self) -> zhir_core::model::CapabilitySet {
+        use zhir_core::model::Capability::*;
+        adapter::capabilities(&[StructuredOutput, JsonMode, Seed], true, false)
+    }
+    fn encode(
+        &self,
+        model: &str,
+        request: &ModelRequest,
+        extension: &mut Option<Box<dyn ProtocolExtension>>,
+    ) -> Result<Value> {
+        encode(model, request, extension)
+    }
+    fn decode(
+        &self,
+        value: &Value,
+        _extension: &mut Option<Box<dyn ProtocolExtension>>,
+    ) -> Result<Decoded> {
+        decode(value)
+    }
+    fn choice(&self, request: &ModelRequest) -> Result<Value> {
+        choice(&request.tool_choice)
+    }
+    fn usage(&self, value: &Value) -> Usage {
+        UsageFields {
+            input: "prompt_tokens",
+            output: "completion_tokens",
+            reasoning: "/completion_tokens_details/reasoning_tokens",
+            cached: "/prompt_tokens_details/cached_tokens",
+            input_excludes_cache: false,
+        }
+        .read(value)
+    }
+    fn replay_items<'a>(&self, response: &'a Value) -> Option<&'a [Value]> {
+        response
+            .pointer("/choices/0/message")
+            .map(std::slice::from_ref)
+    }
+    fn finish_reason<'a>(&self, response: &'a Value) -> Option<&'a Value> {
+        response.pointer("/choices/0/finish_reason")
+    }
+    fn stream(&self) -> Box<dyn crate::streaming::StreamState> {
+        Box::new(crate::streaming::chat::State::new())
+    }
+}

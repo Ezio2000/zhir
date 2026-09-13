@@ -44,7 +44,7 @@ async fn dispatch(
         .unwrap_or(0) as usize;
     let original = json!({"event":event.event,"id":event.id,"retry":event.retry,"data":payload});
     let extra = if let Some(extension) = extension {
-        extension.decode_event(state.protocol(), &mut event)?
+        extension.decode_event(state.protocol, &mut event)?
     } else {
         Vec::new()
     };
@@ -65,35 +65,28 @@ async fn dispatch(
     }
     Ok(())
 }
-mod chat;
-mod messages;
-mod responses;
-
-enum Accumulator {
-    Chat(chat::State),
-    Responses(responses::State),
-    Messages(messages::State),
+pub(crate) mod chat;
+pub(crate) mod messages;
+pub(crate) mod responses;
+pub(crate) trait StreamState: Send {
+    fn push(&mut self, value: &Value) -> Result<Vec<ModelDelta>>;
+    fn finish(self: Box<Self>) -> Result<Value>;
+    fn done(&mut self) {}
+}
+struct Accumulator {
+    protocol: Protocol,
+    state: Box<dyn StreamState>,
 }
 impl Accumulator {
     fn new(protocol: Protocol) -> Self {
-        match protocol {
-            Protocol::Chat => Self::Chat(chat::State::new()),
-            Protocol::Responses => Self::Responses(responses::State::default()),
-            Protocol::Messages => Self::Messages(messages::State::new()),
-        }
-    }
-    fn protocol(&self) -> Protocol {
-        match self {
-            Self::Chat(_) => Protocol::Chat,
-            Self::Responses(_) => Protocol::Responses,
-            Self::Messages(_) => Protocol::Messages,
+        Self {
+            protocol,
+            state: protocol.adapter().stream(),
         }
     }
     fn push(&mut self, data: &str) -> Result<Vec<ModelDelta>> {
         if data == "[DONE]" {
-            if let Self::Chat(state) = self {
-                state.done = true;
-            }
+            self.state.done();
             return Ok(Vec::new());
         }
         let value: Value = serde_json::from_str(data)
@@ -103,20 +96,13 @@ impl Accumulator {
         {
             return Err(Error::Protocol(value.to_string()));
         }
-        match self {
-            Self::Chat(s) => s.push(&value),
-            Self::Responses(s) => s.push(&value),
-            Self::Messages(s) => s.push(&value),
-        }
+        self.state.push(&value)
     }
     fn finish(self) -> Result<Value> {
-        match self {
-            Self::Chat(s) => s.finish(),
-            Self::Responses(s) => s.finish(),
-            Self::Messages(s) => s.finish(),
-        }
+        self.state.finish()
     }
 }
+
 fn incomplete() -> Error {
     Error::Protocol("model stream ended before complete response".into())
 }

@@ -2969,26 +2969,19 @@ dependencies = [
 name = "zhir"
 version = "0.2.0"
 dependencies = [
- "base64",
  "futures",
  "jsonschema",
- "redis",
- "reqwest",
  "schemars",
  "serde",
  "serde_json",
- "sqlx",
- "tempfile",
  "thiserror",
  "tokio",
- "uuid",
  "zhir-builtins",
  "zhir-core",
  "zhir-kernel",
  "zhir-models",
  "zhir-policies",
  "zhir-storage",
- "zhir-testing",
  "zhir-tools",
 ]
 
@@ -3097,12 +3090,26 @@ dependencies = [
 name = "zhir-testing"
 version = "0.2.0"
 dependencies = [
+ "base64",
+ "futures",
+ "jsonschema",
+ "redis",
+ "reqwest",
+ "schemars",
+ "serde",
  "serde_json",
+ "sqlx",
+ "tempfile",
  "tokio",
+ "uuid",
+ "zhir",
+ "zhir-builtins",
  "zhir-core",
  "zhir-kernel",
  "zhir-models",
  "zhir-policies",
+ "zhir-storage",
+ "zhir-tools",
 ]
 
 [[package]]

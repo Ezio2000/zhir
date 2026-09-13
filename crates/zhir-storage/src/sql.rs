@@ -23,16 +23,46 @@ impl SqlStore {
             .await
             .map_err(storage_error)?;
         let sqlite = url.starts_with("sqlite:");
-        let existing: i64 = sqlx::query_scalar(if sqlite { "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='zhir_format'" } else { "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='zhir_format'" }).fetch_one(&pool).await.map_err(storage_error)?;
+        let format_query = if sqlite {
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='zhir_format'"
+        } else {
+            "SELECT COUNT(*) FROM information_schema.tables \
+             WHERE table_schema=DATABASE() AND table_name='zhir_format'"
+        };
+        let existing: i64 = sqlx::query_scalar(format_query)
+            .fetch_one(&pool)
+            .await
+            .map_err(storage_error)?;
         if existing == 0 {
-            let old: i64 = sqlx::query_scalar(if sqlite { "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('zhir_run_heads','zhir_commits','zhir_history')" } else { "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name IN ('zhir_run_heads','zhir_commits','zhir_history')" }).fetch_one(&pool).await.map_err(storage_error)?;
+            let unversioned_query = if sqlite {
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' \
+                 AND name IN ('zhir_run_heads','zhir_commits','zhir_history')"
+            } else {
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() \
+                 AND table_name IN ('zhir_run_heads','zhir_commits','zhir_history')"
+            };
+            let old: i64 = sqlx::query_scalar(unversioned_query)
+                .fetch_one(&pool)
+                .await
+                .map_err(storage_error)?;
             if old != 0 {
                 return Err(Error::Storage(
                     "unversioned zhir database; use a fresh database".into(),
                 ));
             }
-            sqlx::query("CREATE TABLE IF NOT EXISTS zhir_format (id BIGINT PRIMARY KEY, version BIGINT NOT NULL)").execute(&pool).await.map_err(storage_error)?;
-            let inserted = sqlx::query("INSERT INTO zhir_format(id,version) SELECT 1,2 WHERE NOT EXISTS (SELECT 1 FROM zhir_format WHERE id=1)").execute(&pool).await;
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS zhir_format \
+                 (id BIGINT PRIMARY KEY, version BIGINT NOT NULL)",
+            )
+            .execute(&pool)
+            .await
+            .map_err(storage_error)?;
+            let inserted = sqlx::query(
+                "INSERT INTO zhir_format(id,version) SELECT 1,2 \
+                 WHERE NOT EXISTS (SELECT 1 FROM zhir_format WHERE id=1)",
+            )
+            .execute(&pool)
+            .await;
             if inserted.is_err() {
                 let version: i64 = sqlx::query_scalar("SELECT version FROM zhir_format WHERE id=1")
                     .fetch_one(&pool)
@@ -53,9 +83,15 @@ impl SqlStore {
             ));
         }
         for ddl in [
-            "CREATE TABLE IF NOT EXISTS zhir_run_heads (run_id VARCHAR(255) PRIMARY KEY, revision BIGINT NOT NULL, checkpoint_id VARCHAR(255) NOT NULL, generation BIGINT NOT NULL, core LONGTEXT NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS zhir_commits (run_id VARCHAR(255) NOT NULL, checkpoint_id VARCHAR(255) NOT NULL, revision BIGINT NOT NULL, digest VARCHAR(64) NOT NULL, PRIMARY KEY(run_id,checkpoint_id), UNIQUE(run_id,revision))",
-            "CREATE TABLE IF NOT EXISTS zhir_history (run_id VARCHAR(255) NOT NULL, generation BIGINT NOT NULL, revision BIGINT NOT NULL, payload LONGTEXT NOT NULL, PRIMARY KEY(run_id,generation,revision))",
+            "CREATE TABLE IF NOT EXISTS zhir_run_heads (run_id VARCHAR(255) PRIMARY KEY, revision \
+             BIGINT NOT NULL, checkpoint_id VARCHAR(255) NOT NULL, generation BIGINT NOT NULL, \
+             core LONGTEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS zhir_commits (run_id VARCHAR(255) NOT NULL, checkpoint_id \
+             VARCHAR(255) NOT NULL, revision BIGINT NOT NULL, digest VARCHAR(64) NOT NULL, PRIMARY \
+             KEY(run_id,checkpoint_id), UNIQUE(run_id,revision))",
+            "CREATE TABLE IF NOT EXISTS zhir_history (run_id VARCHAR(255) NOT NULL, generation \
+             BIGINT NOT NULL, revision BIGINT NOT NULL, payload LONGTEXT NOT NULL, PRIMARY \
+             KEY(run_id,generation,revision))",
         ] {
             sqlx::query(ddl)
                 .execute(&pool)
@@ -122,7 +158,19 @@ impl SqlStore {
         };
         let core = serde_json::to_string(&commit.core()).map_err(storage_error)?;
         if let Some(previous) = previous_core {
-            let result=sqlx::query("UPDATE zhir_run_heads SET revision=?,checkpoint_id=?,generation=?,core=? WHERE run_id=? AND revision=?").bind(revision).bind(id).bind(generation).bind(&core).bind(run).bind(i64::try_from(previous.revision).map_err(storage_error)?).execute(&mut *tx).await.map_err(storage_error)?;
+            let result = sqlx::query(
+                "UPDATE zhir_run_heads SET revision=?,checkpoint_id=?,generation=?,core=? \
+                 WHERE run_id=? AND revision=?",
+            )
+            .bind(revision)
+            .bind(id)
+            .bind(generation)
+            .bind(&core)
+            .bind(run)
+            .bind(i64::try_from(previous.revision).map_err(storage_error)?)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage_error)?;
             if result.rows_affected() != 1 {
                 return Err(Error::Conflict {
                     expected: commit.expected_revision(),
@@ -130,7 +178,18 @@ impl SqlStore {
                 });
             }
         } else {
-            sqlx::query("INSERT INTO zhir_run_heads(run_id,revision,checkpoint_id,generation,core) VALUES(?,?,?,?,?)").bind(run).bind(revision).bind(id).bind(generation).bind(&core).execute(&mut *tx).await.map_err(storage_error)?;
+            sqlx::query(
+                "INSERT INTO zhir_run_heads(run_id,revision,checkpoint_id,generation,core) \
+                 VALUES(?,?,?,?,?)",
+            )
+            .bind(run)
+            .bind(revision)
+            .bind(id)
+            .bind(generation)
+            .bind(&core)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage_error)?;
         }
         sqlx::query(
             "INSERT INTO zhir_commits(run_id,checkpoint_id,revision,digest) VALUES(?,?,?,?)",
@@ -177,7 +236,16 @@ impl SqlStore {
         let core: CheckpointCore =
             serde_json::from_str(&read_text(&row, "core")?).map_err(storage_error)?;
         let generation: i64 = row.try_get("generation").map_err(storage_error)?;
-        let rows=sqlx::query("SELECT payload FROM zhir_history WHERE run_id=? AND generation=? AND revision<=? ORDER BY revision").bind(run).bind(generation).bind(i64::try_from(core.revision).map_err(storage_error)?).fetch_all(&mut *tx).await.map_err(storage_error)?;
+        let rows = sqlx::query(
+            "SELECT payload FROM zhir_history \
+             WHERE run_id=? AND generation=? AND revision<=? ORDER BY revision",
+        )
+        .bind(run)
+        .bind(generation)
+        .bind(i64::try_from(core.revision).map_err(storage_error)?)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(storage_error)?;
         let mut history = History::default();
         for row in rows {
             let messages =

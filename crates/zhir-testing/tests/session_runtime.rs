@@ -155,6 +155,7 @@ async fn native_session_runs_tools_before_turn_end_and_tracks_provider_jobs() {
                 caller_id: "provider".into(),
                 output: Output::ProviderToolCall {
                     call: zhir::message::ProviderToolCall {
+                        outcome: None,
                         id: "video-job".into(),
                         name: "video".into(),
                         provider: "native".into(),

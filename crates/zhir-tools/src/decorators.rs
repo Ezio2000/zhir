@@ -38,24 +38,25 @@ impl RuntimeTool for RetryingTool {
         context: RuntimeToolContext,
     ) -> BoxFuture<'_, Result<ToolExecution>> {
         Box::pin(async move {
-            let deadline = crate::retry_wait::deadline(&context.run)?;
+            let deadline = zhir_policies::timing::deadline(&context.run)?;
             for attempt in 0..self.policy.max_attempts() {
-                crate::retry_wait::check(&context.cancellation, deadline)?;
+                zhir_policies::timing::check(&context.cancellation, deadline)?;
                 match self.inner.start(call.clone(), context.clone()).await {
                     Err(Error::RuntimeTool(error))
                         if error.retryable && attempt + 1 < self.policy.max_attempts() =>
                     {
-                        crate::retry_wait::wait(
+                        zhir_policies::timing::wait(
                             self.policy
                                 .delay_after(attempt + 1)
                                 .expect("remaining attempt"),
                             &context.cancellation,
                             deadline,
+                            |at| tokio::time::sleep_until(at.into()),
                         )
                         .await?
                     }
                     result => {
-                        crate::retry_wait::check(&context.cancellation, deadline)?;
+                        zhir_policies::timing::check(&context.cancellation, deadline)?;
                         return result;
                     }
                 }

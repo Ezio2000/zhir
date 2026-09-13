@@ -12,19 +12,7 @@ pub(super) fn assistant_replay(
         return Ok(None);
     }
     let response = &data["response"];
-    let raw = match protocol {
-        Protocol::Chat => response
-            .pointer("/choices/0/message")
-            .map(std::slice::from_ref),
-        Protocol::Responses => response
-            .get("output")
-            .and_then(Value::as_array)
-            .map(Vec::as_slice),
-        Protocol::Messages => response
-            .get("content")
-            .and_then(Value::as_array)
-            .map(Vec::as_slice),
-    };
+    let raw = protocol.adapter().replay_items(response);
     raw.map(|items| replay_items(protocol, items, output, extension))
         .transpose()
 }
@@ -107,9 +95,7 @@ pub(super) fn decode_items(
     let mut replay = value.clone();
     let mut output = Vec::new();
     for (index, item) in items.iter().enumerate() {
-        if protocol == Protocol::Responses {
-            text(item, "type")?;
-        }
+        protocol.adapter().validate_output_item(item)?;
         let mapped = extension
             .as_mut()
             .map(|e| e.decode_output_item(protocol, item, value))

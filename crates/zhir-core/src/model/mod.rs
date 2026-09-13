@@ -282,7 +282,20 @@ impl TurnOutput {
     }
     pub fn validate(&self) -> Result<()> {
         validate_output(&self.output)?;
-        if self.output.iter().any(|o| matches!(o,Output::ProviderToolCall {call} if matches!(call.status,crate::message::ProviderToolStatus::Pending|crate::message::ProviderToolStatus::Running))) && !self.provider_turn_pending {return Err(Error::Protocol("unfinished provider call requires continuation".into()));}
+        let provider_pending = self.output.iter().any(|output| match output {
+            Output::ProviderToolCall { call } => matches!(
+                call.status,
+                crate::message::ProviderToolStatus::Pending
+                    | crate::message::ProviderToolStatus::Running
+            ),
+            _ => false,
+        });
+        if provider_pending && !self.provider_turn_pending {
+            return Err(Error::Protocol(
+                "unfinished provider call requires continuation".into(),
+            ));
+        }
+
         Ok(())
     }
 }
@@ -355,46 +368,5 @@ fn finite_option<'de, D: serde::Deserializer<'de>>(
         .transpose()
 }
 
-/// Project causal history into logical conversation turns. Each turn's finalized
-/// output and completion metadata share one assistant message, even when tool
-/// results or external input arrived between them. The original history retains
-/// arrival order and identities; this projection is for a new model turn.
-pub fn conversation(entries: impl IntoIterator<Item = crate::run::HistoryEntry>) -> Vec<Message> {
-    let mut messages: Vec<Message> = Vec::new();
-    let mut turns = std::collections::BTreeMap::new();
-    for entry in entries {
-        if let (
-            Some(origin),
-            Message::Assistant {
-                output: added,
-                provider_data: data,
-            },
-        ) = (&entry.origin, &entry.message)
-        {
-            let key = (origin.session_id.clone(), origin.turn_id.clone());
-            if let Some(&index) = turns.get(&key) {
-                if let Message::Assistant {
-                    output,
-                    provider_data,
-                } = &mut messages[index]
-                {
-                    for item in added {
-                        if let Output::ProviderToolCall { call } = item
-                            && let Some(previous) = output.iter_mut().find(|item| matches!(item, Output::ProviderToolCall { call: old } if old.id == call.id && old.provider == call.provider)) {
-                                *previous = item.clone();
-                                continue;
-                            }
-                        output.push(item.clone());
-                    }
-                    if !data.is_null() {
-                        *provider_data = data.clone();
-                    }
-                }
-                continue;
-            }
-            turns.insert(key, messages.len());
-        }
-        messages.push(entry.message);
-    }
-    messages
-}
+mod conversation;
+pub use conversation::conversation;

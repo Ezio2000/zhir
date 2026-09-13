@@ -4,20 +4,20 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use zhir_core::{Result, error::Error, model::ModelDelta};
 
-pub(super) struct State {
+pub(crate) struct State {
     value: Value,
     calls: BTreeMap<usize, Value>,
-    pub(super) done: bool,
+    pub(crate) done: bool,
 }
 impl State {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             value: json!({"choices":[{"message":{"role":"assistant","content":""},"finish_reason":null}]}),
             calls: BTreeMap::new(),
             done: false,
         }
     }
-    pub(super) fn push(&mut self, value: &Value) -> Result<Vec<ModelDelta>> {
+    pub(crate) fn push(&mut self, value: &Value) -> Result<Vec<ModelDelta>> {
         copy_fields(&mut self.value, value, &["choices"]);
         let mut deltas = Vec::new();
         if let Some(usage) = value.get("usage").filter(|v| !v.is_null()) {
@@ -95,7 +95,7 @@ impl State {
             input: input.into(),
         })
     }
-    pub(super) fn finish(mut self) -> Result<Value> {
+    pub(crate) fn finish(mut self) -> Result<Value> {
         if !self.done {
             return Err(incomplete());
         }
@@ -124,5 +124,17 @@ fn merge_logprobs(target: &mut Value, source: &Value) {
             Value::Null => {}
             _ => target[key] = value.clone(),
         }
+    }
+}
+
+impl super::StreamState for State {
+    fn push(&mut self, value: &Value) -> Result<Vec<ModelDelta>> {
+        State::push(self, value)
+    }
+    fn finish(self: Box<Self>) -> Result<Value> {
+        State::finish(*self)
+    }
+    fn done(&mut self) {
+        self.done = true;
     }
 }

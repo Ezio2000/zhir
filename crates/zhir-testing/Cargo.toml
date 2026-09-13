@@ -1,5 +1,6 @@
 [package]
 name = "zhir-testing"
+publish = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -20,6 +21,24 @@ serde_json.workspace = true
 [features]
 default = []
 http = []
+typed-output = ["zhir/typed-output"]
+policies = ["zhir/policies"]
+tools = ["zhir/tools"]
+typed-tools = ["zhir/typed-tools"]
+models = ["zhir/models"]
+filesystem = ["zhir/filesystem"]
+shell = ["zhir/shell"]
+interaction = ["zhir/interaction"]
+agent = ["zhir/agent"]
+agent-runtime = ["zhir/agent-runtime"]
+openai-chat = ["http", "zhir/openai-chat"]
+openai-responses = ["http", "zhir/openai-responses"]
+anthropic = ["http", "zhir/anthropic"]
+memory = ["zhir/memory"]
+resources-filesystem = ["zhir/resources-filesystem"]
+sqlite = ["zhir/sqlite"]
+mysql = ["zhir/mysql"]
+redis = ["zhir/redis"]
 
 [[bench]]
 name = "trace"
@@ -28,3 +47,28 @@ harness = false
 [[bench]]
 name = "history"
 harness = false
+
+[dev-dependencies]
+serde.workspace = true
+futures.workspace = true
+zhir.workspace = true
+zhir-core.workspace = true
+zhir-policies.workspace = true
+zhir-tools = { workspace = true, features = ["typed"] }
+zhir-builtins = { workspace = true, features = ["filesystem", "shell", "interaction", "agent-runtime"] }
+zhir-models = { workspace = true, features = ["openai-chat", "openai-responses", "anthropic"] }
+zhir-storage = { workspace = true, features = ["resources-filesystem", "sqlite", "mysql", "redis"] }
+zhir-kernel.workspace = true
+jsonschema.workspace = true
+sqlx = { workspace = true, features = ["sqlite", "mysql"] }
+redis.workspace = true
+uuid.workspace = true
+tokio = { workspace = true, features = ["fs", "test-util"] }
+schemars.workspace = true
+tempfile.workspace = true
+reqwest = { workspace = true, features = ["multipart"] }
+base64 = "0.22"
+
+[[test]]
+name = "live_protocols"
+required-features = ["tools", "openai-chat", "openai-responses", "anthropic"]
