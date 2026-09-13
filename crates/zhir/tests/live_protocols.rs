@@ -15,14 +15,14 @@ use zhir::{
     error::Error,
     message::{Content, Message, visible_content},
     model::{
-        Capabilities, DeltaSink, Model, ModelContext, ModelDelta, ModelOptions, ModelRequest,
-        ModelResponse, ResponseFormat, ToolChoice,
+        DeltaSink, ModelContext, ModelDelta, ModelRequest, ResponseFormat, ToolChoice, TurnOutput,
     },
     models::{HttpModel, ModelConfig, Protocol, anthropic, openai},
     run::{EventData, Limits, State},
     runtime_tools::{FunctionTool, RuntimeToolRegistry},
     tool::{Execution, InputSpec, RuntimeTool, RuntimeToolCall, RuntimeToolInput, RuntimeToolSpec},
 };
+use zhir_testing::ModelTestExt;
 fn require(valid: bool, message: &str) -> Result<()> {
     if valid {
         Ok(())
@@ -44,7 +44,13 @@ fn base(protocol: Protocol) -> &'static str {
     }
 }
 fn model(protocol: Protocol, key: &str, model_id: &str) -> Result<HttpModel> {
-    let mut config = ModelConfig::new(base(protocol), key, model_id);
+    let mut config = ModelConfig::new(
+        base(protocol),
+        std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+            "Bearer", key,
+        )),
+        model_id,
+    );
     config.timeout = Duration::from_secs(60);
     match protocol {
         Protocol::Chat => openai::chat::model(config),
@@ -52,37 +58,62 @@ fn model(protocol: Protocol, key: &str, model_id: &str) -> Result<HttpModel> {
         Protocol::Messages => anthropic::messages::model(config),
     }
 }
-fn options(protocol: Protocol, thinking: bool) -> ModelOptions {
+fn options(protocol: Protocol, thinking: bool) -> RequestProfile {
     let limit = if thinking { 1024 } else { 128 };
-    let mut options = ModelOptions {
+    let generation = GenerationProfile {
         max_output_tokens: (protocol != Protocol::Chat).then_some(limit),
         ..Default::default()
     };
+    let mut options = RequestProfile {
+        generation,
+        ..Default::default()
+    };
+    let namespace = match protocol {
+        Protocol::Chat => "chat",
+        Protocol::Responses => "responses",
+        Protocol::Messages => "messages",
+    };
     if protocol == Protocol::Chat {
-        options.extra.insert("max_tokens".into(), json!(limit));
+        options
+            .extensions
+            .entry(namespace.into())
+            .or_default()
+            .insert("max_tokens".into(), json!(limit));
     }
     match protocol {
         Protocol::Responses => {
-            options.extra.insert(
-                "reasoning".into(),
-                json!({"effort":if thinking {"low"} else {"none"}}),
-            );
+            options
+                .extensions
+                .entry(namespace.into())
+                .or_default()
+                .insert(
+                    "reasoning".into(),
+                    json!({"effort":if thinking {"low"} else {"none"}}),
+                );
         }
         _ => {
-            options.extra.insert(
-                "thinking".into(),
-                json!({"type":if thinking {"enabled"} else {"disabled"}}),
-            );
+            options
+                .extensions
+                .entry(namespace.into())
+                .or_default()
+                .insert(
+                    "thinking".into(),
+                    json!({"type":if thinking {"enabled"} else {"disabled"}}),
+                );
             if thinking {
                 match protocol {
                     Protocol::Chat => {
                         options
-                            .extra
+                            .extensions
+                            .entry(namespace.into())
+                            .or_default()
                             .insert("reasoning_effort".into(), json!("low"));
                     }
                     Protocol::Messages => {
                         options
-                            .extra
+                            .extensions
+                            .entry(namespace.into())
+                            .or_default()
                             .insert("output_config".into(), json!({"effort":"low"}));
                     }
                     _ => unreachable!(),
@@ -112,7 +143,7 @@ fn delta_name(delta: &ModelDelta) -> &'static str {
         ModelDelta::ProviderToolProgress { .. } => "provider_tool_progress",
     }
 }
-fn summary(response: &ModelResponse) -> Value {
+fn summary(response: &TurnOutput) -> Value {
     json!({"model_id":response.model_id,"response_id":response.response_id,"finish_reason":response.finish_reason,"usage":response.usage})
 }
 async fn text_case(
@@ -125,7 +156,7 @@ async fn text_case(
     let model = model(protocol, key, model_id)?;
     let deltas = Arc::new(Observations::default());
     let response = model
-        .invoke(
+        .turn(
             ModelRequest {
                 messages: vec![Message::user(if json_output {
                     "Return only the JSON object {\"answer\":42}."
@@ -134,7 +165,7 @@ async fn text_case(
                 })],
                 runtime_tools: vec![],
                 provider_tools: vec![],
-                options: options(protocol, false),
+                profile: options(protocol, false),
                 tool_choice: ToolChoice::Auto,
                 response_format: json_output.then_some(ResponseFormat::Json),
                 stream,
@@ -177,26 +208,6 @@ async fn text_case(
         )?;
     }
     Ok(json!({"text":text,"response":summary(&response),"deltas":counts}))
-}
-struct RecordedModel {
-    inner: HttpModel,
-    responses: Mutex<Vec<Value>>,
-}
-impl Model for RecordedModel {
-    fn capabilities(&self) -> &Capabilities {
-        self.inner.capabilities()
-    }
-    fn invoke(
-        &self,
-        request: ModelRequest,
-        context: ModelContext,
-    ) -> BoxFuture<'_, Result<ModelResponse>> {
-        Box::pin(async move {
-            let response = self.inner.invoke(request, context).await?;
-            self.responses.lock().unwrap().push(summary(&response));
-            Ok(response)
-        })
-    }
 }
 async fn tool_case(
     protocol: Protocol,
@@ -253,17 +264,16 @@ async fn tool_case(
             }
         }
     })) as Arc<dyn RuntimeTool>;
-    let model = Arc::new(RecordedModel {
-        inner: model(protocol, key, model_id)?,
-        responses: Mutex::new(vec![]),
-    });
+    let model = Arc::new(zhir_testing::RecordingModel::new(Arc::new(model(
+        protocol, key, model_id,
+    )?)));
     let runtime = Runtime::builder(model.clone())
         .runtime_tools(Arc::new(RuntimeToolRegistry::from_tools([tool])?))
-        .defaults(|run| run.options(options(protocol, thinking)))
+        .defaults(|run| run.profile(options(protocol, thinking)))
         .defaults(|run| run.stream(true))
         .defaults(|run| {
             run.limits(Limits {
-                max_planning_steps: 3,
+                max_model_turns: 3,
                 max_runtime_tool_calls: 2,
                 elapsed_ms: Some(90_000),
                 ..zhir::kernel::defaults::limits()
@@ -310,7 +320,7 @@ async fn tool_case(
     require(
         calls.load(Ordering::SeqCst) == 1
             && checkpoint.metrics.runtime_tool_calls == 1
-            && checkpoint.metrics.planning_steps == 2,
+            && checkpoint.metrics.model_turns == 2,
         "tool loop did not execute exactly once",
     )?;
     require(
@@ -324,7 +334,7 @@ async fn tool_case(
         )?;
     }
     Ok(
-        json!({"text":text,"metrics":checkpoint.metrics,"revision":checkpoint.revision,"events":counts,"responses":*model.responses.lock().unwrap()}),
+        json!({"text":text,"metrics":checkpoint.metrics,"revision":checkpoint.revision,"events":counts,"responses":model.records().iter().flat_map(|record| record.completed_turns()).map(|response| summary(&response)).collect::<Vec<_>>()}),
     )
 }
 #[tokio::test]
@@ -333,8 +343,16 @@ async fn live_protocol_matrix() -> std::result::Result<(), Box<dyn std::error::E
     let key = std::env::var("DEEPSEEK_API_KEY")?;
     let model_id = std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-flash".into());
     let filter = std::env::var("DEEPSEEK_LIVE_FILTER").unwrap_or_default();
-    let output =
-        std::env::var("DEEPSEEK_LIVE_REPORT").unwrap_or_else(|_| "deepseek-live.json".into());
+    let output = std::env::var("DEEPSEEK_LIVE_REPORT").unwrap_or_else(|_| {
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../test-results/deepseek-live.json"
+        )
+        .into()
+    });
+    if let Some(parent) = std::path::Path::new(&output).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let started = zhir::kernel::defaults::context().started_at_ms;
     let mut rows = Vec::new();
     for protocol in [Protocol::Chat, Protocol::Responses, Protocol::Messages] {
@@ -397,3 +415,5 @@ async fn live_protocol_matrix() -> std::result::Result<(), Box<dyn std::error::E
     }
     Ok(())
 }
+
+use zhir_core::{model::GenerationProfile, profile::RequestProfile};

@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "name": "resource_stored",
+  "kind": "value",
+  "schema": "resource",
+  "value": {
+    "id": "resource",
+    "media_type": "video/mp4",
+    "name": null,
+    "source": {
+      "kind": "stored",
+      "key": "resource"
+    },
+    "metadata": {}
+  },
+  "valid": true
+}

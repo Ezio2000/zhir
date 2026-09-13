@@ -1,10 +1,12 @@
 use crate::{Protocol, ProtocolExtension};
+use base64::Engine as _;
 use serde_json::{Value, json};
+use zhir_core::resource::{ResourceRef, ResourceSource};
 use zhir_core::{
     Result,
     error::Error,
-    message::{Content, MediaSource, Message, Output, ProviderToolCall, ProviderToolStatus},
-    model::{ModelRequest, ModelResponse, ResponseFormat, ToolChoice, Usage},
+    message::{Content, Message, Output, ProviderToolCall, ProviderToolStatus},
+    model::{ModelRequest, ResponseFormat, ToolChoice, TurnOutput, Usage},
     tool::{InputSpec, RuntimeToolCall, RuntimeToolInput},
 };
 fn protocol_error(s: impl Into<String>) -> Error {
@@ -16,17 +18,44 @@ fn text(v: &Value, key: &str) -> Result<String> {
         .map(str::to_owned)
         .ok_or_else(|| protocol_error(format!("missing {key}")))
 }
-fn data_url(source: &MediaSource) -> Result<String> {
-    match source {
-        MediaSource::Url { url } => Ok(url.clone()),
-        MediaSource::Inline { mime_type, base64 } => {
-            Ok(format!("data:{mime_type};base64,{base64}"))
-        }
-        MediaSource::Artifact { .. } => Err(Error::Invalid(
-            "host must resolve artifact references before model invocation".into(),
+fn data_url(resource: &ResourceRef) -> Result<String> {
+    match &resource.source {
+        ResourceSource::Url { url } => Ok(url.clone()),
+        ResourceSource::Inline { bytes } => Ok(format!(
+            "data:{};base64,{}",
+            resource.media_type,
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        )),
+        _ => Err(Error::Invalid(
+            "resource requires resolution or provider-native encoding".into(),
         )),
     }
 }
+fn fidelity(input: &zhir_core::resource::ResourceInput) -> Option<&'static str> {
+    input.usage.fidelity.as_ref().map(|r| match r.value() {
+        zhir_core::profile::Fidelity::Economy => "low",
+        zhir_core::profile::Fidelity::High => "high",
+        zhir_core::profile::Fidelity::Original => "original",
+    })
+}
+fn resource_extensions(
+    input: &zhir_core::resource::ResourceInput,
+    protocol: &str,
+    target: &mut Value,
+) -> Result<()> {
+    if let Some(values) = input.usage.extensions.get(protocol) {
+        for (key, value) in values {
+            if target.get(key).is_some() {
+                return Err(Error::Invalid(format!(
+                    "resource extension overrides controlled field {key}"
+                )));
+            }
+            target[key] = value.clone();
+        }
+    }
+    Ok(())
+}
+
 mod chat;
 mod messages;
 mod replay;
@@ -113,13 +142,13 @@ fn finish_request(
         body["tools"] = json!(tools);
         body["tool_choice"] = tool_choice(protocol, request, extension)?;
     }
-    if let Some(value) = request.options.temperature {
+    if let Some(value) = request.profile.generation.temperature {
         body["temperature"] = json!(value);
     }
-    if let Some(value) = request.options.seed {
+    if let Some(value) = request.profile.generation.seed {
         body["seed"] = json!(value);
     }
-    if let Some(value) = request.options.parallel_runtime_tools {
+    if let Some(value) = request.profile.generation.parallel_runtime_tools {
         match protocol {
             Protocol::Messages if body.get("tool_choice").is_some() => {
                 body["tool_choice"]["disable_parallel_tool_use"] = json!(!value)
@@ -128,7 +157,13 @@ fn finish_request(
             _ => body["parallel_tool_calls"] = json!(value),
         }
     }
-    for (key, value) in &request.options.extra {
+    for (key, value) in request
+        .profile
+        .extensions
+        .get(protocol.key())
+        .into_iter()
+        .flatten()
+    {
         if ["input", "messages", "tools", "tool_choice", "system"].contains(&key.as_str()) {
             return Err(Error::Invalid(format!(
                 "extra option overrides controlled field {key}"
@@ -252,7 +287,7 @@ pub(crate) fn decode(
     protocol: Protocol,
     value: &Value,
     extension: &mut Option<Box<dyn ProtocolExtension>>,
-) -> Result<ModelResponse> {
+) -> Result<TurnOutput> {
     if let Some(error) = value.get("error").filter(|e| !e.is_null()) {
         return Err(protocol_error(error.to_string()));
     }
@@ -262,7 +297,7 @@ pub(crate) fn decode(
         Protocol::Messages => messages::decode(value, extension)?,
     };
     let pending = decoded.pending || decoded.output.iter().any(|o| matches!(o, Output::ProviderToolCall { call } if matches!(call.status, ProviderToolStatus::Pending | ProviderToolStatus::Running)));
-    Ok(ModelResponse {
+    Ok(TurnOutput {
         output: decoded.output,
         usage: usage(protocol, &value["usage"]),
         provider_turn_pending: pending,

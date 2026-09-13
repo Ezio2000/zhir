@@ -58,16 +58,10 @@ pub struct Execution {
 }
 impl Execution {
     pub fn validate(&self) -> Result<()> {
-        if self.parallel && (!self.read_only || !self.idempotent) {
-            Err(Error::Invalid(
-                "parallel execution requires read-only and idempotent facts".into(),
-            ))
-        } else {
-            Ok(())
-        }
+        Ok(())
     }
     pub fn parallel_safe(&self) -> bool {
-        self.parallel && self.read_only && self.idempotent
+        self.parallel
     }
 }
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -87,16 +81,14 @@ pub struct RuntimeToolSpec {
 pub enum RuntimeToolOutcomeKind {
     Success,
     Failure,
-    Accepted,
-    Waiting,
+    Cancelled,
 }
 impl RuntimeToolOutcomeKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Success => "success",
             Self::Failure => "failure",
-            Self::Accepted => "accepted",
-            Self::Waiting => "waiting",
+            Self::Cancelled => "cancelled",
         }
     }
 }
@@ -116,80 +108,37 @@ pub enum RuntimeToolOutcome {
     Failure {
         error: Failure,
     },
-    Accepted {
-        task_id: String,
-        content: Vec<Content>,
-        structured: Value,
-    },
-    Waiting {
-        wait_id: String,
-        content: Vec<Content>,
-        structured: Value,
+    Cancelled {
+        reason: String,
     },
 }
 impl RuntimeToolOutcome {
     pub fn structured(&self) -> Option<&Value> {
-        match self {
-            Self::Success { structured, .. }
-            | Self::Accepted { structured, .. }
-            | Self::Waiting { structured, .. } => Some(structured),
-            Self::Failure { .. } => None,
+        if let Self::Success { structured, .. } = self {
+            Some(structured)
+        } else {
+            None
         }
     }
-    /// Borrow explicitly supplied content; failures retain their structured cause.
     pub fn content(&self) -> &[Content] {
-        match self {
-            Self::Success { content, .. }
-            | Self::Accepted { content, .. }
-            | Self::Waiting { content, .. } => content,
-            Self::Failure { .. } => &[],
+        if let Self::Success { content, .. } = self {
+            content
+        } else {
+            &[]
         }
     }
     pub fn kind(&self) -> RuntimeToolOutcomeKind {
         match self {
             Self::Success { .. } => RuntimeToolOutcomeKind::Success,
             Self::Failure { .. } => RuntimeToolOutcomeKind::Failure,
-            Self::Accepted { .. } => RuntimeToolOutcomeKind::Accepted,
-            Self::Waiting { .. } => RuntimeToolOutcomeKind::Waiting,
+            Self::Cancelled { .. } => RuntimeToolOutcomeKind::Cancelled,
         }
     }
     pub fn validate(&self) -> Result<()> {
-        if matches!(self, Self::Waiting {wait_id,..} if wait_id.is_empty())
-            || matches!(self, Self::Accepted {task_id,..} if task_id.is_empty())
-        {
-            return Err(Error::Invalid("empty tool task/wait identity".into()));
-        }
         for content in self.content() {
             content.validate()?;
         }
         Ok(())
-    }
-}
-#[derive(Debug, Clone, PartialEq)]
-pub struct RuntimeToolResult {
-    pub outcome: RuntimeToolOutcome,
-    pub suspension: Option<Suspension>,
-}
-impl RuntimeToolResult {
-    pub fn failure(error: Failure) -> Self {
-        Self {
-            outcome: RuntimeToolOutcome::Failure { error },
-            suspension: None,
-        }
-    }
-    pub fn validate(&self) -> Result<()> {
-        self.outcome.validate()?;
-        match (&self.outcome, &self.suspension) {
-            (RuntimeToolOutcome::Waiting { wait_id, .. }, Some(s))
-                if s.wait_id.as_ref() == Some(wait_id) =>
-            {
-                s.validate()
-            }
-            (RuntimeToolOutcome::Waiting { .. }, _) | (_, Some(_)) => Err(Error::Invalid(
-                "waiting outcome and suspension must agree".into(),
-            )),
-            _ => Ok(()),
-        }
     }
 }
 pub trait ProgressSink: Send + Sync {
@@ -198,6 +147,7 @@ pub trait ProgressSink: Send + Sync {
 #[derive(Clone)]
 pub struct RuntimeToolContext {
     pub run: RunContext,
+    pub operation_id: String,
     pub cancellation: Cancellation,
     pub progress: Option<Arc<dyn ProgressSink>>,
 }
@@ -212,15 +162,34 @@ impl RuntimeToolContext {
 }
 pub trait RuntimeTool: Send + Sync {
     fn spec(&self) -> &RuntimeToolSpec;
-    fn invoke(
+    fn start(
         &self,
         call: RuntimeToolCall,
         context: RuntimeToolContext,
-    ) -> BoxFuture<'_, Result<RuntimeToolResult>>;
+    ) -> BoxFuture<'_, Result<crate::operation::ToolExecution>>;
+    fn recover(
+        &self,
+        _record: crate::operation::OperationRecord,
+        _context: RuntimeToolContext,
+    ) -> BoxFuture<'_, Result<crate::operation::ToolExecution>> {
+        Box::pin(async {
+            Err(Error::Protocol(
+                "operation cannot be recovered by this tool".into(),
+            ))
+        })
+    }
 }
 pub trait RuntimeToolBinding: Send + Sync {
     fn spec(&self) -> &RuntimeToolSpec;
-    fn invoke(&self, context: RuntimeToolContext) -> BoxFuture<'_, Result<RuntimeToolResult>>;
+    fn start(
+        &self,
+        context: RuntimeToolContext,
+    ) -> BoxFuture<'_, Result<crate::operation::ToolExecution>>;
+    fn recover(
+        &self,
+        record: crate::operation::OperationRecord,
+        context: RuntimeToolContext,
+    ) -> BoxFuture<'_, Result<crate::operation::ToolExecution>>;
 }
 pub trait RuntimeToolCatalog: Send + Sync {
     fn specs(&self) -> Vec<RuntimeToolSpec>;
@@ -285,14 +254,14 @@ pub trait ApprovalPolicy: Send + Sync {
     ) -> BoxFuture<'_, Result<Vec<ApprovalDecision>>>;
 }
 #[derive(Debug, Clone)]
-pub struct RuntimeToolBatch {
+pub struct Admission {
     pub calls: Vec<RuntimeToolCall>,
     pub parallel: bool,
 }
-pub trait BatchPolicy: Send + Sync {
+pub trait SchedulingPolicy: Send + Sync {
     fn select(
         &self,
         candidates: &[RuntimeToolCall],
         specs: &std::collections::BTreeMap<String, RuntimeToolSpec>,
-    ) -> Result<RuntimeToolBatch>;
+    ) -> Result<Admission>;
 }

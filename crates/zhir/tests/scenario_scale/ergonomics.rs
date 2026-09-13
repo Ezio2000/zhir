@@ -15,7 +15,7 @@ use zhir::{
     Result, Runtime,
     message::Message,
     model::{Model, ModelDelta, ResponseFormat},
-    models::{FunctionModel, Protocol, TransformModel, decorators::ObservedModel},
+    models::{Protocol, TransformModel, decorators::ObservedModel},
     run::{Limits, State},
     runtime_tools::{RuntimeToolRegistry, TypedTool},
     storage::RunStore,
@@ -85,11 +85,7 @@ async fn workflow(
     let tools = Arc::new(RuntimeToolRegistry::from_tools([
         Arc::new(tool) as Arc<dyn RuntimeTool>
     ])?);
-    let function = FunctionModel::new(shared.capabilities().clone(), move |request, context| {
-        let shared = shared.clone();
-        async move { shared.invoke(request, context).await }
-    });
-    let recorded = Arc::new(RecordingModel::new(Arc::new(function)));
+    let recorded = Arc::new(RecordingModel::new(shared));
     let directory = tempfile::tempdir().map_err(|e| zhir::error::Error::Invalid(e.to_string()))?;
     let path = directory.path().join("instructions.txt");
     let instructions = "Use the requested tool exactly once. Do not invent the private receipt. After the tool returns, output only one JSON object containing its total and receipt, with no Markdown or extra fields.";
@@ -109,11 +105,20 @@ async fn workflow(
             Ok(request)
         }
     });
-    let transform = transform.map_response(move |mut response, ctx| {
-        map_count.fetch_add(1, Ordering::SeqCst);
+    let transform = transform.map_event(move |mut event, ctx| {
+        if matches!(
+            event.body,
+            zhir::model::SessionEventBody::TurnFinished { .. }
+        ) {
+            map_count.fetch_add(1, Ordering::SeqCst);
+        }
         async move {
-            response.provider_data["consumer_transform"] = json!(ctx.run.require(CASE)?);
-            Ok(response)
+            if let zhir::model::SessionEventBody::TurnFinished { provider_data, .. } =
+                &mut event.body
+            {
+                provider_data["consumer_transform"] = json!(ctx.run.require(CASE)?);
+            }
+            Ok(event)
         }
     });
     let observer = Arc::new(RecordingSink::default());
@@ -151,12 +156,12 @@ async fn workflow(
         )))
         .approval(Arc::new(policy))
         .store(store.clone())
-        .defaults(|run| run.options(options(protocol, &tag, false)))
+        .defaults(|run| run.profile(options(protocol, &tag, false)))
         .defaults(|run| run.response_format(format))
         .defaults(|run| run.stream(stream))
         .defaults(|run| {
             run.limits(Limits {
-                max_planning_steps: 3,
+                max_model_turns: 3,
                 max_runtime_tool_calls: 1,
                 elapsed_ms: Some(60_000),
                 ..zhir::kernel::defaults::limits()
@@ -169,10 +174,7 @@ async fn workflow(
     }).await.map_err(|e|zhir::error::Error::Invalid(e.to_string()))?.into_checkpoint();
     let output = zhir::output::decode::<Quote>(&checkpoint)?;
     let records = recorded.records();
-    let responses: Vec<_> = records
-        .iter()
-        .filter_map(|r| r.outcome.as_ref().and_then(|o| o.as_ref().ok()))
-        .collect();
+    let responses: Vec<_> = records.iter().flat_map(|r| r.completed_turns()).collect();
     let raw_frames = observer
         .deltas()
         .iter()
@@ -192,8 +194,8 @@ async fn workflow(
     checks.insert(
         "per_run_selection",
         records.iter().all(|r| {
-            r.input.request.runtime_tools.len() == 1
-                && r.input.request.runtime_tools[0].name == "quote"
+            r.opening.request.runtime_tools.len() == 1
+                && r.opening.request.runtime_tools[0].name == "quote"
         }),
     );
     checks.insert("typed_context", checkpoint.context.require(CASE)? == tag);
@@ -211,19 +213,19 @@ async fn workflow(
     );
     checks.insert(
         "two_model_requests",
-        records.len() == 2 && responses.len() == 2,
+        records.len() == 1 && responses.len() == 2,
     );
     checks.insert(
         "async_preparation",
         records
             .iter()
-            .all(|r| r.input.request.messages.first() == Some(&Message::system(instructions))),
+            .all(|r| r.opening.request.messages.first() == Some(&Message::system(instructions))),
     );
     checks.insert(
         "unchanged_run_context",
         records
             .iter()
-            .all(|r| r.input.run.run_id == checkpoint.context.run_id),
+            .all(|r| r.opening.run.run_id == checkpoint.context.run_id),
     );
     checks.insert(
         "extension_session_isolation",
@@ -244,7 +246,10 @@ async fn workflow(
             .await?
             .is_some_and(|c| c.id == checkpoint.id),
     );
-    checks.insert("commit_trace", store.verify_traces()? == 4);
+    checks.insert(
+        "commit_trace",
+        store.verify_traces()? == store.commits().len(),
+    );
     checks.insert(
         "usage_and_identity",
         responses.iter().all(|r| {
@@ -297,7 +302,7 @@ async fn live_developer_api() {
         }
     }
     let path = std::env::var("ZHIR_DEVELOPER_REPORT")
-        .unwrap_or_else(|_| "/tmp/zhir-developer-live.json".into());
+        .unwrap_or_else(|_| "test-results/zhir-developer-live.json".into());
     let mut pending = stream::iter(jobs).buffer_unordered(12);
     let mut rows = vec![];
     while let Some(row) = pending.next().await {

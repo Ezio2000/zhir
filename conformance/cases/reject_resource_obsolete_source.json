@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "name": "reject_resource_obsolete_source",
+  "kind": "value",
+  "schema": "resource",
+  "value": {
+    "id": "x",
+    "media_type": "image/png",
+    "name": null,
+    "source": {
+      "kind": "artifact",
+      "id": "x"
+    },
+    "metadata": {}
+  },
+  "valid": false
+}

@@ -3,13 +3,13 @@ use serde_json::Value;
 use std::{sync::Arc, time::Duration};
 use zhir_core::{
     BoxFuture, Result,
-    model::{Capabilities, Model, ModelContext, ModelRequest, ModelResponse},
+    model::{CapabilitySet, Model, ModelContext, ModelRequest, TurnOutput},
 };
 
 #[derive(Clone)]
 pub struct ModelConfig {
     pub base_url: String,
-    pub api_key: String,
+    pub credentials: Arc<dyn zhir_core::credential::CredentialProvider>,
     pub model: String,
     pub client: reqwest::Client,
     pub timeout: Duration,
@@ -17,12 +17,12 @@ pub struct ModelConfig {
 impl ModelConfig {
     pub fn new(
         base_url: impl Into<String>,
-        api_key: impl Into<String>,
+        credentials: Arc<dyn zhir_core::credential::CredentialProvider>,
         model: impl Into<String>,
     ) -> Self {
         Self {
             base_url: base_url.into(),
-            api_key: api_key.into(),
+            credentials,
             model: model.into(),
             client: reqwest::Client::new(),
             timeout: Duration::from_secs(120),
@@ -35,8 +35,9 @@ type ExtensionFactory =
 pub struct HttpModel {
     config: ModelConfig,
     protocol: Protocol,
-    capabilities: Capabilities,
+    capabilities: CapabilitySet,
     extension: Option<Arc<ExtensionFactory>>,
+    mappings: Vec<crate::profiles::ProfileMapping>,
 }
 impl HttpModel {
     #[cfg(any(
@@ -50,32 +51,56 @@ impl HttpModel {
                 "model and base URL are required".into(),
             ));
         }
-        let mut capabilities = Capabilities {
-            input_modalities: vec!["text".into(), "image".into(), "file".into()],
-            structured_output: true,
-            json_mode: true,
-            seed: protocol == Protocol::Chat,
-            ..crate::capabilities::text_tool_calling()
-        };
+        use zhir_core::model::Capability;
+        let mut capabilities = crate::capabilities::text_tool_calling();
+        capabilities
+            .input_modalities
+            .extend(["image".into(), "file".into()]);
+        capabilities.features.insert(Capability::StructuredOutput);
         if protocol == Protocol::Chat {
             capabilities.input_modalities.push("audio".into());
+            capabilities.features.insert(Capability::Seed);
         }
-        capabilities.provider_tools = protocol != Protocol::Chat;
-        capabilities.freeform_runtime_tools = protocol == Protocol::Responses;
-        if capabilities.provider_tools {
+        if protocol != Protocol::Messages {
+            capabilities.features.insert(Capability::JsonMode);
+        }
+        if protocol != Protocol::Chat {
+            capabilities.features.insert(Capability::ProviderTools);
             capabilities.tool_choices.push("provider_tool".into());
         }
-        if protocol == Protocol::Messages {
-            capabilities.json_mode = false;
+        if protocol == Protocol::Responses {
+            capabilities.features.insert(Capability::FreeformTools);
         }
         Ok(Self {
             config,
             protocol,
             capabilities,
             extension: None,
+            mappings: vec![],
         })
     }
-    pub fn with_capabilities(mut self, capabilities: Capabilities) -> Self {
+    pub fn with_profile_mapping(
+        mut self,
+        mapping: crate::profiles::ProfileMapping,
+    ) -> Result<Self> {
+        if self
+            .mappings
+            .iter()
+            .any(|old| old.key == mapping.key && old.value == mapping.value)
+        {
+            return Err(zhir_core::error::Error::Invalid(
+                "duplicate profile mapping".into(),
+            ));
+        }
+        self.capabilities
+            .constraints
+            .entry(mapping.key.clone())
+            .or_default()
+            .push(mapping.value.clone());
+        self.mappings.push(mapping);
+        Ok(self)
+    }
+    pub fn with_capabilities(mut self, capabilities: CapabilitySet) -> Self {
         self.capabilities = capabilities;
         self
     }
@@ -92,16 +117,49 @@ impl HttpModel {
     }
 }
 impl Model for HttpModel {
-    fn capabilities(&self) -> &Capabilities {
+    fn capabilities(&self) -> &CapabilitySet {
         &self.capabilities
     }
-    fn invoke(
+    fn negotiate(&self, request: &ModelRequest) -> Result<zhir_core::profile::NegotiatedProfile> {
+        crate::session::validate_capabilities(&self.capabilities)?;
+        crate::profiles::negotiate(
+            request,
+            &self.capabilities,
+            &self.mappings,
+            self.protocol != Protocol::Messages,
+        )
+    }
+    fn open_session(
         &self,
-        request: ModelRequest,
-        context: ModelContext,
-    ) -> BoxFuture<'_, Result<ModelResponse>> {
+        open: zhir_core::model::SessionOpen,
+    ) -> BoxFuture<'_, Result<zhir_core::model::ModelSession>> {
+        let model = self.clone();
         Box::pin(async move {
-            request.validate(&self.capabilities)?;
+            self.negotiate(&open.request)?;
+            crate::session::open(
+                open,
+                Arc::new(move |request, context| {
+                    let model = model.clone();
+                    Box::pin(async move { model.exchange(request, context).await })
+                }),
+                self.capabilities.clone(),
+                {
+                    let model = self.clone();
+                    Arc::new(move |request| model.negotiate(request))
+                },
+            )
+        })
+    }
+}
+impl HttpModel {
+    fn exchange(
+        &self,
+        mut request: ModelRequest,
+        context: ModelContext,
+    ) -> BoxFuture<'_, Result<TurnOutput>> {
+        Box::pin(async move {
+            let selected = self.negotiate(&request)?;
+            crate::profiles::apply(&mut request, &selected)?;
             if !self
                 .capabilities
                 .input_modalities
@@ -135,8 +193,17 @@ impl Model for HttpModel {
                 .transpose()?;
             let mut body =
                 codec::encode(self.protocol, &self.config.model, &request, &mut extension)?;
+            let controlled = crate::profiles::fields(&mut body, &selected, &self.mappings)?;
             if let Some(extension) = &mut extension {
                 extension.encode_request(self.protocol, &request, &mut body)?;
+            }
+            if controlled
+                .iter()
+                .any(|(field, value)| body.get(field) != Some(value))
+            {
+                return Err(zhir_core::error::Error::Invalid(
+                    "extension changed negotiated profile".into(),
+                ));
             }
             context.cancellation.check()?;
             let path = match self.protocol {
@@ -144,27 +211,63 @@ impl Model for HttpModel {
                 Protocol::Responses => "responses",
                 Protocol::Messages => "messages",
             };
-            let mut builder = self
-                .config
-                .client
-                .post(format!(
-                    "{}/{}",
-                    self.config.base_url.trim_end_matches('/'),
-                    path
-                ))
-                .timeout(self.config.timeout)
-                .json(&body);
-            builder = if self.protocol == Protocol::Messages {
-                builder
-                    .header("x-api-key", &self.config.api_key)
-                    .header("anthropic-version", "2023-06-01")
-            } else {
-                builder.bearer_auth(&self.config.api_key)
-            };
-            let response = builder.send().await.map_err(transport::request_error)?;
-            if !response.status().is_success() {
-                return Err(transport::http_error(response).await);
+            let mut response = None;
+            for attempt in 0..2 {
+                let credential = self
+                    .config
+                    .credentials
+                    .resolve(zhir_core::credential::CredentialContext {
+                        audience: self.config.base_url.clone(),
+                        now_ms: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_err(|e| zhir_core::error::Error::Invalid(e.to_string()))?
+                            .as_millis() as u64,
+                    })
+                    .await?;
+                let mut builder = self
+                    .config
+                    .client
+                    .post(format!(
+                        "{}/{}",
+                        self.config.base_url.trim_end_matches('/'),
+                        path
+                    ))
+                    .timeout(self.config.timeout)
+                    .json(&body);
+                builder = if self.protocol == Protocol::Messages {
+                    builder
+                        .header("x-api-key", &credential.value)
+                        .header("anthropic-version", "2023-06-01")
+                } else {
+                    builder.header(
+                        reqwest::header::AUTHORIZATION,
+                        format!("{} {}", credential.scheme, credential.value),
+                    )
+                };
+                for (key, value) in &credential.metadata {
+                    if let Some(header) = key.strip_prefix("header:") {
+                        builder = builder.header(header, value);
+                    }
+                }
+                let received = builder.send().await.map_err(transport::request_error)?;
+                if received.status() == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 {
+                    self.config
+                        .credentials
+                        .invalidate(&credential.generation)
+                        .await?;
+                    continue;
+                }
+                if !received.status().is_success() {
+                    return Err(transport::http_error(received).await);
+                }
+                response = Some(received);
+                break;
             }
+            let response = response.ok_or_else(|| {
+                zhir_core::error::Error::Protocol(
+                    "authentication retry did not produce a response".into(),
+                )
+            })?;
             let value: Value = if request.stream {
                 streaming::receive(self.protocol, response, &context, &mut extension).await?
             } else {

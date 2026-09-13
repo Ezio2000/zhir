@@ -1,0 +1,283 @@
+{
+  "$defs": {
+    "GenerationProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "max_output_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "parallel_runtime_tools": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "seed": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "temperature": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Interaction": {
+      "enum": [
+        "turn_based",
+        "duplex"
+      ],
+      "type": "string"
+    },
+    "Reasoning": {
+      "enum": [
+        "low",
+        "balanced",
+        "high"
+      ],
+      "type": "string"
+    },
+    "Requirement": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "required",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Serving"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "preferred",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Serving"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Requirement2": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "required",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Reasoning"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "preferred",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Reasoning"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Requirement3": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "required",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "preferred",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Requirement4": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "required",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Interaction"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "preferred",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Interaction"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Serving": {
+      "enum": [
+        "balanced",
+        "low_latency",
+        "low_cost"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "alternatives": {
+      "additionalProperties": {
+        "items": true,
+        "type": "array"
+      },
+      "description": "Exact, ordered alternatives. An empty list prohibits semantic degradation.",
+      "type": "object"
+    },
+    "extensions": {
+      "additionalProperties": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "type": "object"
+    },
+    "generation": {
+      "$ref": "#/$defs/GenerationProfile"
+    },
+    "interaction": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Requirement4"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "language": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Requirement3"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "reasoning": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Requirement2"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "serving": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Requirement"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "generation",
+    "alternatives",
+    "extensions"
+  ],
+  "title": "RequestProfile",
+  "type": "object"
+}

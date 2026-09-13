@@ -4,7 +4,7 @@ use zhir_core::{
     Result,
     error::Error,
     message::{Output, ProviderToolCall},
-    model::{ModelDelta, ModelRequest, ModelResponse, ProviderToolSpec},
+    model::{ModelDelta, ModelRequest, ProviderToolSpec, TurnOutput},
 };
 
 /// Read-only context for creating one invocation-local extension session.
@@ -51,7 +51,7 @@ pub trait ProtocolExtension: Send {
         Ok(None)
     }
     /// Modify the encoded body, including nested or controlled fields. The caller
-    /// owns the resulting protocol semantics. `ModelOptions::extra` remains the
+    /// owns the resulting protocol semantics. `GenerationProfile::extra` remains the
     /// simpler path for additive top-level and nested options.
     fn encode_request(
         &mut self,
@@ -80,8 +80,8 @@ pub trait ProtocolExtension: Send {
         &mut self,
         _protocol: Protocol,
         _raw: &Value,
-        decoded: Result<ModelResponse>,
-    ) -> Result<ModelResponse> {
+        decoded: Result<TurnOutput>,
+    ) -> Result<TurnOutput> {
         decoded
     }
 }
@@ -179,8 +179,8 @@ impl ProtocolExtension for ExtensionChain {
         &mut self,
         protocol: Protocol,
         raw: &Value,
-        mut decoded: Result<ModelResponse>,
-    ) -> Result<ModelResponse> {
+        mut decoded: Result<TurnOutput>,
+    ) -> Result<TurnOutput> {
         for extension in &mut self.extensions {
             decoded = extension.decode_response(protocol, raw, decoded);
         }

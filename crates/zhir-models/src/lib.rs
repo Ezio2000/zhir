@@ -13,7 +13,6 @@
 //! retention; the adapter does not accumulate a raw stream transcript.
 #[cfg(feature = "anthropic")]
 pub mod anthropic;
-pub mod artifacts;
 pub mod capabilities;
 #[cfg(any(
     feature = "openai-chat",
@@ -21,8 +20,11 @@ pub mod capabilities;
     feature = "anthropic"
 ))]
 mod codec;
+pub mod credentials;
 pub mod decorators;
-pub use artifacts::ArtifactModel;
+pub mod resources;
+mod session;
+pub use resources::ResourceModel;
 pub mod concurrency;
 pub use concurrency::ConcurrencyLimitedModel;
 mod extension;
@@ -53,6 +55,12 @@ pub enum Protocol {
     feature = "anthropic"
 ))]
 mod http;
+#[cfg(any(
+    feature = "openai-chat",
+    feature = "openai-responses",
+    feature = "anthropic"
+))]
+pub mod profiles;
 #[cfg(any(
     feature = "openai-chat",
     feature = "openai-responses",

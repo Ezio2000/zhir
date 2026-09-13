@@ -14,7 +14,7 @@ use std::{
 use zhir::{
     Result,
     error::{Error, Failure},
-    model::{Model, ModelContext, ModelRequest},
+    model::{ModelContext, ModelRequest},
     models::{
         ModelConfig, Protocol, ProtocolExtension, anthropic, decorators::RetryingModel, openai,
     },
@@ -25,7 +25,7 @@ fn request(stream: bool) -> ModelRequest {
         messages: vec![zhir::message::Message::user("你好")],
         runtime_tools: vec![],
         provider_tools: vec![],
-        options: Default::default(),
+        profile: Default::default(),
         tool_choice: Default::default(),
         response_format: None,
         stream,
@@ -54,7 +54,7 @@ impl ProtocolExtension for Session {
     }
 }
 #[tokio::test]
-async fn contextual_factories_are_fallible_per_attempt_and_protocol_independent() {
+async fn contextual_factories_and_http_errors_are_explicit_without_command_replay() {
     for protocol in [Protocol::Chat, Protocol::Responses, Protocol::Messages] {
         let raw = match protocol {
             Protocol::Chat => {
@@ -73,7 +73,13 @@ async fn contextual_factories_are_fallible_per_attempt_and_protocol_independent(
         .unwrap();
         let count = Arc::new(AtomicUsize::new(0));
         let called = count.clone();
-        let config = ModelConfig::new(format!("{}/v1", fixture.url()), "fixture", "fixture");
+        let config = ModelConfig::new(
+            format!("{}/v1", fixture.url()),
+            std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+                "Bearer", "fixture",
+            )),
+            "fixture",
+        );
         let model = match protocol {
             Protocol::Chat => openai::chat::model(config),
             Protocol::Responses => openai::responses::model(config),
@@ -83,7 +89,7 @@ async fn contextual_factories_are_fallible_per_attempt_and_protocol_independent(
         .with_extension(move |ctx| {
             assert_eq!(ctx.protocol, protocol);
             assert_eq!(
-                ctx.request.options.extra["marker"],
+                ctx.request.profile.extensions["consumer"]["marker"],
                 ctx.run.metadata["marker"]
             );
             if called.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -101,17 +107,24 @@ async fn contextual_factories_are_fallible_per_attempt_and_protocol_independent(
         let mut ctx = context();
         ctx.run.metadata.insert("marker".into(), json!("caller"));
         let mut input = request(false);
-        input.options.extra.insert("marker".into(), json!("caller"));
-        RetryingModel::new(
+        input
+            .profile
+            .extensions
+            .entry("consumer".into())
+            .or_default()
+            .insert("marker".into(), json!("caller"));
+        let model = RetryingModel::new(
             Arc::new(model),
             zhir_policies::RetryPolicy::new(3)
                 .unwrap()
                 .backoff(zhir_policies::Backoff::fixed(Duration::ZERO)),
         )
-        .unwrap()
-        .invoke(input, ctx)
-        .await
         .unwrap();
+        assert!(model.turn(input.clone(), ctx.clone()).await.is_err());
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert!(model.turn(input.clone(), ctx.clone()).await.is_err());
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        model.turn(input, ctx).await.unwrap();
         assert_eq!(count.load(Ordering::SeqCst), 3);
         let sent = fixture.finish().await.unwrap();
         assert_eq!(sent.len(), 2);
@@ -128,21 +141,27 @@ async fn factory_failures_and_pre_cancelled_calls_send_no_requests() {
         .unwrap();
     let count = Arc::new(AtomicUsize::new(0));
     let called = count.clone();
-    let model = openai::responses::model(ModelConfig::new(fixture.url(), "fixture", "fixture"))
-        .unwrap()
-        .with_extension(move |_| -> Result<Session> {
-            called.fetch_add(1, Ordering::SeqCst);
-            Err(Error::Invalid("user registration failed".into()))
-        });
+    let model = openai::responses::model(ModelConfig::new(
+        fixture.url(),
+        std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+            "Bearer", "fixture",
+        )),
+        "fixture",
+    ))
+    .unwrap()
+    .with_extension(move |_| -> Result<Session> {
+        called.fetch_add(1, Ordering::SeqCst);
+        Err(Error::Invalid("user registration failed".into()))
+    });
     let ctx = context();
     ctx.cancellation.cancel();
     assert!(matches!(
-        model.invoke(request(false), ctx).await,
+        model.turn(request(false), ctx).await,
         Err(Error::Cancelled)
     ));
     assert_eq!(count.load(Ordering::SeqCst), 0);
     assert!(
-        matches!(model.invoke(request(false),context()).await,Err(Error::Invalid(e)) if e=="user registration failed")
+        matches!(model.turn(request(false),context()).await,Err(Error::Invalid(e)) if e=="user registration failed")
     );
     assert_eq!(count.load(Ordering::SeqCst), 1);
     assert!(
@@ -161,11 +180,13 @@ async fn fixture_exercises_unicode_sse_fragmentation_raw_capture_and_disconnects
             .unwrap();
         let model = openai::responses::model(ModelConfig::new(
             format!("{}/v1", fixture.url()),
-            "fixture",
+            std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+                "Bearer", "fixture",
+            )),
             "fixture",
         ))
         .unwrap();
-        let result = model.invoke(request(true), context()).await.unwrap();
+        let result = model.turn(request(true), context()).await.unwrap();
         assert_eq!(result.output, vec![zhir::message::Output::text("你好")]);
         let sent = fixture.finish().await.unwrap();
         assert_eq!(sent[0].method, "POST");
@@ -187,9 +208,15 @@ async fn fixture_exercises_unicode_sse_fragmentation_raw_capture_and_disconnects
         let fixture = HttpFixture::start([reply.disconnect_after(9)])
             .await
             .unwrap();
-        let model = openai::responses::model(ModelConfig::new(fixture.url(), "fixture", "fixture"))
-            .unwrap();
-        assert!(model.invoke(request(sse), context()).await.is_err());
+        let model = openai::responses::model(ModelConfig::new(
+            fixture.url(),
+            std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+                "Bearer", "fixture",
+            )),
+            "fixture",
+        ))
+        .unwrap();
+        assert!(model.turn(request(sse), context()).await.is_err());
         assert_eq!(fixture.finish().await.unwrap().len(), 1);
     }
 }
@@ -250,3 +277,5 @@ async fn fixture_delays_timeouts_drop_and_invalid_scripts_are_observable() {
     tokio::task::yield_now().await;
     assert!(tokio::net::TcpStream::connect(address).await.is_err());
 }
+
+use zhir_testing::ModelTestExt;

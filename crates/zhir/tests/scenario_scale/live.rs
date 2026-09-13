@@ -1,5 +1,4 @@
 use super::harness::*;
-use base64::Engine as _;
 use futures::{StreamExt, stream};
 use serde_json::{Value, json};
 use std::{
@@ -12,17 +11,16 @@ use std::{
 };
 use zhir::{
     BoxFuture, Result, ResumeRequest, Runtime,
-    builtins::agent::{AgentBackend, runtime_backend::InMemoryAgentBackend},
+    builtins::agent::{AgentBackend, runtime_backend::RuntimeAgentBackend},
     error::{Error, Failure},
-    message::{Content, MediaSource, Message},
+    message::{Content, Message},
     model::{Model, ResponseFormat},
     models::Protocol,
     run::{Limits, RunContext, State, Suspension},
     runtime_tools::{FunctionTool, RuntimeToolRegistry},
     tool::{
         ApprovalDecision, ApprovalPolicy, ApprovalRequest, Execution, InputSpec, RuntimeTool,
-        RuntimeToolCall, RuntimeToolContext, RuntimeToolInput, RuntimeToolOutcome,
-        RuntimeToolResult, RuntimeToolSpec,
+        RuntimeToolCall, RuntimeToolContext, RuntimeToolInput, RuntimeToolOutcome, RuntimeToolSpec,
     },
 };
 
@@ -81,14 +79,14 @@ struct ToolEnv {
     calls: Mutex<Vec<Value>>,
     active: AtomicUsize,
     peak: AtomicUsize,
-    child: Option<Arc<InMemoryAgentBackend>>,
+    child: Option<Arc<RuntimeAgentBackend>>,
 }
 impl ToolEnv {
     async fn execute(
         &self,
         call: RuntimeToolCall,
         context: RuntimeToolContext,
-    ) -> Result<RuntimeToolResult> {
+    ) -> Result<zhir_core::operation::ToolExecution> {
         let attempt = {
             let mut calls = self.calls.lock().unwrap();
             calls.push(json!({"name":call.name,"input":call.input,"run_id":context.run.run_id}));
@@ -114,21 +112,14 @@ impl ToolEnv {
                 let value=match args["region"].as_str() {Some("A")=>17,Some("B")=>23,Some("C")=>31,_=>return Err(Error::Invalid("unknown region".into()))};
                 Ok(zhir::runtime_tools::reply::json(json!({"region":args["region"],"value":value})))
             }
-            "tool_recovery" if attempt==1=>Ok(RuntimeToolResult::failure(Failure {code:"temporary_lookup".into(),message:"Temporary fixture lookup failure. Call fetch again with the same arguments; the next attempt will succeed.".into(),retryable:true})),
-            "wait_resume"=>Ok(zhir::runtime_tools::reply::waiting(format!("review-{}",self.ticket),json!({"status":"awaiting_reviewer"}),"consumer_review")),
+            "tool_recovery" if attempt==1=>Ok(zhir_core::operation::ToolExecution::Finished(RuntimeToolOutcome::Failure {error:Failure {code:"temporary_lookup".into(),message:"Temporary fixture lookup failure. Call fetch again with the same arguments; the next attempt will succeed.".into(),retryable:true}})),
+            "wait_resume"=>Ok(zhir_core::operation::ToolExecution::Active(zhir_testing::waiting_operation(json!({"status":"awaiting_reviewer"}),0))),
             "delegated_agent"=>{
                 let backend=self.child.as_ref().unwrap();
                 let prompt=format!("Reply with exactly {} and nothing else.",self.receipt);
-                let first=backend.start_or_get(call.id.clone(),prompt.clone(),context.run.clone()).await?;
-                let again=backend.start_or_get(call.id,prompt,context.run.clone()).await?;
-                require(first.id==again.id,"child idempotency mismatch")?;
-                let done=backend.wait(first.id,context.run).await?;
-                require(done.status==zhir_builtins::agent::AgentStatus::Completed,format!("child did not complete: {done:?}"))?;
-                let actual=text(&done.content).trim().to_owned();
-                require(actual==self.receipt,format!("child output mismatch ({}): expected {:?}, got {:?}",done.id,self.receipt,actual))?;
-                Ok(zhir::runtime_tools::reply::json(json!({"receipt":actual,"child_id":done.id})))
+                Ok(zhir_core::operation::ToolExecution::Active(backend.start(prompt,context).await?))
             }
-            "multimodal_report" if call.name=="read_image"=>Ok(RuntimeToolResult {outcome:RuntimeToolOutcome::Success {content:vec![Content::text("Read the alphanumeric code, then call submit_report with that code."),Content::Image {source:MediaSource::Inline {mime_type:"image/png".into(),base64:base64::engine::general_purpose::STANDARD.encode(include_bytes!("../fixtures/vision.png"))}}],structured:Value::Null},suspension:None}),
+            "multimodal_report" if call.name=="read_image"=>Ok(zhir_core::operation::ToolExecution::Finished(RuntimeToolOutcome::Success {content:vec![Content::text("Read the alphanumeric code, then call submit_report with that code."),Content::resource(zhir_core::resource::ResourceRef {id:"vision".into(),media_type:"image/png".into(),name:None,source:zhir_core::resource::ResourceSource::Inline {bytes:include_bytes!("../fixtures/vision.png").to_vec()},metadata:Default::default()})],structured:Value::Null})),
             "multimodal_report"=>{require(args["code"]=="K7X42","consumer report contains wrong OCR code")?;Ok(zhir::runtime_tools::reply::json(json!({"receipt":self.receipt})))},
             "freeform_pipeline" if call.name=="apply_patch"=>{
                 let patch=args["patch"].as_str().unwrap_or_default();
@@ -176,7 +167,7 @@ fn object(properties: Value, required: Value) -> Value {
 
 async fn workflow(
     case: &Case,
-    recorded: Arc<RecordedModel>,
+    recorded: Arc<RecordingModel>,
     store: &StoreFixture,
 ) -> Result<Value> {
     let tag = case.tag();
@@ -185,18 +176,18 @@ async fn workflow(
     let thinking = case.repeat % 2 == 1 && case.stream;
     let child = if case.family == "delegated_agent" {
         let child_runtime = Runtime::builder(recorded.clone())
-            .defaults(|run| run.options(options(case.protocol, &format!("{tag}-child"), thinking)))
+            .defaults(|run| run.profile(options(case.protocol, &format!("{tag}-child"), thinking)))
             .store(store.api.clone())
             .defaults(|run| run.stream(case.stream))
             .defaults(|run| {
                 run.limits(Limits {
-                    max_planning_steps: 2,
+                    max_model_turns: 2,
                     elapsed_ms: Some(60_000),
                     ..zhir::kernel::defaults::limits()
                 })
             })
             .build()?;
-        Some(Arc::new(InMemoryAgentBackend::new(
+        Some(Arc::new(RuntimeAgentBackend::new(
             child_runtime,
             "Complete the user's exact reply task.",
             4,
@@ -406,14 +397,14 @@ async fn workflow(
         let mut builder = Runtime::builder(recorded.clone())
             .runtime_tools(tool_registry.clone())
             .store(store.api.clone())
-            .defaults(|run| run.options(options(case.protocol, &tag, thinking)))
+            .defaults(|run| run.profile(options(case.protocol, &tag, thinking)))
             .defaults(|run| run.stream(case.stream))
             .defaults(|run| {
                 run.limits(Limits {
-                    max_planning_steps: 8,
+                    max_model_turns: 8,
                     max_runtime_tool_calls: 12,
                     max_runtime_tool_concurrency: 3,
-                    max_progress_events: 4096,
+                    max_observer_events: 4096,
                     elapsed_ms: Some(120_000),
                     ..zhir::kernel::defaults::limits()
                 })
@@ -447,6 +438,13 @@ async fn workflow(
         checkpoint = roundtrip(&checkpoint)?;
         let mut resume = ResumeRequest::from_checkpoint(checkpoint.clone());
         if case.family == "wait_resume" {
+            resume = resume.resolve(zhir_core::operation::RecoveryResolution::Complete {
+                operation_id: checkpoint.active.operations.keys().next().unwrap().clone(),
+                outcome: RuntimeToolOutcome::Success {
+                    content: vec![],
+                    structured: json!({"reviewer":"accepted","receipt":receipt}),
+                },
+            });
             resume.messages.push(Message::external(
                 json!({"reviewer":"accepted","receipt":receipt}).to_string(),
             ));
@@ -458,7 +456,7 @@ async fn workflow(
         checkpoint = next.map_err(|e| e.error)?;
     }
     let calls = env.calls.lock().unwrap().clone();
-    let records = recorded.records.lock().unwrap().clone();
+    let records = recorded_turns(&recorded);
     let settled_failure = if let State::Failed { error } = &checkpoint.state {
         Some(error.clone())
     } else {
@@ -554,7 +552,7 @@ async fn run_case(case: Case, shared: Arc<dyn Model>) -> Value {
     let store = StoreFixture::new(case.family == "wait_resume")
         .await
         .unwrap();
-    let recorded = Arc::new(RecordedModel::new(shared));
+    let recorded = Arc::new(RecordingModel::new(shared));
     let mut row = match workflow(&case, recorded.clone(), &store).await {
         Ok(row) => row,
         Err(error) => {
@@ -562,7 +560,7 @@ async fn run_case(case: Case, shared: Arc<dyn Model>) -> Value {
         }
     };
     if row.get("model_requests").is_none() {
-        row["model_requests"] = json!(*recorded.records.lock().unwrap());
+        row["model_requests"] = json!(recorded_turns(&recorded));
     }
     store.close().await;
     row["case_id"] = json!(tag);
@@ -671,7 +669,7 @@ fn cases() -> Vec<Case> {
 async fn live_scenario_scale() {
     let key = std::env::var("DEEPSEEK_API_KEY").expect("DEEPSEEK_API_KEY");
     let output = std::env::var("ZHIR_SCALE_REPORT")
-        .unwrap_or_else(|_| "/tmp/zhir-scenario-live.json".into());
+        .unwrap_or_else(|_| "test-results/zhir-scenario-live.json".into());
     let concurrency = std::env::var("ZHIR_SCALE_CONCURRENCY")
         .ok()
         .map(|s| s.parse::<usize>().unwrap())

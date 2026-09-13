@@ -9,9 +9,7 @@ use zhir::{
     BoxFuture, Invocation, Result,
     error::Error,
     message::{Content, Message},
-    model::{
-        Capabilities, Model, ModelContext, ModelDelta, ModelOptions, ModelRequest, ModelResponse,
-    },
+    model::{ModelDelta, ModelRequest, TurnOutput},
     models::{
         HttpModel, ModelConfig, Protocol, ProtocolExtension, anthropic, openai, transport::SseEvent,
     },
@@ -35,7 +33,13 @@ pub fn name(protocol: Protocol) -> &'static str {
     }
 }
 pub fn http(protocol: Protocol, base: &str, key: &str, model: &str) -> Result<HttpModel> {
-    let mut config = ModelConfig::new(base, key, model);
+    let mut config = ModelConfig::new(
+        base,
+        std::sync::Arc::new(zhir_models::credentials::StaticCredential::new(
+            "Bearer", key,
+        )),
+        model,
+    );
     config.timeout = Duration::from_secs(60);
     match protocol {
         Protocol::Chat => openai::chat::model(config),
@@ -43,41 +47,70 @@ pub fn http(protocol: Protocol, base: &str, key: &str, model: &str) -> Result<Ht
         Protocol::Messages => anthropic::messages::model(config),
     }
 }
-pub fn options(protocol: Protocol, tag: &str, thinking: bool) -> ModelOptions {
-    let mut options = ModelOptions {
+pub fn options(protocol: Protocol, tag: &str, thinking: bool) -> RequestProfile {
+    let generation = GenerationProfile {
         max_output_tokens: (protocol != Protocol::Chat).then_some(1024),
         ..Default::default()
     };
+    let mut options = RequestProfile {
+        generation,
+        ..Default::default()
+    };
+    let namespace = match protocol {
+        Protocol::Chat => "chat",
+        Protocol::Responses => "responses",
+        Protocol::Messages => "messages",
+    };
     if protocol == Protocol::Chat {
-        options.extra.insert("max_tokens".into(), json!(1024));
+        options
+            .extensions
+            .entry(namespace.into())
+            .or_default()
+            .insert("max_tokens".into(), json!(1024));
     }
-    options.extra.insert("consumer_tag".into(), json!(tag));
+    options
+        .extensions
+        .entry(namespace.into())
+        .or_default()
+        .insert("consumer_tag".into(), json!(tag));
     match protocol {
         Protocol::Responses => {
-            options.extra.insert(
-                "reasoning".into(),
-                json!({"effort":if thinking {"low"} else {"none"}}),
-            );
+            options
+                .extensions
+                .entry(namespace.into())
+                .or_default()
+                .insert(
+                    "reasoning".into(),
+                    json!({"effort":if thinking {"low"} else {"none"}}),
+                );
         }
         _ => {
-            options.extra.insert(
-                "thinking".into(),
-                json!({"type":if thinking {"enabled"} else {"disabled"}}),
-            );
-            if thinking {
-                options.extra.insert(
-                    if protocol == Protocol::Chat {
-                        "reasoning_effort"
-                    } else {
-                        "output_config"
-                    }
-                    .into(),
-                    if protocol == Protocol::Chat {
-                        json!("low")
-                    } else {
-                        json!({"effort":"low"})
-                    },
+            options
+                .extensions
+                .entry(namespace.into())
+                .or_default()
+                .insert(
+                    "thinking".into(),
+                    json!({"type":if thinking {"enabled"} else {"disabled"}}),
                 );
+            if thinking {
+                options
+                    .extensions
+                    .entry(namespace.into())
+                    .or_default()
+                    .insert(
+                        if protocol == Protocol::Chat {
+                            "reasoning_effort"
+                        } else {
+                            "output_config"
+                        }
+                        .into(),
+                        if protocol == Protocol::Chat {
+                            json!("low")
+                        } else {
+                            json!({"effort":"low"})
+                        },
+                    );
             }
         }
     }
@@ -106,56 +139,20 @@ impl ProtocolExtension for ConsumerSession {
         &mut self,
         _: Protocol,
         _: &Value,
-        decoded: Result<ModelResponse>,
-    ) -> Result<ModelResponse> {
+        decoded: Result<TurnOutput>,
+    ) -> Result<TurnOutput> {
         let mut response = decoded?;
         response.provider_data["consumer_session"] = json!({"tag":self.tag,"frames":self.frames});
         Ok(response)
     }
 }
-pub struct RecordedModel {
-    pub inner: Arc<dyn Model>,
-    pub records: Mutex<Vec<Value>>,
-}
-impl RecordedModel {
-    pub fn new(inner: Arc<dyn Model>) -> Self {
-        Self {
-            inner,
-            records: Mutex::new(vec![]),
-        }
-    }
-}
-impl Model for RecordedModel {
-    fn capabilities(&self) -> &Capabilities {
-        self.inner.capabilities()
-    }
-    fn invoke(
-        &self,
-        request: ModelRequest,
-        context: ModelContext,
-    ) -> BoxFuture<'_, Result<ModelResponse>> {
-        Box::pin(async move {
-            let requested_tag = request
-                .options
-                .extra
-                .get("consumer_tag")
-                .cloned()
-                .unwrap_or(Value::Null);
-            let run_id = context.run.run_id.clone();
-            let request_bytes=serde_json::to_vec(&json!({"messages":request.messages,"tools":request.runtime_tools,"options":request.options})).unwrap().len();
-            let result = self.inner.invoke(request, context).await;
-            let record = match &result {
-                Ok(response) => {
-                    json!({"run_id":run_id,"request_bytes":request_bytes,"requested_tag":requested_tag,"response_id":response.response_id,"model_id":response.model_id,"usage":response.usage,"session":response.provider_data["consumer_session"],"output":response.output,"finish_reason":response.finish_reason})
-                }
-                Err(error) => {
-                    json!({"run_id":run_id,"request_bytes":request_bytes,"error":error.to_string()})
-                }
-            };
-            self.records.lock().unwrap().push(record);
-            result
-        })
-    }
+pub use zhir_testing::RecordingModel;
+pub fn recorded_turns(model: &RecordingModel) -> Vec<Value> {
+    model.records().iter().flat_map(|record| {
+        let run = &record.opening.run;
+        let requested_tag = record.opening.request.profile.extensions.values().find_map(|values|values.get("consumer_tag")).cloned().unwrap_or(Value::Null);
+        record.completed_turns().into_iter().map(move |response|json!({"run_id":run.run_id,"requested_tag":requested_tag,"response_id":response.response_id,"model_id":response.model_id,"usage":response.usage,"session":response.provider_data["consumer_session"],"output":response.output,"finish_reason":response.finish_reason}))
+    }).collect()
 }
 #[derive(Default)]
 pub struct Events {
@@ -282,7 +279,7 @@ impl StoreFixture {
         }
         require(!runs.is_empty(), "missing committed trace")?;
         for trace in runs.values() {
-            zhir::kernel::diagnostics::verify_trace(trace)?;
+            zhir_testing::verify_trace(trace)?;
         }
         Ok(runs.values().map(Vec::len).sum())
     }
@@ -297,6 +294,12 @@ impl StoreFixture {
     }
 }
 pub fn save(path: &str, rows: &[Value]) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
     std::fs::write(path, serde_json::to_vec_pretty(rows).unwrap()).unwrap();
 }
 pub fn empty_request(stream: bool) -> ModelRequest {
@@ -304,9 +307,11 @@ pub fn empty_request(stream: bool) -> ModelRequest {
         messages: vec![Message::user("fixture")],
         runtime_tools: vec![],
         provider_tools: vec![],
-        options: ModelOptions::default(),
+        profile: Default::default(),
         tool_choice: Default::default(),
         response_format: None,
         stream,
     }
 }
+
+use zhir_core::{model::GenerationProfile, profile::RequestProfile};

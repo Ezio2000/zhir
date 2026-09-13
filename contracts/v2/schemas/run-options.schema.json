@@ -1,0 +1,616 @@
+{
+  "$defs": {
+    "GenerationProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "max_output_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "parallel_runtime_tools": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "seed": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "temperature": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Interaction": {
+      "enum": [
+        "turn_based",
+        "duplex"
+      ],
+      "type": "string"
+    },
+    "Limits": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_timeout_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "elapsed_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_buffered_media_bytes": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_control_commands": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_inflight_operations": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_media_chunk_bytes": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_media_streams": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_model_turns": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_observer_events": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_runtime_tool_calls": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_runtime_tool_concurrency": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_session_events": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_total_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "max_model_turns",
+        "max_runtime_tool_calls",
+        "max_inflight_operations",
+        "max_control_commands",
+        "max_session_events",
+        "max_media_streams",
+        "max_media_chunk_bytes",
+        "max_buffered_media_bytes",
+        "max_runtime_tool_concurrency",
+        "max_observer_events",
+        "commit_timeout_ms"
+      ],
+      "type": "object"
+    },
+    "ProviderToolSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "options": {
+          "default": null
+        },
+        "provider": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "name"
+      ],
+      "type": "object"
+    },
+    "Reasoning": {
+      "enum": [
+        "low",
+        "balanced",
+        "high"
+      ],
+      "type": "string"
+    },
+    "RequestProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "alternatives": {
+          "additionalProperties": {
+            "items": true,
+            "type": "array"
+          },
+          "description": "Exact, ordered alternatives. An empty list prohibits semantic degradation.",
+          "type": "object"
+        },
+        "extensions": {
+          "additionalProperties": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "object"
+        },
+        "generation": {
+          "$ref": "#/$defs/GenerationProfile"
+        },
+        "interaction": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Requirement4"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "language": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Requirement3"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reasoning": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Requirement2"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "serving": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Requirement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "generation",
+        "alternatives",
+        "extensions"
+      ],
+      "type": "object"
+    },
+    "Requirement": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "required",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Serving"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "preferred",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Serving"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Requirement2": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "required",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Reasoning"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "preferred",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Reasoning"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Requirement3": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "required",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "preferred",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Requirement4": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "required",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Interaction"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "preferred",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Interaction"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ResponseFormat": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "json",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "schema",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "schema": true
+          },
+          "required": [
+            "kind",
+            "name",
+            "schema"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RunMode": {
+      "enum": [
+        "task",
+        "interactive"
+      ],
+      "type": "string"
+    },
+    "RuntimeToolSelection": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "all",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "only",
+              "type": "string"
+            },
+            "names": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "names"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "none",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Serving": {
+      "enum": [
+        "balanced",
+        "low_latency",
+        "low_cost"
+      ],
+      "type": "string"
+    },
+    "ToolChoice": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "auto",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "none",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "required",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "runtime_tool",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "provider_tool",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "provider": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "provider",
+            "name"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Effective parameters frozen when a run starts and persisted with every checkpoint.",
+  "properties": {
+    "limits": {
+      "$ref": "#/$defs/Limits"
+    },
+    "mode": {
+      "$ref": "#/$defs/RunMode"
+    },
+    "profile": {
+      "$ref": "#/$defs/RequestProfile"
+    },
+    "provider_tools": {
+      "items": {
+        "$ref": "#/$defs/ProviderToolSpec"
+      },
+      "type": "array"
+    },
+    "response_format": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ResponseFormat"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "runtime_tools": {
+      "$ref": "#/$defs/RuntimeToolSelection"
+    },
+    "stream": {
+      "type": "boolean"
+    },
+    "tool_choice": {
+      "$ref": "#/$defs/ToolChoice"
+    }
+  },
+  "required": [
+    "runtime_tools",
+    "limits",
+    "profile",
+    "mode",
+    "provider_tools",
+    "tool_choice",
+    "stream"
+  ],
+  "title": "RunOptions",
+  "type": "object"
+}

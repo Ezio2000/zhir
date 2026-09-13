@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "name": "resource_url",
+  "kind": "value",
+  "schema": "resource",
+  "value": {
+    "id": "resource",
+    "media_type": "video/mp4",
+    "name": null,
+    "source": {
+      "kind": "url",
+      "url": "https://fixture.invalid/resource"
+    },
+    "metadata": {}
+  },
+  "valid": true
+}

@@ -39,23 +39,23 @@ impl HistoryReducer for HistoryWindow {
     fn reduce(&self, checkpoint: Arc<Checkpoint>) -> BoxFuture<'_, Result<Option<HistoryRewrite>>> {
         Box::pin(async move {
             checkpoint.validate()?;
-            let Some(active) = checkpoint.state.active() else {
-                return Ok(None);
-            };
-            if !matches!(
-                active,
-                zhir_core::run::ActiveState::Planning {
-                    provider_turn_pending: false
-                }
-            ) {
+            if !checkpoint.state.active()
+                || checkpoint.active.session.disposition.is_none()
+                || checkpoint
+                    .active
+                    .operations
+                    .values()
+                    .any(|op| !op.state.terminal())
+                || !checkpoint.active.commands.is_empty()
+            {
                 return Ok(None);
             }
-            let messages = checkpoint.history.messages();
+            let messages = checkpoint.history.entries();
             let starts: Vec<usize> = messages
                 .iter()
                 .enumerate()
                 .filter_map(|(index, message)| {
-                    matches!(message, Message::User { .. }).then_some(index)
+                    matches!(message.message, Message::User { .. }).then_some(index)
                 })
                 .collect();
             if starts.len() <= self.turns {
@@ -80,17 +80,17 @@ impl HistoryReducer for HistoryWindow {
                 .iter()
                 .enumerate()
                 .filter(|(index, message)| {
-                    *index >= first || matches!(message, Message::System { .. })
+                    *index >= first || matches!(message.message, Message::System { .. })
                 })
                 .map(|(_, message)| message.clone())
                 .collect();
             if retained.len() == messages.len() {
                 return Ok(None);
             }
-            let history = zhir_core::run::History::new(retained.clone())?;
-            validate_history(&history, Some(&active))?;
+            let history = zhir_core::run::History::from_entries(retained.clone())?;
+            validate_history(&history)?;
             Ok(Some(HistoryRewrite {
-                messages: retained,
+                entries: retained,
                 reason: format!("retain last {} complete user turns", self.turns),
             }))
         })

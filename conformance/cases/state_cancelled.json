@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "name": "state_cancelled",
+  "kind": "value",
+  "schema": "state",
+  "value": {
+    "kind": "cancelled"
+  },
+  "valid": true
+}

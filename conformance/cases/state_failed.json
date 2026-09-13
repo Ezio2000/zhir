@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "name": "state_failed",
+  "kind": "value",
+  "schema": "state",
+  "value": {
+    "kind": "failed",
+    "error": {
+      "code": "x",
+      "message": "x",
+      "retryable": false
+    }
+  },
+  "valid": true
+}

@@ -5,7 +5,7 @@ use std::{
 use zhir_core::{
     BoxFuture, Result,
     error::Error,
-    model::{Capabilities, Model, ModelContext, ModelDelta, ModelRequest, ModelResponse},
+    model::{CapabilitySet, Model, ModelContext, ModelDelta, ModelRequest, TurnOutput},
     run::RunContext,
 };
 #[derive(Clone, Debug)]
@@ -14,18 +14,12 @@ pub struct RecordedRequest {
     pub run: RunContext,
 }
 #[derive(Clone, Debug)]
-pub struct ModelRecord {
-    pub input: RecordedRequest,
-    /// None means the invocation has not returned, including a dropped future.
-    pub outcome: Option<Result<ModelResponse>>,
-}
-#[derive(Clone, Debug)]
 pub struct ScriptStep {
     pub deltas: Vec<ModelDelta>,
-    pub outcome: Result<ModelResponse>,
+    pub outcome: Result<TurnOutput>,
 }
 impl ScriptStep {
-    pub fn response(response: ModelResponse) -> Self {
+    pub fn response(response: TurnOutput) -> Self {
         Self {
             deltas: vec![],
             outcome: Ok(response),
@@ -78,18 +72,18 @@ struct Script {
     requests: Vec<RecordedRequest>,
 }
 pub struct ScriptedModel {
-    capabilities: Capabilities,
-    script: Mutex<Script>,
+    capabilities: CapabilitySet,
+    script: Arc<Mutex<Script>>,
 }
 impl ScriptedModel {
     pub fn new(steps: impl IntoIterator<Item = ScriptStep>) -> Self {
         Self {
             capabilities: crate::model_capabilities(),
-            script: Mutex::new(Script {
+            script: Arc::new(Mutex::new(Script {
                 steps: Steps::Ordered(steps.into_iter().collect()),
                 violations: vec![],
                 requests: vec![],
-            }),
+            })),
         }
     }
     pub fn matching(cases: impl IntoIterator<Item = ModelCase>) -> Result<Self> {
@@ -104,11 +98,11 @@ impl ScriptedModel {
         }
         Ok(Self {
             capabilities: crate::model_capabilities(),
-            script: Mutex::new(Script {
+            script: Arc::new(Mutex::new(Script {
                 steps: Steps::Matching(cases),
                 requests: vec![],
                 violations: vec![],
-            }),
+            })),
         })
     }
     pub fn verify(&self) -> Result<()> {
@@ -137,10 +131,10 @@ impl ScriptedModel {
             Err(Error::Protocol(issues.join("; ")))
         }
     }
-    pub fn responses(responses: impl IntoIterator<Item = ModelResponse>) -> Self {
+    pub fn responses(responses: impl IntoIterator<Item = TurnOutput>) -> Self {
         Self::new(responses.into_iter().map(ScriptStep::response))
     }
-    pub fn with_capabilities(mut self, capabilities: Capabilities) -> Self {
+    pub fn with_capabilities(mut self, capabilities: CapabilitySet) -> Self {
         self.capabilities = capabilities;
         self
     }
@@ -155,114 +149,305 @@ impl ScriptedModel {
     }
 }
 impl Model for ScriptedModel {
-    fn capabilities(&self) -> &Capabilities {
+    fn capabilities(&self) -> &CapabilitySet {
         &self.capabilities
     }
-    fn invoke(
+    fn negotiate(&self, request: &ModelRequest) -> Result<zhir_core::profile::NegotiatedProfile> {
+        zhir_policies::negotiation::negotiate(request, &self.capabilities)
+    }
+    fn open_session(
         &self,
-        request: ModelRequest,
-        context: ModelContext,
-    ) -> BoxFuture<'_, Result<ModelResponse>> {
+        open: zhir_core::model::SessionOpen,
+    ) -> BoxFuture<'_, Result<zhir_core::model::ModelSession>> {
         Box::pin(async move {
-            context.cancellation.check()?;
-            request.validate(&self.capabilities)?;
-            let step = {
-                let mut script = self.script.lock().expect("script lock");
-                let input = RecordedRequest {
-                    request,
-                    run: context.run.clone(),
-                };
-                script.requests.push(input.clone());
-                let step = match &mut script.steps {
-                    Steps::Ordered(steps) => steps
-                        .pop_front()
-                        .ok_or_else(|| "model script exhausted".to_string()),
-                    Steps::Matching(cases) => {
-                        let matched: Vec<_> = cases
-                            .iter()
-                            .enumerate()
-                            .filter_map(|(i, c)| {
-                                (c.matcher.as_ref().expect("validated matcher"))(&input)
-                                    .then_some(i)
-                            })
-                            .collect();
-                        match matched.as_slice() {
-                            [index] => {
-                                let case = &mut cases[*index];
-                                case.steps
+            let script = self.script.clone();
+            let capabilities = self.capabilities.clone();
+            let model = zhir_models::function::FunctionModel::new(
+                self.capabilities.clone(),
+                move |request: ModelRequest, context: ModelContext| {
+                    let script = script.clone();
+                    let capabilities = capabilities.clone();
+                    async move {
+                        context.cancellation.check()?;
+                        request.validate(&capabilities)?;
+                        let step = {
+                            let mut script = script.lock().expect("script lock");
+                            let input = RecordedRequest {
+                                request,
+                                run: context.run.clone(),
+                            };
+                            script.requests.push(input.clone());
+                            let step = match &mut script.steps {
+                                Steps::Ordered(steps) => steps
                                     .pop_front()
-                                    .ok_or_else(|| format!("case {} exhausted", case.name))
+                                    .ok_or_else(|| "model script exhausted".to_string()),
+                                Steps::Matching(cases) => {
+                                    let matched: Vec<_> = cases
+                                        .iter()
+                                        .enumerate()
+                                        .filter_map(|(i, c)| {
+                                            (c.matcher.as_ref().expect("validated matcher"))(&input)
+                                                .then_some(i)
+                                        })
+                                        .collect();
+                                    match matched.as_slice() {
+                                        [index] => {
+                                            let case = &mut cases[*index];
+                                            case.steps.pop_front().ok_or_else(|| {
+                                                format!("case {} exhausted", case.name)
+                                            })
+                                        }
+                                        [] => Err(format!(
+                                            "no model case matched run {}",
+                                            input.run.run_id
+                                        )),
+                                        _ => Err(format!(
+                                            "multiple model cases matched: {:?}",
+                                            matched
+                                                .iter()
+                                                .map(|i| &cases[*i].name)
+                                                .collect::<Vec<_>>()
+                                        )),
+                                    }
+                                }
+                            };
+                            match step {
+                                Ok(step) => step,
+                                Err(message) => {
+                                    script.violations.push(message.clone());
+                                    return Err(Error::Protocol(message));
+                                }
                             }
-                            [] => Err(format!("no model case matched run {}", input.run.run_id)),
-                            _ => Err(format!(
-                                "multiple model cases matched: {:?}",
-                                matched.iter().map(|i| &cases[*i].name).collect::<Vec<_>>()
-                            )),
+                        };
+                        for delta in step.deltas {
+                            context.cancellation.check()?;
+                            if let Some(sink) = &context.deltas {
+                                sink.emit(delta).await?;
+                            }
                         }
+                        context.cancellation.check()?;
+                        let response = step.outcome?;
+                        response.validate()?;
+                        Ok(response)
                     }
-                };
-                match step {
-                    Ok(step) => step,
-                    Err(message) => {
-                        script.violations.push(message.clone());
-                        return Err(Error::Protocol(message));
-                    }
-                }
-            };
-            for delta in step.deltas {
-                context.cancellation.check()?;
-                if let Some(sink) = &context.deltas {
-                    sink.emit(delta).await?;
-                }
-            }
-            context.cancellation.check()?;
-            let response = step.outcome?;
-            response.validate()?;
-            Ok(response)
+                },
+            );
+            model.open_session(open).await
         })
     }
 }
 
 pub struct RecordingModel {
     inner: Arc<dyn Model>,
-    records: Mutex<Vec<ModelRecord>>,
+    records: Arc<Mutex<Vec<SessionRecord>>>,
+}
+#[derive(Clone)]
+pub struct SessionRecord {
+    pub opening: RecordedRequest,
+    pub session_id: String,
+    pub commands: Vec<zhir_core::model::SessionCommand>,
+    pub events: Vec<zhir_core::model::SessionEvent>,
 }
 impl RecordingModel {
     pub fn new(inner: Arc<dyn Model>) -> Self {
         Self {
             inner,
-            records: Mutex::new(vec![]),
+            records: Arc::new(Mutex::new(vec![])),
         }
     }
-    pub fn records(&self) -> Vec<ModelRecord> {
-        self.records.lock().expect("model records lock").clone()
+    pub fn records(&self) -> Vec<SessionRecord> {
+        self.records.lock().expect("records").clone()
+    }
+}
+struct RecordedInput {
+    inner: Arc<dyn zhir_core::model::SessionSender>,
+    records: Arc<Mutex<Vec<SessionRecord>>>,
+    index: usize,
+}
+impl zhir_core::model::SessionSender for RecordedInput {
+    fn capabilities(&self) -> &CapabilitySet {
+        self.inner.capabilities()
+    }
+    fn negotiate(&self, request: &ModelRequest) -> Result<zhir_core::profile::NegotiatedProfile> {
+        self.inner.negotiate(request)
+    }
+    fn send(&self, command: zhir_core::model::SessionCommand) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            self.records.lock().expect("records")[self.index]
+                .commands
+                .push(command.clone());
+            self.inner.send(command).await
+        })
+    }
+}
+struct RecordedEvents {
+    inner: Box<dyn zhir_core::model::SessionReceiver>,
+    records: Arc<Mutex<Vec<SessionRecord>>>,
+    index: usize,
+}
+impl zhir_core::model::SessionReceiver for RecordedEvents {
+    fn receive(&mut self) -> BoxFuture<'_, Result<Option<zhir_core::model::SessionEvent>>> {
+        Box::pin(async move {
+            let event = self.inner.receive().await?;
+            if let Some(event) = &event {
+                self.records.lock().expect("records")[self.index]
+                    .events
+                    .push(event.clone());
+            }
+            Ok(event)
+        })
     }
 }
 impl Model for RecordingModel {
-    fn capabilities(&self) -> &Capabilities {
+    fn capabilities(&self) -> &CapabilitySet {
         self.inner.capabilities()
     }
-    fn invoke(
+    fn negotiate(&self, request: &ModelRequest) -> Result<zhir_core::profile::NegotiatedProfile> {
+        self.inner.negotiate(request)
+    }
+    fn open_session(
         &self,
-        request: ModelRequest,
-        context: ModelContext,
-    ) -> BoxFuture<'_, Result<ModelResponse>> {
+        open: zhir_core::model::SessionOpen,
+    ) -> BoxFuture<'_, Result<zhir_core::model::ModelSession>> {
         Box::pin(async move {
             let index = {
-                let mut records = self.records.lock().expect("model records lock");
+                let mut records = self.records.lock().expect("records");
                 let index = records.len();
-                records.push(ModelRecord {
-                    input: RecordedRequest {
-                        request: request.clone(),
-                        run: context.run.clone(),
+                records.push(SessionRecord {
+                    opening: RecordedRequest {
+                        request: open.request.clone(),
+                        run: open.context.run.clone(),
                     },
-                    outcome: None,
+                    session_id: open.session_id.clone(),
+                    commands: vec![],
+                    events: vec![],
                 });
                 index
             };
-            let result = self.inner.invoke(request, context).await;
-            self.records.lock().expect("model records lock")[index].outcome = Some(result.clone());
-            result
+            let mut session = self.inner.open_session(open).await?;
+            session.input = Arc::new(RecordedInput {
+                inner: session.input,
+                records: self.records.clone(),
+                index,
+            });
+            session.output = Box::new(RecordedEvents {
+                inner: session.output,
+                records: self.records.clone(),
+                index,
+            });
+            Ok(session)
         })
+    }
+}
+
+/// Drives one native turn in adapter tests, asserting its session boundary.
+pub trait ModelTestExt: Model {
+    fn turn(
+        &self,
+        request: ModelRequest,
+        context: ModelContext,
+    ) -> BoxFuture<'_, Result<TurnOutput>> {
+        Box::pin(async move {
+            use zhir_core::model::*;
+            let mut session = self
+                .open_session(SessionOpen {
+                    session_id: "test-session".into(),
+                    after_sequence: None,
+                    epoch: 0,
+                    limits: zhir_kernel::defaults::limits(),
+                    request: request.clone(),
+                    recovery: None,
+                    context,
+                })
+                .await?;
+            session
+                .input
+                .send(SessionCommand {
+                    id: "test-command".into(),
+                    body: SessionCommandBody::StartTurn {
+                        turn_id: "test-turn".into(),
+                        request: Box::new(request),
+                    },
+                })
+                .await?;
+            let mut result = TurnOutput::text("");
+            result.output.clear();
+            while let Some(event) = session.output.receive().await? {
+                match event.body {
+                    SessionEventBody::Output { output, .. } => result.output.push(output),
+                    SessionEventBody::TurnFinished {
+                        disposition,
+                        usage,
+                        model_id,
+                        response_id,
+                        finish_reason,
+                        provider_data,
+                        ..
+                    } => {
+                        result.usage = usage;
+                        result.provider_turn_pending = disposition == TurnDisposition::Continue;
+                        result.model_id = model_id;
+                        result.response_id = response_id;
+                        result.finish_reason = finish_reason;
+                        result.provider_data = provider_data;
+                        result.validate()?;
+                        return Ok(result);
+                    }
+                    SessionEventBody::Acknowledged { .. }
+                    | SessionEventBody::Delta { .. }
+                    | SessionEventBody::Recovery { .. } => (),
+                    _ => {
+                        return Err(Error::Protocol(
+                            "unexpected event in isolated turn test".into(),
+                        ));
+                    }
+                }
+            }
+            Err(Error::Protocol(
+                "session ended before turn completion".into(),
+            ))
+        })
+    }
+}
+impl<T: Model + ?Sized> ModelTestExt for T {}
+
+impl SessionRecord {
+    /// Completed turns reconstructed from the session event log; unfinished turns
+    /// remain visible in `events` and are deliberately absent here.
+    pub fn completed_turns(&self) -> Vec<TurnOutput> {
+        use zhir_core::model::{SessionEventBody, TurnDisposition};
+        let mut outputs =
+            std::collections::BTreeMap::<String, Vec<zhir_core::message::Output>>::new();
+        let mut turns = Vec::new();
+        for event in &self.events {
+            match &event.body {
+                SessionEventBody::Output {
+                    turn_id, output, ..
+                } => outputs
+                    .entry(turn_id.clone())
+                    .or_default()
+                    .push(output.clone()),
+                SessionEventBody::TurnFinished {
+                    turn_id,
+                    disposition,
+                    usage,
+                    model_id,
+                    response_id,
+                    finish_reason,
+                    provider_data,
+                    ..
+                } => turns.push(TurnOutput {
+                    output: outputs.remove(turn_id).unwrap_or_default(),
+                    provider_turn_pending: *disposition == TurnDisposition::Continue,
+                    usage: usage.clone(),
+                    model_id: model_id.clone(),
+                    response_id: response_id.clone(),
+                    finish_reason: finish_reason.clone(),
+                    provider_data: provider_data.clone(),
+                }),
+                _ => (),
+            }
+        }
+        turns
     }
 }

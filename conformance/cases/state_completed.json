@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "name": "state_completed",
+  "kind": "value",
+  "schema": "state",
+  "value": {
+    "kind": "completed",
+    "content": []
+  },
+  "valid": true
+}

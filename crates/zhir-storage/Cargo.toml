@@ -21,12 +21,7 @@ redis = { workspace = true, optional = true }
 
 [features]
 default = []
-artifacts-filesystem = ["dep:sha2", "dep:tempfile"]
+resources-filesystem = ["dep:sha2", "dep:tempfile"]
 sqlite = ["dep:sqlx", "sqlx/sqlite", "sqlx/any"]
 mysql = ["dep:sqlx", "sqlx/mysql", "sqlx/any"]
 redis = ["dep:redis"]
-
-[dev-dependencies]
-uuid.workspace = true
-zhir-kernel.workspace = true
-tempfile.workspace = true

@@ -38,7 +38,7 @@ pub(super) fn encode(
             Ok(json!({"name":spec.name,"description":spec.description,"input_schema":schema}))
         })
         .collect::<Result<Vec<_>>>()?;
-    let mut body = json!({"model":model,"stream":request.stream,"messages":messages,"max_tokens":request.options.max_output_tokens.unwrap_or(4096)});
+    let mut body = json!({"model":model,"stream":request.stream,"messages":messages,"max_tokens":request.profile.generation.max_output_tokens.unwrap_or(4096)});
     if !system.is_empty() {
         body["system"] = json!(system);
     }
@@ -79,29 +79,31 @@ fn assistant(
 fn content(value: &Content, _: bool) -> Result<Value> {
     Ok(match value {
         Content::Text { text } => json!({"type":"text","text":text}),
-        Content::Image { source } => json!({"type":"image","source":media_source(source)?}),
-        Content::File { source, name } => {
-            json!({"type":"document","source":media_source(source)?,"title":name})
-        }
         Content::Opaque { data, .. } => data.clone(),
-        _ => {
-            return Err(Error::Invalid(
-                "unsupported media for selected protocol".into(),
-            ));
+        Content::Resource { input } => {
+            let resource = &input.resource;
+            let source = match &resource.source {
+                ResourceSource::Url { url } => json!({"type":"url","url":url}),
+                ResourceSource::Inline { bytes } => {
+                    json!({"type":"base64","media_type":resource.media_type,"data":base64::engine::general_purpose::STANDARD.encode(bytes)})
+                }
+                _ => {
+                    return Err(Error::Invalid(
+                        "resource must be resolved before encoding".into(),
+                    ));
+                }
+            };
+            let mut value = match resource.modality() {
+                "image" => json!({"type":"image","source":source}),
+                "file" => json!({"type":"document","source":source,"title":resource.name}),
+                _ => return Err(Error::Invalid("unsupported resource modality".into())),
+            };
+            resource_extensions(input, "messages", &mut value)?;
+            value
         }
     })
 }
-fn media_source(source: &MediaSource) -> Result<Value> {
-    match source {
-        MediaSource::Url { url } => Ok(json!({"type":"url","url":url})),
-        MediaSource::Inline { mime_type, base64 } => {
-            Ok(json!({"type":"base64","media_type":mime_type,"data":base64}))
-        }
-        MediaSource::Artifact { .. } => Err(Error::Invalid(
-            "resolve artifact before model invocation".into(),
-        )),
-    }
-}
+
 pub(super) fn choice(choice: &ToolChoice) -> Result<Value> {
     Ok(match choice {
         ToolChoice::Auto => json!({"type":"auto"}),

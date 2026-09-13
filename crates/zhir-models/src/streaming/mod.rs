@@ -68,8 +68,6 @@ async fn dispatch(
 mod chat;
 mod messages;
 mod responses;
-#[cfg(test)]
-mod tests;
 
 enum Accumulator {
     Chat(chat::State),

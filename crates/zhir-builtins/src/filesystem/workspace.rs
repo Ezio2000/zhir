@@ -5,11 +5,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
 };
-use zhir_core::{
-    Result,
-    error::Error,
-    tool::{RuntimeToolContext, RuntimeToolResult},
-};
+use zhir_core::{Result, error::Error, operation::ToolExecution, tool::RuntimeToolContext};
 pub(super) const MAX_BYTES: u64 = 4 * 1024 * 1024;
 pub(super) const MAX_READ_LINES: usize = 2000;
 #[derive(Clone)]
@@ -77,10 +73,7 @@ pub(super) fn utf8(bytes: &[u8]) -> Result<&str> {
 pub(super) fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
-pub(super) async fn blocking<F>(
-    context: RuntimeToolContext,
-    operation: F,
-) -> Result<RuntimeToolResult>
+pub(super) async fn blocking<F>(context: RuntimeToolContext, operation: F) -> Result<ToolExecution>
 where
     F: FnOnce(RuntimeToolContext) -> Result<Value> + Send + 'static,
 {

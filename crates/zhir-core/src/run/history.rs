@@ -1,18 +1,35 @@
-use super::PendingCalls;
 use crate::{
     Result,
     error::Error,
     message::{Message, Output},
+    operation::CallRef,
     tool::RuntimeToolCall,
 };
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HistoryEntry {
+    pub id: String,
+    pub origin: Option<CallRef>,
+    pub message: Message,
+}
+impl HistoryEntry {
+    pub fn validate(&self) -> Result<()> {
+        if self.id.is_empty() {
+            return Err(Error::Invalid("empty history identity".into()));
+        }
+        self.message.validate()
+    }
+}
 const CHUNK_SIZE: usize = 64;
 #[derive(Debug)]
 struct Node {
     previous: Option<Arc<Node>>,
-    messages: Vec<Message>,
+    messages: Vec<HistoryEntry>,
     prefix_digests: Vec<[u8; 32]>,
     len: usize,
     digest: [u8; 32],
@@ -36,71 +53,114 @@ pub struct History {
     digest: [u8; 32],
     order: Order,
 }
-#[derive(Debug, Clone)]
-struct Pending {
-    range: PendingCalls,
-    calls: Arc<[RuntimeToolCall]>,
-}
 #[derive(Debug, Clone, Default)]
 struct Order {
-    pending: Option<Pending>,
+    ids: im::OrdMap<String, usize>,
+    calls: im::OrdMap<CallRef, RuntimeToolCall>,
+    completed: im::OrdSet<CallRef>,
     error: Option<&'static str>,
 }
 impl Order {
-    fn append(&mut self, message: &Message, index: usize) {
-        if self.error.is_some() {
-            return;
+    fn append(&mut self, entry: &HistoryEntry, index: usize) {
+        if self.error.is_none() {
+            self.error = self.update(entry, index).err();
         }
-        self.error = self.update(message, index).err();
     }
-    fn update(&mut self, message: &Message, index: usize) -> std::result::Result<(), &'static str> {
-        match message {
+    fn update(
+        &mut self,
+        entry: &HistoryEntry,
+        index: usize,
+    ) -> std::result::Result<(), &'static str> {
+        if self.ids.contains_key(&entry.id) {
+            return Err("duplicate history identity");
+        }
+        self.ids.insert(entry.id.clone(), index);
+        match &entry.message {
             Message::Assistant { output, .. } => {
-                if self.pending.is_some() {
-                    return Err("assistant interrupts pending tools");
-                }
-                let calls: Arc<[RuntimeToolCall]> = output
-                    .iter()
-                    .filter_map(|o| match o {
-                        Output::RuntimeToolCall { call } => Some(call.clone()),
-                        _ => None,
-                    })
-                    .collect();
-                if !calls.is_empty() {
-                    self.pending = Some(Pending {
-                        range: PendingCalls {
-                            message_index: index,
-                            next: 0,
-                            end: calls.len(),
-                        },
-                        calls,
-                    });
+                for item in output {
+                    if let Output::RuntimeToolCall { call } = item {
+                        let mut origin = entry
+                            .origin
+                            .clone()
+                            .ok_or("tool request requires an origin")?;
+                        origin.call_id = call.id.clone();
+                        if self.calls.contains_key(&origin) || self.completed.contains(&origin) {
+                            return Err("duplicate tool call identity");
+                        }
+                        self.calls.insert(origin, call.clone());
+                    }
                 }
             }
             Message::RuntimeTool { call_id, name, .. } => {
-                let pending = self
-                    .pending
-                    .as_mut()
-                    .ok_or("tool message does not match pending order")?;
-                let call = &pending.calls[pending.range.next];
+                let origin = entry
+                    .origin
+                    .as_ref()
+                    .ok_or("tool result requires an origin")?;
+                let call = self
+                    .calls
+                    .get(origin)
+                    .ok_or("tool result has no pending call")?;
                 if &call.id != call_id || &call.name != name {
-                    return Err("tool message does not match pending order");
+                    return Err("tool result identity mismatch");
                 }
-                pending.range.next += 1;
-                if pending.range.is_empty() {
-                    self.pending = None;
-                }
+                self.calls.remove(origin);
+                self.completed.insert(origin.clone());
             }
-            _ if self.pending.is_some() => return Err("message interrupts pending tools"),
-            _ => {}
+            _ => (),
         }
         Ok(())
     }
 }
 impl History {
     pub fn new(messages: Vec<Message>) -> Result<Self> {
-        Self::default().append(messages)
+        Self::default().append(
+            messages
+                .into_iter()
+                .enumerate()
+                .map(|(index, message)| HistoryEntry {
+                    id: format!("input:{index}"),
+                    origin: None,
+                    message,
+                })
+                .collect(),
+        )
     }
+    pub fn from_entries(entries: Vec<HistoryEntry>) -> Result<Self> {
+        Self::default().append(entries)
+    }
+    pub fn validate(&self) -> Result<()> {
+        if self.is_empty() {
+            return Err(Error::Invalid("empty history".into()));
+        }
+        if let Some(error) = self.order.error {
+            return Err(Error::Invalid(error.into()));
+        }
+        Ok(())
+    }
+    pub fn pending_calls(&self) -> impl Iterator<Item = (&CallRef, &RuntimeToolCall)> {
+        self.order.calls.iter()
+    }
+    pub fn by_id(&self, id: &str) -> Option<&HistoryEntry> {
+        self.order.ids.get(id).and_then(|index| self.get(*index))
+    }
+    pub fn get(&self, index: usize) -> Option<&HistoryEntry> {
+        let mut node = self.head.as_ref();
+        while let Some(n) = node {
+            let start = n.len - n.messages.len();
+            if index >= start {
+                return n.messages.get(index - start);
+            }
+            node = n.previous.as_ref();
+        }
+        None
+    }
+    pub fn messages(&self) -> Vec<Message> {
+        self.entries()
+            .into_iter()
+            .map(|entry| entry.message)
+            .collect()
+    }
+
     pub fn len(&self) -> usize {
         self.len
     }
@@ -110,7 +170,7 @@ impl History {
     pub fn digest(&self) -> [u8; 32] {
         self.digest
     }
-    pub fn append(&self, messages: Vec<Message>) -> Result<Self> {
+    pub fn append(&self, messages: Vec<HistoryEntry>) -> Result<Self> {
         let mut result = self.clone();
         for message in messages {
             message.validate()?;
@@ -137,7 +197,7 @@ impl History {
         }
         Ok(result)
     }
-    pub fn messages(&self) -> Vec<Message> {
+    pub fn entries(&self) -> Vec<HistoryEntry> {
         let mut chunks = Vec::new();
         let mut head = self.head.as_ref();
         while let Some(node) = head {
@@ -150,30 +210,12 @@ impl History {
         }
         result
     }
-    pub fn last(&self) -> Option<&Message> {
+    pub fn last(&self) -> Option<&HistoryEntry> {
         self.head.as_ref().and_then(|n| n.messages.last())
-    }
-    /// Validated unresolved work, maintained incrementally during append.
-    pub fn pending(&self) -> Result<Option<PendingCalls>> {
-        if self.is_empty() {
-            return Err(Error::Invalid("empty history".into()));
-        }
-        if let Some(error) = self.order.error {
-            return Err(Error::Invalid(error.into()));
-        }
-        Ok(self.order.pending.as_ref().map(|p| p.range))
-    }
-    /// Borrow the remaining payloads only when the cursor matches this history.
-    pub fn resolve_pending(&self, calls: PendingCalls) -> Result<&[RuntimeToolCall]> {
-        if self.pending()? != Some(calls) {
-            return Err(Error::Invalid("pending state differs from history".into()));
-        }
-        let pending = self.order.pending.as_ref().expect("matched pending range");
-        Ok(&pending.calls[calls.next..calls.end])
     }
     /// Return just the added messages, verifying the immutable prefix by its
     /// cached incremental digests. Work is proportional to the suffix.
-    pub fn appended_since(&self, previous: &Self) -> Result<Vec<Message>> {
+    pub fn appended_since(&self, previous: &Self) -> Result<Vec<HistoryEntry>> {
         let mismatch = || Error::Invalid("history prefix changed without rewrite".into());
         if previous.len > self.len {
             return Err(mismatch());
@@ -207,7 +249,7 @@ impl History {
         Ok(chunks.into_iter().rev().flatten().cloned().collect())
     }
 }
-pub fn append_digest(previous: [u8; 32], message: &Message) -> Result<[u8; 32]> {
+pub fn append_digest(previous: [u8; 32], message: &HistoryEntry) -> Result<[u8; 32]> {
     let encoded =
         serde_json::to_vec(message).map_err(|e| crate::error::Error::Invalid(e.to_string()))?;
     let mut digest = Sha256::new();

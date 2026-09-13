@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "name": "state_limited",
+  "kind": "value",
+  "schema": "state",
+  "value": {
+    "kind": "limited",
+    "reason": "model_turns"
+  },
+  "valid": true
+}

@@ -18,21 +18,22 @@ use zhir::{
     Result, Runtime,
     error::Error,
     message::{Message, Output},
-    model::{Capabilities, Model, ModelContext, ModelRequest, ModelResponse},
+    model::{CapabilitySet, ModelContext, ModelRequest, TurnOutput},
     models::{ConcurrencyLimitedModel, FunctionModel},
     output::JsonOutput,
     policies::history::HistoryWindow,
-    run::{Checkpoint, Fact, History, HistoryReducer, State},
+    run::{Checkpoint, History, HistoryReducer, State},
     runtime_tools::{RuntimeToolRegistry, TypedTool},
     tool::{Execution, RuntimeToolCall, RuntimeToolInput},
 };
+use zhir_testing::ModelTestExt;
 
 fn request() -> ModelRequest {
     ModelRequest {
         messages: vec![Message::user("test")],
         runtime_tools: vec![],
         provider_tools: vec![],
-        options: Default::default(),
+        profile: Default::default(),
         tool_choice: Default::default(),
         response_format: None,
         stream: false,
@@ -46,19 +47,42 @@ fn context() -> ModelContext {
     }
 }
 fn checkpoint(messages: Vec<Message>) -> Arc<Checkpoint> {
-    Arc::new(Checkpoint {
-        options: zhir::kernel::defaults::run_options(),
-        id: "checkpoint".into(),
-        parent_id: None,
-        revision: 0,
-        context: zhir::kernel::defaults::context(),
-        history: History::new(messages).unwrap(),
-        state: State::Planning {
-            provider_turn_pending: false,
-        },
-        metrics: Default::default(),
-        fact: Fact::Started,
-    })
+    let entries = messages
+        .into_iter()
+        .enumerate()
+        .map(|(index, message)| {
+            let origin = match &message {
+                Message::RuntimeTool { call_id, .. } => Some(zhir_core::operation::CallRef {
+                    session_id: "s".into(),
+                    turn_id: "t".into(),
+                    caller_id: "model".into(),
+                    call_id: call_id.clone(),
+                }),
+                Message::Assistant { output, .. }
+                    if output
+                        .iter()
+                        .any(|o| matches!(o, Output::RuntimeToolCall { .. })) =>
+                {
+                    Some(zhir_core::operation::CallRef {
+                        session_id: "s".into(),
+                        turn_id: "t".into(),
+                        caller_id: "model".into(),
+                        call_id: "call".into(),
+                    })
+                }
+                _ => None,
+            };
+            zhir_core::run::HistoryEntry {
+                id: format!("e{index}"),
+                origin,
+                message,
+            }
+        })
+        .collect();
+    let mut checkpoint =
+        zhir_testing::checkpoint_with_history(History::from_entries(entries).unwrap());
+    checkpoint.active.session.disposition = Some(zhir_core::model::TurnDisposition::Finished);
+    Arc::new(checkpoint)
 }
 #[derive(Debug, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -71,15 +95,16 @@ struct Report {
 async fn output_contract_uses_one_schema_and_reports_validation_stage() {
     let output = JsonOutput::<Report>::new("report").unwrap();
     let model = Arc::new(FunctionModel::new(
-        Capabilities {
-            structured_output: true,
+        CapabilitySet {
+            features: [zhir_core::model::Capability::StructuredOutput].into(),
+
             ..zhir_testing::model_capabilities()
         },
         |request, _| async move {
             assert!(
                 matches!(request.response_format, Some(zhir::model::ResponseFormat::Schema {schema, ..}) if schema["properties"]["count"]["maximum"] == 10)
             );
-            Ok(ModelResponse::text(r#"{"count":3}"#))
+            Ok(TurnOutput::text(r#"{"count":3}"#))
         },
     ));
     let runtime = Runtime::builder(model)
@@ -148,20 +173,33 @@ async fn history_windows_keep_runtime_results_external_replies_and_dependencies(
         Message::RuntimeTool {
             call_id: call.id,
             name: call.name,
-            outcome: zhir::runtime_tools::reply::json(json!("ok")).outcome,
+            outcome: zhir::runtime_tools::reply::json(json!("ok"))
+                .final_outcome()
+                .clone(),
         },
         Message::external("reply"),
     ];
     let original = checkpoint(messages);
     let window = HistoryWindow::last_turns(1).unwrap();
     let rewrite = window.reduce(original.clone()).await.unwrap().unwrap();
-    assert_eq!(rewrite.messages.len(), 5);
-    assert!(matches!(rewrite.messages[0], Message::System { .. }));
-    assert!(matches!(rewrite.messages[3], Message::RuntimeTool { .. }));
-    assert!(matches!(rewrite.messages[4], Message::External { .. }));
+    assert_eq!(rewrite.entries.len(), 5);
+    assert!(matches!(rewrite.entries[0].message, Message::System { .. }));
+    assert!(matches!(
+        rewrite.entries[3].message,
+        Message::RuntimeTool { .. }
+    ));
+    assert!(matches!(
+        rewrite.entries[4].message,
+        Message::External { .. }
+    ));
     assert!(
         window
-            .reduce(checkpoint(rewrite.messages))
+            .reduce(
+                zhir_testing::checkpoint_with_history(
+                    History::from_entries(rewrite.entries).unwrap()
+                )
+                .into()
+            )
             .await
             .unwrap()
             .is_none()
@@ -184,9 +222,8 @@ async fn history_windows_keep_runtime_results_external_replies_and_dependencies(
             .is_err()
     );
     let mut pending = (*original).clone();
-    pending.state = State::Planning {
-        provider_turn_pending: true,
-    };
+    pending.active.session.disposition = None;
+    pending.active.session.turn_id = Some("active".into());
     assert!(window.reduce(Arc::new(pending)).await.unwrap().is_none());
     assert!(HistoryWindow::last_turns(0).is_err());
 }
@@ -212,7 +249,7 @@ async fn shared_limiter_bounds_128_calls_and_releases_failed_calls() {
     }));
     let limited = Arc::new(ConcurrencyLimitedModel::new(model, 4).unwrap());
     let results =
-        futures::future::join_all((0..128).map(|_| limited.invoke(request(), context()))).await;
+        futures::future::join_all((0..128).map(|_| limited.turn(request(), context()))).await;
     assert!(results.iter().all(Result::is_err));
     assert!((1..=4).contains(&peak.load(Ordering::SeqCst)));
     assert_eq!(active.load(Ordering::SeqCst), 0);
@@ -232,14 +269,14 @@ async fn queued_cancellation_deadline_and_dropped_future_release_permits() {
                 entered.fetch_add(1, Ordering::SeqCst);
                 let permit = gate.acquire().await.unwrap();
                 permit.forget();
-                Ok(ModelResponse::text("done"))
+                Ok(TurnOutput::text("done"))
             }
         }
     }));
     let limited = Arc::new(ConcurrencyLimitedModel::new(model, 1).unwrap());
     let first = tokio::spawn({
         let limited = limited.clone();
-        async move { limited.invoke(request(), context()).await }
+        async move { limited.turn(request(), context()).await }
     });
     while entered.load(Ordering::SeqCst) == 0 {
         tokio::task::yield_now().await;
@@ -248,7 +285,7 @@ async fn queued_cancellation_deadline_and_dropped_future_release_permits() {
     let token = cancelled.cancellation.clone();
     let waiting = tokio::spawn({
         let limited = limited.clone();
-        async move { limited.invoke(request(), cancelled).await }
+        async move { limited.turn(request(), cancelled).await }
     });
     token.cancel();
     assert!(matches!(
@@ -261,7 +298,7 @@ async fn queued_cancellation_deadline_and_dropped_future_release_permits() {
     let mut expired = context();
     expired.run.deadline_at_ms = Some(zhir::kernel::defaults::context().started_at_ms + 15);
     assert!(matches!(
-        limited.invoke(request(), expired).await,
+        limited.turn(request(), expired).await,
         Err(Error::Deadline)
     ));
     assert_eq!(entered.load(Ordering::SeqCst), 1);
@@ -269,7 +306,7 @@ async fn queued_cancellation_deadline_and_dropped_future_release_permits() {
     let _ = first.await;
     gate.add_permits(1);
     assert!(
-        tokio::time::timeout(Duration::from_secs(1), limited.invoke(request(), context()))
+        tokio::time::timeout(Duration::from_secs(1), limited.turn(request(), context()))
             .await
             .unwrap()
             .is_ok()
@@ -310,7 +347,7 @@ async fn selected_catalog_is_frozen_for_the_entire_run() {
             }
             async move {
                 if turn == 0 {
-                    let mut response = ModelResponse::text("");
+                    let mut response = TurnOutput::text("");
                     response.output = vec![Output::RuntimeToolCall {
                         call: RuntimeToolCall {
                             id: "call".into(),
@@ -323,7 +360,7 @@ async fn selected_catalog_is_frozen_for_the_entire_run() {
                     assert!(
                         matches!(request.messages.last(), Some(Message::RuntimeTool {outcome, ..}) if outcome.structured().unwrap()["count"] == 3)
                     );
-                    Ok(ModelResponse::text("done"))
+                    Ok(TurnOutput::text("done"))
                 }
             }
         }
@@ -366,7 +403,7 @@ async fn streamed_sink_completion_is_inside_the_concurrency_permit() {
                         text: "piece".into(),
                     })
                     .await?;
-                Ok(ModelResponse::text("done"))
+                Ok(TurnOutput::text("done"))
             }
         }
     }));
@@ -389,7 +426,7 @@ async fn streamed_sink_completion_is_inside_the_concurrency_permit() {
             context.deltas = Some(sink);
             let mut request = request();
             request.stream = true;
-            limited.invoke(request, context).await
+            limited.turn(request, context).await
         })
     };
     let first = start();
@@ -408,3 +445,5 @@ async fn streamed_sink_completion_is_inside_the_concurrency_permit() {
     gate.add_permits(1);
     second.await.unwrap().unwrap();
 }
+
+use zhir_testing::FinalExecution;

@@ -50,7 +50,7 @@ impl RecordingStore {
         let mut count = 0;
         for revisions in runs.into_values() {
             let checkpoints: Vec<_> = revisions.into_values().map(|c| c.checkpoint).collect();
-            zhir_kernel::diagnostics::verify_trace(&checkpoints)?;
+            crate::verify_trace(&checkpoints)?;
             count += checkpoints.len();
         }
         Ok(count)

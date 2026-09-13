@@ -1,3 +1,4 @@
+mod session;
 use crate::{
     BoxFuture, Cancellation, Result,
     error::Error,
@@ -7,6 +8,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+pub use session::*;
 use std::sync::Arc;
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -36,34 +38,50 @@ impl Usage {
     }
 }
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Capabilities {
+pub struct CapabilitySet {
     pub input_modalities: Vec<String>,
     pub output_modalities: Vec<String>,
-    pub structured_runtime_tools: bool,
-    pub freeform_runtime_tools: bool,
-    pub provider_tools: bool,
-    pub parallel_runtime_tools: bool,
-    pub parallel_control: bool,
-    pub streaming: bool,
-    pub usage: bool,
-    pub structured_output: bool,
-    pub json_mode: bool,
-    pub seed: bool,
+    pub features: std::collections::BTreeSet<Capability>,
     pub tool_choices: Vec<String>,
+    pub constraints: std::collections::BTreeMap<String, Vec<Value>>,
+    pub extensions: crate::profile::Extensions,
+}
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Capability {
+    StructuredTools,
+    FreeformTools,
+    ProviderTools,
+    ParallelTools,
+    ParallelControl,
+    Streaming,
+    Usage,
+    StructuredOutput,
+    JsonMode,
+    Seed,
+    Duplex,
+    Steering,
+    ProfileUpdates,
+    AsyncResults,
+    Resume,
+}
+impl CapabilitySet {
+    pub fn supports(&self, capability: Capability) -> bool {
+        self.features.contains(&capability)
+    }
 }
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ModelOptions {
+pub struct GenerationProfile {
     #[serde(default, deserialize_with = "finite_option")]
     pub temperature: Option<f64>,
     pub max_output_tokens: Option<u64>,
     pub seed: Option<i64>,
     pub parallel_runtime_tools: Option<bool>,
-    #[serde(default)]
-    pub extra: serde_json::Map<String, Value>,
 }
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,35 +126,45 @@ pub enum ResponseFormat {
     Json,
     Schema { name: String, schema: Value },
 }
-#[derive(Debug, Clone)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelRequest {
     pub messages: Vec<Message>,
     pub runtime_tools: Vec<RuntimeToolSpec>,
     pub provider_tools: Vec<ProviderToolSpec>,
-    pub options: ModelOptions,
+    pub profile: crate::profile::RequestProfile,
     pub tool_choice: ToolChoice,
     pub response_format: Option<ResponseFormat>,
     pub stream: bool,
 }
 impl ModelRequest {
-    pub fn validate(&self, c: &Capabilities) -> Result<()> {
+    pub fn validate(&self, c: &CapabilitySet) -> Result<()> {
+        crate::profile::validate_extensions(&self.profile.extensions)?;
         let invalid = |s: &str| Err(Error::Invalid(s.into()));
-        if self.stream && !c.streaming {
+        if self.stream && !c.supports(Capability::Streaming) {
             return invalid("model does not support streaming");
         }
         if !c.tool_choices.iter().any(|s| s == self.tool_choice.kind()) {
             return invalid("unsupported tool choice");
         }
-        if self.options.parallel_runtime_tools == Some(false) && !c.parallel_control {
+        if self.profile.generation.parallel_runtime_tools == Some(false)
+            && !c.supports(Capability::ParallelControl)
+        {
             return invalid("model cannot disable parallel tools");
         }
-        if self.options.seed.is_some() && !c.seed {
+        if self.profile.generation.seed.is_some() && !c.supports(Capability::Seed) {
             return invalid("unsupported seed");
         }
-        if self.options.temperature.is_some_and(|n| !n.is_finite()) {
+        if self
+            .profile
+            .generation
+            .temperature
+            .is_some_and(|n| !n.is_finite())
+        {
             return invalid("nonfinite temperature");
         }
-        if !self.provider_tools.is_empty() && !c.provider_tools {
+        if !self.provider_tools.is_empty() && !c.supports(Capability::ProviderTools) {
             return invalid("unsupported provider tools");
         }
         let mut provider_ids = std::collections::HashSet::new();
@@ -156,19 +184,25 @@ impl ModelRequest {
             tool.execution.validate()?;
         }
         if matches!(self.response_format, Some(ResponseFormat::Schema { .. }))
-            && !c.structured_output
+            && !c.supports(Capability::StructuredOutput)
         {
             return invalid("unsupported structured output");
         }
-        if matches!(self.response_format, Some(ResponseFormat::Json)) && !c.json_mode {
+        if matches!(self.response_format, Some(ResponseFormat::Json))
+            && !c.supports(Capability::JsonMode)
+        {
             return invalid("unsupported JSON mode");
         }
         for t in &self.runtime_tools {
             match t.input {
-                crate::tool::InputSpec::Structured { .. } if !c.structured_runtime_tools => {
+                crate::tool::InputSpec::Structured { .. }
+                    if !c.supports(Capability::StructuredTools) =>
+                {
                     return invalid("unsupported structured tools");
                 }
-                crate::tool::InputSpec::Freeform { .. } if !c.freeform_runtime_tools => {
+                crate::tool::InputSpec::Freeform { .. }
+                    if !c.supports(Capability::FreeformTools) =>
+                {
                     return invalid("unsupported freeform tools");
                 }
                 _ => {}
@@ -222,7 +256,7 @@ impl ModelRequest {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ModelResponse {
+pub struct TurnOutput {
     pub output: Vec<Output>,
     #[serde(default)]
     pub usage: Usage,
@@ -234,7 +268,7 @@ pub struct ModelResponse {
     pub response_id: Option<String>,
     pub finish_reason: Option<String>,
 }
-impl ModelResponse {
+impl TurnOutput {
     pub fn text(s: impl Into<String>) -> Self {
         Self {
             output: vec![Output::text(s)],
@@ -296,12 +330,9 @@ pub struct ModelContext {
     pub deltas: Option<Arc<dyn DeltaSink>>,
 }
 pub trait Model: Send + Sync {
-    fn capabilities(&self) -> &Capabilities;
-    fn invoke(
-        &self,
-        request: ModelRequest,
-        context: ModelContext,
-    ) -> BoxFuture<'_, Result<ModelResponse>>;
+    fn capabilities(&self) -> &CapabilitySet;
+    fn negotiate(&self, request: &ModelRequest) -> Result<crate::profile::NegotiatedProfile>;
+    fn open_session(&self, open: SessionOpen) -> BoxFuture<'_, Result<ModelSession>>;
 }
 
 fn finite_option<'de, D: serde::Deserializer<'de>>(
@@ -322,4 +353,48 @@ fn finite_option<'de, D: serde::Deserializer<'de>>(
                 .ok_or_else(|| serde::de::Error::custom("nonfinite number"))
         })
         .transpose()
+}
+
+/// Project causal history into logical conversation turns. Each turn's finalized
+/// output and completion metadata share one assistant message, even when tool
+/// results or external input arrived between them. The original history retains
+/// arrival order and identities; this projection is for a new model turn.
+pub fn conversation(entries: impl IntoIterator<Item = crate::run::HistoryEntry>) -> Vec<Message> {
+    let mut messages: Vec<Message> = Vec::new();
+    let mut turns = std::collections::BTreeMap::new();
+    for entry in entries {
+        if let (
+            Some(origin),
+            Message::Assistant {
+                output: added,
+                provider_data: data,
+            },
+        ) = (&entry.origin, &entry.message)
+        {
+            let key = (origin.session_id.clone(), origin.turn_id.clone());
+            if let Some(&index) = turns.get(&key) {
+                if let Message::Assistant {
+                    output,
+                    provider_data,
+                } = &mut messages[index]
+                {
+                    for item in added {
+                        if let Output::ProviderToolCall { call } = item
+                            && let Some(previous) = output.iter_mut().find(|item| matches!(item, Output::ProviderToolCall { call: old } if old.id == call.id && old.provider == call.provider)) {
+                                *previous = item.clone();
+                                continue;
+                            }
+                        output.push(item.clone());
+                    }
+                    if !data.is_null() {
+                        *provider_data = data.clone();
+                    }
+                }
+                continue;
+            }
+            turns.insert(key, messages.len());
+        }
+        messages.push(entry.message);
+    }
+    messages
 }

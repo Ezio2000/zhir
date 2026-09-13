@@ -14,15 +14,9 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 sha2.workspace = true
+im = "15.1"
 schemars = { version = "1", optional = true }
 
 [features]
 default = []
 schema = ["dep:schemars"]
-
-[dev-dependencies]
-tempfile.workspace = true
-
-[[bench]]
-name = "history"
-harness = false

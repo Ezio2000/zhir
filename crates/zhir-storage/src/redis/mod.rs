@@ -29,9 +29,17 @@ return {core,redis.call('HGET',KEYS[1],'generation'),redis.call('HGETALL',KEYS[2
 #[derive(Clone)]
 pub struct RedisRunStore {
     client: redis::Client,
+    namespace: String,
 }
 impl RedisRunStore {
-    pub async fn connect(url: &str) -> Result<Self> {
+    pub async fn connect(url: &str, namespace: &str) -> Result<Self> {
+        if namespace.is_empty()
+            || !namespace
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_:-".contains(&b))
+        {
+            return Err(Error::Invalid("invalid Redis namespace".into()));
+        }
         let client = redis::Client::open(url).map_err(storage_error)?;
         let mut connection = client
             .get_multiplexed_async_connection()
@@ -41,22 +49,49 @@ impl RedisRunStore {
             .query_async::<String>(&mut connection)
             .await
             .map_err(storage_error)?;
-        Ok(Self { client })
+        let format: String = redis::Script::new(
+            r#"
+local version=redis.call('GET',KEYS[1])
+if version then return version end
+local cursor='0'
+repeat
+ local page=redis.call('SCAN',cursor,'MATCH',ARGV[1]..':*','COUNT',100)
+ cursor=page[1]
+ if #page[2]>0 then return 'unversioned' end
+until cursor=='0'
+redis.call('SET',KEYS[1],'2')
+return '2'
+"#,
+        )
+        .key(format!("{namespace}:format"))
+        .arg(namespace)
+        .invoke_async(&mut connection)
+        .await
+        .map_err(storage_error)?;
+        if format != "2" {
+            return Err(Error::Storage(
+                "unsupported Redis format; use a fresh namespace".into(),
+            ));
+        }
+        Ok(Self {
+            client,
+            namespace: namespace.into(),
+        })
     }
-    fn keys(run: &str) -> [String; 3] {
+    fn keys(&self, run: &str) -> [String; 3] {
         let tag = run
             .as_bytes()
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect::<String>();
         [
-            format!("zhir:{{{tag}}}:head"),
-            format!("zhir:{{{tag}}}:commits"),
-            format!("zhir:{{{tag}}}:history"),
+            format!("{}:{{{tag}}}:head", self.namespace),
+            format!("{}:{{{tag}}}:commits", self.namespace),
+            format!("{}:{{{tag}}}:history", self.namespace),
         ]
     }
     async fn commit_inner(&self, commit: Commit) -> Result<()> {
-        let keys = Self::keys(&commit.checkpoint.context.run_id);
+        let keys = self.keys(&commit.checkpoint.context.run_id);
         let mut conn = self
             .client
             .get_multiplexed_async_connection()
@@ -149,7 +184,7 @@ impl RunStore for RedisRunStore {
         })
     }
     fn load_head(&self, run_id: &str) -> BoxFuture<'_, Result<Option<Arc<Checkpoint>>>> {
-        let keys = Self::keys(run_id);
+        let keys = self.keys(run_id);
         Box::pin(async move {
             let mut conn = self
                 .client

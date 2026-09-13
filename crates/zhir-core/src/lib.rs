@@ -1,8 +1,11 @@
 //! Executor-independent domain values and extension contracts.
-pub mod artifact;
+pub mod credential;
 pub mod error;
 pub mod message;
 pub mod model;
+pub mod operation;
+pub mod profile;
+pub mod resource;
 pub mod run;
 pub mod storage;
 pub mod tool;

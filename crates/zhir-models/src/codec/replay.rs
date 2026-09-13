@@ -2,8 +2,6 @@ use super::*;
 use std::collections::{HashMap, HashSet};
 
 const POSITION: &str = "$zhir_provider_calls";
-#[cfg(test)]
-mod tests;
 pub(super) fn assistant_replay(
     protocol: Protocol,
     output: &[Output],

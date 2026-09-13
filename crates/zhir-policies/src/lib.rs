@@ -3,3 +3,4 @@ mod retry;
 pub use retry::{Backoff, RetryPolicy};
 
 pub mod history;
+pub mod negotiation;

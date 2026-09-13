@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "name": "reject_state_planning",
+  "kind": "value",
+  "schema": "state",
+  "value": {
+    "kind": "planning"
+  },
+  "valid": false
+}

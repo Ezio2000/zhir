@@ -34,6 +34,3 @@ shell = ["dep:schemars", "tokio/process", "tokio/io-util", "dep:nix"]
 interaction = ["dep:schemars", "dep:uuid"]
 agent = ["dep:schemars"]
 agent-runtime = ["agent", "dep:zhir-kernel"]
-
-[dev-dependencies]
-tempfile.workspace = true

@@ -6,12 +6,16 @@ pub fn context() -> zhir_core::run::RunContext {
 /// Default execution budgets for a new run.
 pub fn limits() -> zhir_core::run::Limits {
     zhir_core::run::Limits {
-        max_planning_steps: 100,
+        max_model_turns: 100,
         max_runtime_tool_calls: 1000,
-        max_runtime_tool_batch_size: 32,
+        max_inflight_operations: 64,
+        max_control_commands: 256,
+        max_session_events: 256,
+        max_media_streams: 64,
+        max_media_chunk_bytes: 1024 * 1024,
+        max_buffered_media_bytes: 16 * 1024 * 1024,
         max_runtime_tool_concurrency: 8,
-        max_progress_events: 256,
-        max_buffered_progress: 256,
+        max_observer_events: 256,
         max_total_tokens: None,
         elapsed_ms: None,
         commit_timeout_ms: 5000,
@@ -22,7 +26,8 @@ pub fn run_options() -> zhir_core::run::RunOptions {
     zhir_core::run::RunOptions {
         runtime_tools: zhir_core::tool::RuntimeToolSelection::All,
         limits: limits(),
-        model: Default::default(),
+        profile: Default::default(),
+        mode: zhir_core::run::RunMode::Task,
         provider_tools: vec![],
         tool_choice: Default::default(),
         response_format: None,
@@ -30,11 +35,11 @@ pub fn run_options() -> zhir_core::run::RunOptions {
     }
 }
 
-mod batch;
 mod catalog;
+mod scheduling;
 mod store;
-pub(crate) use batch::DefaultBatch;
 pub(crate) use catalog::EmptyTools;
+pub(crate) use scheduling::DefaultScheduling;
 pub(crate) use store::Ephemeral;
 
 /// Host-requested pause preset.

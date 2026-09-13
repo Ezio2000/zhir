@@ -1,0 +1,573 @@
+{
+  "$defs": {
+    "ControlAction": {
+      "enum": [
+        "finished",
+        "failed",
+        "limited",
+        "suspended",
+        "cancelled"
+      ],
+      "type": "string"
+    },
+    "EventData": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "count": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "observation_gap",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "count"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "operation_changed",
+              "type": "string"
+            },
+            "operation_id": {
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/$defs/OperationState"
+            }
+          },
+          "required": [
+            "kind",
+            "operation_id",
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "delta": {
+              "$ref": "#/$defs/ModelDelta"
+            },
+            "kind": {
+              "const": "model_delta",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "delta"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "operation_progress",
+              "type": "string"
+            },
+            "operation_id": {
+              "type": "string"
+            },
+            "value": true
+          },
+          "required": [
+            "kind",
+            "operation_id",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "checkpoint_id": {
+              "type": "string"
+            },
+            "fact": {
+              "$ref": "#/$defs/Fact"
+            },
+            "kind": {
+              "const": "checkpoint_committed",
+              "type": "string"
+            },
+            "revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "state": {
+              "$ref": "#/$defs/StateKind"
+            }
+          },
+          "required": [
+            "kind",
+            "checkpoint_id",
+            "revision",
+            "state",
+            "fact"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Fact": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "started",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "attached",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "session",
+              "type": "string"
+            },
+            "sequence": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "session_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "session_id",
+            "sequence"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "operation",
+              "type": "string"
+            },
+            "operation_id": {
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/$defs/OperationState"
+            }
+          },
+          "required": [
+            "kind",
+            "operation_id",
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "command_id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "command",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "command_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "conversation_insert",
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "history_rewrite",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "$ref": "#/$defs/ControlAction"
+            },
+            "kind": {
+              "const": "control",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "action"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "media",
+              "type": "string"
+            },
+            "sequence": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "stream_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "stream_id",
+            "sequence"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ModelDelta": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "text",
+              "type": "string"
+            },
+            "output_index": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "output_index",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "reasoning",
+              "type": "string"
+            },
+            "output_index": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "output_index",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "input": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "runtime_tool",
+              "type": "string"
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "output_index": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "output_index",
+            "input"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": true,
+            "kind": {
+              "const": "protocol_event",
+              "type": "string"
+            },
+            "output_index": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "output_index",
+            "data"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": true,
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "provider_tool_progress",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "output_index": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "provider": {
+              "type": "string"
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ProviderToolStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "output_index",
+            "provider",
+            "name",
+            "data"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "usage",
+              "type": "string"
+            },
+            "usage": {
+              "$ref": "#/$defs/Usage"
+            }
+          },
+          "required": [
+            "kind",
+            "usage"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "OperationState": {
+      "enum": [
+        "queued",
+        "running",
+        "waiting",
+        "cancelling",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "ProviderToolStatus": {
+      "enum": [
+        "cancelled",
+        "pending",
+        "running",
+        "completed",
+        "incomplete",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "StateKind": {
+      "enum": [
+        "running",
+        "suspended",
+        "completed",
+        "failed",
+        "cancelled",
+        "limited"
+      ],
+      "type": "string"
+    },
+    "Usage": {
+      "additionalProperties": false,
+      "properties": {
+        "cache_read_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cache_write_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "input_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "output_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reasoning_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "total_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "data": {
+      "$ref": "#/$defs/EventData"
+    },
+    "invocation_id": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "sequence": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "run_id",
+    "invocation_id",
+    "sequence",
+    "data"
+  ],
+  "title": "Event",
+  "type": "object"
+}

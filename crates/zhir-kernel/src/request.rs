@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use zhir_core::{
     Result,
     message::Message,
-    model::{ModelOptions, ProviderToolSpec, ResponseFormat, ToolChoice},
+    model::{ProviderToolSpec, ResponseFormat, ToolChoice},
     run::{Checkpoint, Limits, RunContext, RunOptions, Suspension, SuspensionTicket},
 };
 
@@ -11,7 +11,8 @@ use zhir_core::{
 struct Overrides {
     runtime_tools: Option<zhir_core::tool::RuntimeToolSelection>,
     limits: Option<Limits>,
-    model: Option<ModelOptions>,
+    profile: Option<zhir_core::profile::RequestProfile>,
+    mode: Option<zhir_core::run::RunMode>,
     provider_tools: Option<Vec<ProviderToolSpec>>,
     tool_choice: Option<ToolChoice>,
     response_format: Option<Option<ResponseFormat>>,
@@ -51,7 +52,8 @@ impl RunRequest {
         self.overrides = Overrides {
             runtime_tools: Some(value.runtime_tools),
             limits: Some(value.limits),
-            model: Some(value.model),
+            profile: Some(value.profile),
+            mode: Some(value.mode),
             provider_tools: Some(value.provider_tools),
             tool_choice: Some(value.tool_choice),
             response_format: Some(value.response_format),
@@ -59,12 +61,16 @@ impl RunRequest {
         };
         self
     }
+    pub fn mode(mut self, value: zhir_core::run::RunMode) -> Self {
+        self.overrides.mode = Some(value);
+        self
+    }
     pub fn limits(mut self, value: Limits) -> Self {
         self.overrides.limits = Some(value);
         self
     }
-    pub fn options(mut self, value: ModelOptions) -> Self {
-        self.overrides.model = Some(value);
+    pub fn profile(mut self, value: zhir_core::profile::RequestProfile) -> Self {
+        self.overrides.profile = Some(value);
         self
     }
     pub fn provider_tools(mut self, value: Vec<ProviderToolSpec>) -> Self {
@@ -95,7 +101,8 @@ impl RunRequest {
                 .runtime_tools
                 .unwrap_or_else(|| defaults.runtime_tools.clone()),
             limits: o.limits.unwrap_or_else(|| defaults.limits.clone()),
-            model: o.model.unwrap_or_else(|| defaults.model.clone()),
+            profile: o.profile.unwrap_or_else(|| defaults.profile.clone()),
+            mode: o.mode.unwrap_or(defaults.mode),
             provider_tools: o
                 .provider_tools
                 .unwrap_or_else(|| defaults.provider_tools.clone()),
@@ -114,6 +121,7 @@ impl RunRequest {
 #[derive(Debug, Clone)]
 pub struct ResumeRequest {
     pub target: ResumeTarget,
+    pub resolutions: Vec<zhir_core::operation::RecoveryResolution>,
     pub messages: Vec<Message>,
     pub metadata: BTreeMap<String, Value>,
     pub selector: Option<SuspensionSelector>,
@@ -127,6 +135,10 @@ impl ResumeRequest {
         key.insert(&mut self.metadata, value)?;
         Ok(self)
     }
+    pub fn resolve(mut self, resolution: zhir_core::operation::RecoveryResolution) -> Self {
+        self.resolutions.push(resolution);
+        self
+    }
     pub fn from_checkpoint(checkpoint: Arc<Checkpoint>) -> Self {
         Self::new(ResumeTarget::Checkpoint(checkpoint))
     }
@@ -136,6 +148,7 @@ impl ResumeRequest {
     fn new(target: ResumeTarget) -> Self {
         Self {
             target,
+            resolutions: vec![],
             messages: Vec::new(),
             metadata: BTreeMap::new(),
             selector: None,

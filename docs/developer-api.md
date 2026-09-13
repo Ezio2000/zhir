@@ -1,541 +1,205 @@
 # 研发接入 API
 
-以下 API 已实现。无需启用任何 HTTP 协议，即可运行强类型工具和自定义模型示例：
+0.2.0 统一使用会话、operation 和资源契约。完整可运行示例位于
+[custom_tool.rs](../crates/zhir/examples/custom_tool.rs)、
+[resume.rs](../crates/zhir/examples/resume.rs) 和
+[chat.rs](../crates/zhir/examples/chat.rs)。验收用模型与记录器仅从开发依赖 `zhir-testing` 引入。
 
-```sh
-cargo run -p zhir --no-default-features --example custom_tool --features models,typed-tools
-cargo run -p zhir --example resume --features interaction,memory
-```
+## 创建运行
 
-[custom_tool.rs](../crates/zhir/examples/custom_tool.rs) 展示函数式模型与强类型工具；
-[resume.rs](../crates/zhir/examples/resume.rs) 展示保存、wire 往返和按暂停票据恢复。
-供应商策略、业务工具及资源读取逻辑属于调用方。
-
-RuntimeTool 是唯一可执行工具接口；ProviderToolSpec 声明服务端能力，ProviderToolCall
-记录服务端执行。公开工具组件通过 `zhir::runtime_tools` 导出。
-
-## 工具：类型驱动 Schema
+`Runtime::builder(model)` 接收 `Arc<dyn Model>`。按需注入 `runtime_tools`、`store`、
+`resources`、`approval`、`scheduling` 和 `history_reducer`。`defaults` 配置默认
+RunOptions；RunRequest 按整个字段覆盖默认值，创建后冻结。运行控制产生的 profile 修订
+存入 SessionSnapshot，不改写初始 RunOptions。
 
 ```rust
-#[derive(serde::Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct EchoArgs {
-    text: String,
-}
+let runtime = Runtime::builder(model)
+    .runtime_tools(registry)
+    .store(store)
+    .resources(resources)
+    .build()?;
+let mut invocation = runtime.start(RunRequest::new([Message::user("开始")]))?;
+let control = invocation.control();
+let completion = invocation.result().await?;
+```
 
+`start` 创建惰性 Invocation；`Invocation::start`、`result`、`events` 或媒体端口选择
+启动执行。`result` 返回 RunCompletion；Completed、Suspended、Failed、Cancelled、Limited
+都属于已结算状态。存储错误和 CAS 冲突返回携带最后已知 checkpoint 的 RunError。
+丢弃 Invocation 或未读完的 EventStream 会取消运行；单纯读取结果无需消费观察事件。
+
+`RunMode::Task` 在当前轮结束且操作已完成时结算；`Interactive` 等待追加输入，
+调用 `end_input` 后才允许正常完成。运行中的控制接口包括：
+
+| 方法 | 含义 |
+| --- | --- |
+| `input(message, source)` | 持久化用户/外部消息，按会话能力发送或留给下一轮 |
+| `pause(suspension)` | 保存暂停状态，停止当前驱动任务 |
+| `reply_operation(id, value)` | 向已绑定 operation 发送输入；先记录结果不确定边界 |
+| `cancel_operation(id)` | 取消指定 operation；最终状态由完成事件确认 |
+| `update_profile(profile)` | 按能力修订会话 profile；忙碌会话需声明 ProfileUpdates |
+| `interrupt()` | 原生中断；epoch 与命令在同一提交中更新 |
+| `end_input()` | 关闭输入并排空已接收媒体，再通知模型 |
+| `cancel()` | 绕过控制队列发出整个运行的取消信号 |
+
+除 cancel 外，ControlReceipt 中的 revision 表示内核已提交控制意图，不代表外部服务
+已执行命令。随后通过 checkpoint、operation 和服务端确认观察实际状态。
+
+## 模型会话与端点协议
+
+实现 core 的 Model：`capabilities()`、`negotiate(&ModelRequest)`、
+`open_session(SessionOpen)`。SessionOpen 包含稳定 session ID、恢复游标、epoch、
+限制、初始请求、RecoveryRef 和运行上下文。打开会话只建立通道；推理由 StartTurn 发起。
+
+ModelSession 的输入/输出端口分别实现 SessionSender/SessionReceiver。输入端口必须
+报告绑定模型的能力和协商结果。会话事件使用单调 sequence；完整 Output 具有 turn、
+item、caller 标识。Operation 事件指向原始 CallRef。提供可恢复服务的适配器应尽早
+发送 Recovery 或带 recovery 的 Acknowledged，并在重连时确认已经接收的命令。
+
+普通请求型服务可使用 FunctionModel：回调接收 ModelRequest/ModelContext，返回
+TurnOutput。`context.deltas` 可增量发送观察数据，最终输出仍由 TurnOutput 给出。
+FunctionModel 和 HTTP 适配器不支持原生双向、运行中 steering、异步结果或服务端恢复；
+不能通过修改 CapabilitySet 把这些协议声明成支持。
+
+HTTP feature 为 `openai-chat`、`openai-responses`、`anthropic`。ModelConfig 接收
+base URL、CredentialProvider 和模型 ID；客户端与超时可由调用方配置。默认
+CapabilitySet 只描述协议默认能力，实际端点能力应显式提供。核心包不硬编码模型列表。
+
+`ProtocolExtension` 由工厂为每次交换创建，负责请求扩展、输出解析与回放；
+`ExtensionChain` 组合多个扩展。服务端工具通过 ProviderToolAdapter 绑定具体协议项，
+声明识别、状态、输出与原生回放位置。未知的原生工具项必须有明确归属。
+
+## 同步与异步工具
+
+RuntimeTool 是唯一可执行工具接口，`start(call, context)` 和
+`recover(record, context)` 都返回 `ToolExecution`：
+
+- `Finished(RuntimeToolOutcome)`：只包含 Success、Failure 或 Cancelled。
+- `Active(OperationHandle)`：包含 recovery reference、OperationControl 和 OperationEvents。
+
+工具不得把“已受理”或“等待”包装成成功结果。异步工具以 Running/Waiting/Progress/
+Finished/Unknown 更新生命周期；Waiting 的 prompt 用于展示交互，只有 Finished 才成为
+下一轮模型输入。OperationControl 的 reply/cancel 调用也不是最终完成确认。
+
+`RuntimeToolContext.operation_id` 是 kernel 在 start 前持久化的操作标识，可用于外部
+幂等键。`recover` 必须查询或附着到原任务，不能把无法恢复的任务重新 start。
+无法判断外部结果时报告 Unknown，由调用方明确解决。
+
+RuntimeToolRegistry 校验目录、输入与最终输出，也校验 Active 事件里的最终输出。
+Catalog 是不可变快照，bind 必须返回与声明一致的 specification。输入显式区分
+`RuntimeToolInput::Structured` 和 `Freeform`。
+
+立即完成的结构化工具可使用 TypedTool，输入 Deserialize 与输出 Serialize 类型共同
+决定 Schema。ToolReply 只表示最终成功数据和可选展示内容：
+
+```rust
 let tool = TypedTool::<EchoArgs, String>::new(
-    "echo",
-    "Return supplied text",
-    Execution::default(),
+    "echo", "Return supplied text", Execution::default(),
     |args, _context| async move { Ok(ToolReply::success(args.text)) },
 )?;
-registry.register(Arc::new(tool))?;
 ```
 
-输入类型的 Deserialize 规则决定输入 Schema，输出类型的 Serialize 规则决定输出
-Schema。生成标准 Draft 2020-12，保留嵌套定义和引用；注册表仍执行输入/输出校验。
-内置文件、Shell、问答和子 Agent 工具也从 Rust 参数类型派生输入 Schema。
-grep 的输出模式是封闭枚举；路径模式在当前文件首次命中后停止匹配，内容模式只多探测
-一个命中以确定 truncated，并保留指定的前后文；计数模式扫描全部行。
-改变字段不需要再改一份手写 JSON。Rust 的默认值由 Serde 提供，绑定过程不修改请求 JSON。
-
-结构化参数必须是 JSON 对象。回调返回 `Result<ToolReply<O>>`；O 决定结构化结果的
-Schema，ToolReply 决定成功、异步受理或等待状态，以及可选的媒体展示内容：
-
-```rust
-Ok(ToolReply::waiting("confirmation-1", receipt, "checkout")
-    .content([Content::Image { source: image_source }]))
-// 普通结果：ToolReply::success(receipt)
-// 异步受理：ToolReply::accepted("job-1", receipt)
-```
-
-无类型 JSON 回复使用 `zhir::runtime_tools::reply::{json, waiting}`。JSON 字符串直接作为文本，
-其他 JSON 值序列化为文本；它们与 ToolReply 共用相同的默认表示。
-`RuntimeToolOutcome::content()` 借用显式内容，Failure 返回空切片；模型编码层将失败原因转换为文本。
-
-三种状态的结构化输出统一经过注册表校验。Waiting 同时生成模型可见结果和 Suspension；
-自定义暂停元数据可用 `ToolReply::suspended(payload, suspension)`。Accepted 不自动暂停。
-回调错误继续走 Result，转换为运行结果的错误行为不变。显式外部 Schema 和自由文本参数
-仍用 FunctionTool / structured / freeform。执行事实由调用方声明。
-
-通过 zhir 使用时启用 `typed-tools`，直接使用 zhir-tools 时启用 `typed`。调用方需要
-serde 的 derive 和 schemars 来定义自己的类型。
-
-## 模型与流回调
-
-```rust
-let model = FunctionModel::new(capabilities, |request, context| async move {
-    context.cancellation.check()?;
-    call_my_service(request, context).await
-});
-
-let sink = FunctionDeltaSink::new(|delta| async move {
-    write_my_event(delta).await
-});
-```
-
-两个业务函数由调用方提供。FunctionModel 校验请求与响应并在回调前后检查取消状态；
-FunctionDeltaSink 等待写入完成，不新增缓冲或后台任务。共享客户端通常用 Arc 捕获，
-在进入 async move 前 clone；闭包是可并发调用的 Fn。
-
-通用组件由独立 `models` feature 导出，正常依赖图没有 reqwest。HTTP 协议需要显式
-启用 openai-chat、openai-responses 或 anthropic。这些名称表示协议实现，不决定供应商。
-
-## 扩展组合
-
-```rust
-let model = model.with_extension(|ctx| {
-    let mut adapters = ProviderTools::new();
-    // 用户函数可使用 ctx.protocol、ctx.request、ctx.run.metadata，失败直接返回。
-    adapters.register(make_my_adapter(ctx.protocol, ctx.run)?)?;
-    Ok(ExtensionChain::new()
-        .push(adapters)
-        .push(EventMapping::default()))
-});
-```
-
-工厂接收只读 ExtensionContext，返回 Result；失败不会发起 HTTP 请求。工厂是同步的，
-需要异步准备时使用 TransformModel。链在每次模型调用及重试尝试中重新创建，避免共享可变会话状态。所有 hook 按声明顺序运行。
-请求和事件 hook 报错时停止；新增 delta 按顺序合并，整个事件 hook 成功后才返回。
-
-响应 hook 逐级传递 Result，包括 Err。这样前面一个只修改请求的扩展不会阻断后面
-针对新响应形状的解码器。后续扩展可以显式恢复前一阶段的错误；最终仍由 HttpModel
-校验返回响应。链不猜测 JSON 合并规则，也不自动重排扩展。
-
-## 协议参数与完整流观察
-
-ModelConfig 接收调用方提供的 endpoint、凭据、模型标识、超时和 HTTP client。
-协议声明的 Capabilities 是默认值；用 with_capabilities 描述实际模型支持的能力。
-
-`ModelOptions.extra` 向编码后的请求递归添加对象字段，不替换已有叶值或数组；
-input/messages/system/tools/tool_choice 等会话与工具字段保留给标准编码流程。
-冲突返回字段路径，显式修改受控字段使用 encode_request hook。
-
-原始 SSE 帧通过 ProtocolEvent 暴露 event/id/retry/data；data 可解析时为 JSON，
-否则为字符串。包括已知帧及结束标记。框架不保存完整原始事件日志；未知增量语义由用户
-会话累积到最终 ModelResponse。重试与 fallback 在任何 delta 已发出后停止重试。
-
-需要完整接收模型 delta 时使用 `ObservedModel::new(model, factory)`。工厂按调用创建
-用户 DeltaSink；每次 emit 等待写入，不增加队列或后台任务。下游 sink 先收到事件，观察器
-随后写入，失败中止调用。放在重试器内侧时按尝试创建，外侧时按逻辑调用创建。观察器可能
-保留失败或取消调用的部分事件；需随 checkpoint 持久化的最终语义应放入 ModelResponse。
-
-RuntimeTool 的媒体结果按协议内容数组编码。纯文本 Chat/Responses 结果为字符串；
-Messages 将连续工具结果组成同一 user 消息，保留顺序、调用 ID 和错误标记。
-实际 endpoint 是否接受某个消息角色下的媒体，由消费者配置和实测确认。
-
-## 异步请求准备
-
-```rust
-let model = TransformModel::new(inner, |mut request, context| async move {
-    let text = load_my_document(&context.run).await?;
-    request.messages.insert(0, Message::system(text));
-    Ok(request)
-});
-```
-
-变换函数拿到上下文副本，只返回 ModelRequest；运行身份、截止时间、取消信号和观察器
-沿用原调用。函数在内层模型执行前完成，失败不会调用内层模型。
-使用 `.map_response(callback)` 顺序添加异步响应变换；只有响应变换时用
-`TransformModel::response(inner, callback)`。内层错误直接传播，各阶段检查取消并校验
-响应，最终响应变换不改写已发出的 delta。
-
-输入能力默认与内层模型相同。若变换把附件转换成文本，需要用 with_capabilities
-显式声明变换器可接受的输入；变换前后分别按外层和内层能力校验。放在重试包装器内侧时
-每次尝试准备一次，放在外侧时每次逻辑调用准备一次。资源解析、文件路径和异步 I/O
-均由用户函数提供，包装器不启动后台任务。
-
-Capabilities 必须显式声明。`zhir::models::capabilities::text_tool_calling()`
-提供文本与结构化工具预设；HTTP 模型自行提供协议预设，调用方用 `with_capabilities`
-声明实际模型能力。测试使用 `zhir_testing::model_capabilities()`，不从 core 继承能力假设。
-
-## 运行参数与资源
-
-```rust
-let runtime = Runtime::builder(model)
-    .runtime_tools(catalog)
-    .store(store)
-    .defaults(|run| run.stream(true).limits(limits))
-    .build()?;
-
-let request = RunRequest::new([Message::user("run")])
-    .context(context)
-    .options(ModelOptions { temperature: Some(0.4), ..Default::default() })
-    .response_format(output.format());
-let checkpoint = runtime.start(request)?.result().await?.into_checkpoint();
-```
-
-`RunRequest`、`ResumeRequest`、`ResumeTarget`、`SuspensionSelector` 由 kernel 提供，SDK 顶层直接导出。
-宿主暂停预设使用 `zhir::kernel::defaults::pause()`。
-`RunRequest::new` 创建运行 ID 和启动时间；`.context(RunContext::new(id, started_at_ms))`
-可显式指定上下文。`zhir::kernel::defaults::{context, limits, run_options}` 提供便利构造，
-core 的上下文构造不读取时钟、不生成 ID，也不提供运行限额默认值。单独配置限额可以写：
-
-```rust
-let limits = zhir::run::Limits {
-    max_runtime_tool_concurrency: 4,
-    ..zhir::kernel::defaults::limits()
-};
-```
-
-Runtime 保存共享模型、工具目录、存储和策略资源，以及新运行的参数默认值。
-RunRequest 只覆盖显式设置的整字段：runtime_tools、limits、model options、provider_tools、tool_choice、
-response_format、stream；不会递归合并 JSON，也不会修改共享 Runtime。
-`without_response_format()` 显式清空格式；`run_options(options)` 一次覆盖全部参数。
-
-限额反序列化要求完整的数值字段，缺失字段直接报错。
-有效 RunOptions 在 start 时固化到 Checkpoint，随 wire、数据库核心记录保存。
-continue 和 resume 都读取固化值，即便重新构造 Runtime 时使用不同默认值。
-Store 提交和轨迹校验拒绝中途更改参数；需要不同参数时开始新运行。
-资源实现仍由应用重建，Checkpoint 不序列化模型客户端、目录或策略闭包。
-
-## 运行与结果
-
-```rust
-let result = zhir::runs::drive(invocation, |event| async move {
-    handle_my_event(event).await
-}).await?;
-
-let checkpoint = result.checkpoint();
-let report: Report = zhir::output::decode(checkpoint)?;
-
-let ticket = SuspensionTicket::from_checkpoint(&checkpoint)?;
-let resumed = runtime.resume(
-    ResumeRequest::from_ticket(ticket).message(Message::external("confirmed"))
-).await?;
-```
-
-- drive 顺序消费事件，再返回结算结果。处理函数报错时取消并等待运行，返回
-  DriveError::Observer { error, settled }，完整保留观察错误和实际运行结果。运行可能
-  在取消到达前已经完成；不把该情况改写成取消。模型失败通过 RunCompletion 的
-  RunOutcome::Failed 返回，checkpoint 保留完整失败事实。
-- 慢处理函数仍面对有界、可丢弃的展示事件。需要完整 delta 观察时使用 ObservedModel。
-  处理函数自身 I/O 的超时由用户负责；丢弃 drive future 会请求取消，但无法等待结算。
-- output::decode 只接受 Completed 的纯文本 JSON，拼接文本片段后严格反序列化。
-  Markdown、尾随说明和混合媒体均报错；未知字段是否报错由目标类型的 Serde 声明决定。
-  它不设置 response_format、不校验外部 Schema、不修复回答或重试执行，不修改 checkpoint。
-- `Runtime::resume(ResumeRequest)` 是统一异步入口。from_checkpoint 直接使用给定快照；
-  from_ticket 从已配置 RunStore 读取 head。票据绑定 run、checkpoint id、revision 和完整
-  Suspension；可用 Serde 持久化。即便新一轮重复使用相同 wait_id，旧票据也不能恢复它。
-- 缺少存储、找不到 run、票据过期、选择器不匹配、终态及不合法的消息追加均报错。
-  两个请求读取相同 head 后仍由唯一提交路径的 CAS 决定成功者，不自动重试冲突。
-
-## 研发测试
-
-在消费项目的 dev-dependencies 中引用 zhir-testing，不在生产依赖中引入：
-
-```toml
-[dev-dependencies]
-zhir-testing = { path = "../zhir/crates/zhir-testing", features = ["http"] }
-```
-
-```rust
-let scripted = Arc::new(ScriptedModel::responses([
-    ModelResponse::text("done"),
-]));
-let runtime = Runtime::builder(scripted.clone()).build()?;
-let checkpoint = runtime.start(RunRequest::new([Message::user("run")]))?.result().await?.into_checkpoint();
-assert_eq!(scripted.requests().len(), 1);
-assert_eq!(scripted.remaining(), 0);
-```
-
-ScriptStep 可声明增量、响应或错误，队列耗尽明确失败。顺序模式中并发调用按取得锁的次序消费
-脚本；匹配模式用 `ScriptedModel::matching` 和 `ModelCase` 根据请求/上下文选择独立步骤队列。RecordingModel 保存请求、run
-和结果；未返回或被丢弃的调用保留 outcome: None。RecordingSink 可在指定的第 N 次
-写入记录后报错。RecordingStore 记录成功等待到的提交，按 run/revision 验证轨迹，
-重复的幂等提交核对一致性后计一次。
-
-这些记录仅用于内存中的测试断言，不做持久化承诺；被丢弃的存储调用可能在数据库完成，
-但来不及记录。当前 SDK 的正常依赖图不包含 zhir-testing。
-
-`http` feature 提供可重用的本地 HTTP/SSE 传输夹具：
-
-```rust
-let fixture = HttpFixture::start([
-    HttpReply::json(&my_response),
-    HttpReply::sse(my_sse_frames).fragment_bytes(3),
-]).await?;
-let model = make_my_model(fixture.url())?;
-// 调用模型……
-let requests = fixture.finish().await?;
-assert_eq!(requests[0].method, "POST");
-assert_eq!(requests[0].json()?["my_option"], "expected");
-```
-
-HttpReply 支持状态码、Header、首包延迟、分片间隔和按字节截断。finish 等待消费全部脚本并
-传播错误；每个请求交换有超时，未消费脚本也会失败。丢弃夹具或 finish future 会取消任务。
-当前夹具是 HTTP/1.1、Content-Length 请求、逐请求关闭连接；不提供 TLS、WebSocket、
-chunked 请求或生产服务行为。响应格式、能力语义与断言仍由测试作者定义。
-
-完整的组合验证代码见 [developer_api.rs](../crates/zhir/tests/developer_api.rs)；
-真实模型接入验证见 [ergonomics.rs](../crates/zhir/tests/scenario_scale/ergonomics.rs)。
-
-## 输出契约与完整历史窗口
-
-启用 `typed-output` 后，`JsonOutput<T>` 按 T 的反序列化规则生成 Draft 2020-12 Schema，
-在构造时编译校验器。请求使用与本地校验相同的 Schema；供应商要求的格式转换仍由用户
-协议扩展负责。错误区分 JSON 语法、Schema 路径和反序列化，不修改结果或自动重试。
-
-```rust
-let output = zhir::output::JsonOutput::<Report>::new("report")?;
-let runtime = Runtime::builder(model)
-    .defaults(|run| run.response_format(output.format()))
-    .history_reducer(Arc::new(zhir::policies::history::HistoryWindow::last_turns(12)?))
-    .build()?;
-let report = output.decode(&checkpoint)?;
-```
-
-HistoryWindow 由 zhir-policies 提供，通过 SDK 使用时启用 `policies` feature。
-HistoryWindow 的 N 轮包含当前用户轮次。系统消息保留原始相对顺序，一轮中的模型调用、
-RuntimeToolCall、RuntimeTool 结果和外部回复一起保留。没有足够旧轮次时返回 None；
-只在无 provider continuation 的 Planning 状态执行。`with_dependencies` 接收 checkpoint
-与计划保留的起始消息下标，返回协议需要的更早下标；窗口自动向前扩展到完整用户轮次。
-返回更晚下标报错。它不猜测令牌数，也不解析供应商的跨轮次依赖。
-
-待执行工具状态中的 `calls` 是 `PendingCalls { message_index, next, end }` 游标。
-message_index 是 assistant 消息在历史中的下标，next/end 是该消息内 RuntimeToolCall
-序列的半开区间，忽略同一消息中的普通内容和 provider 调用。通过
-`checkpoint.history.resolve_pending(calls)?` 借用剩余调用；完整参数保存在历史中，
-每个批次的 checkpoint 不重复保存它们。恢复会验证游标与历史顺序一致。
-`History::appended_since(&previous)` 验证前缀并只返回新增消息，可用于增量观察。
-
-`State::kind()` 返回 `StateKind`，`RuntimeToolOutcome::kind()` 返回
-`RuntimeToolOutcomeKind`；Fact 和 EventData 直接保存相应枚举。控制事实使用
-`ControlAction`，审批事件使用 `ApprovalDecisionKind`，子 Agent 快照使用 `AgentStatus`。
-在 Rust 中匹配枚举；需要文本标签时显式调用 kind 的 `as_str()` 或序列化。
-自定义 `BatchPolicy::select` 的规格参数为 `&BTreeMap<String, RuntimeToolSpec>`，
-可按调用名称查找规格。
-
-## 共享模型并发与工具目录视图
-
-```rust
-let model = Arc::new(zhir::models::ConcurrencyLimitedModel::new(model, 8)?);
-let sources: Vec<Arc<dyn zhir::tool::RuntimeToolCatalogProvider>> = vec![local, project];
-let catalog = zhir::runtime_tools::CompositeRuntimeTools::new(sources);
-let runtime = Runtime::builder(model).runtime_tools(Arc::new(catalog)).build()?;
-let request = RunRequest::new([Message::user("run")])
-    .runtime_tools(zhir::tool::RuntimeToolSelection::only(["search", "read_file"]));
-```
-
-ConcurrencyLimitedModel 的克隆共享同一个信号量。许可覆盖完整 Model::invoke，包括所有
-已等待的 delta sink 写入；取消、错误及丢弃 Future 均释放许可。排队和执行期间检查取消
-与单调截止时间。需要限制实际模型尝试时，将重试器放在限制器外侧，使退避不占许可。
-
-RuntimeToolSelection 是 All / Only { names } / None。Only 的空列表选择零个工具；
-重复、空名称或目录中不存在的名称明确报错。选择随 RunOptions 固化和持久化。
-恢复时沿用选择值，资源由应用重建；所选名称缺失会失败，不扩大到当前默认目录。
-
-open_catalog 接收 CatalogContext，其中有 RunContext 和 Cancellation。组合目录依次打开
-各来源一次，并保留各自快照；重名错误携带来源下标。kernel 将选择应用到合并快照，
-模型声明与 bind 使用同一视图，绑定规格必须与快照一致。ProviderToolSpec 仍通过
-provider_tools 配置。RuntimeToolRegistry 继续用于注册具体 RuntimeTool。
-
-## 子 Agent 工具与本地后端
-
-启用 `agent` 可使用 `zhir::builtins::agent::{AgentBackend, tools}`。直接使用
-zhir-builtins 的 `agent` feature 接入自定义后端时，不依赖 zhir-kernel；SDK facade
-本身仍提供 kernel。启用 `agent-runtime` 后，可选择本地后台任务实现：
-
-```rust
-let backend = Arc::new(
-    zhir::builtins::agent::runtime_backend::InMemoryAgentBackend::new(
-        child_runtime, "Complete the delegated task.", 4,
-    )?,
-);
-let tools = zhir::builtins::agent::tools(backend)?;
-```
-
-第三个参数限制该后端同时运行的子 Agent 数量，必须大于零。满载时新 key 返回
-`agent_capacity` 工具错误；重复 key 的查询不占新名额，复用 key 时 prompt 必须一致。
-名额在子运行完成、失败、暂停或取消结算后释放。取消会等待实际结算；单个子运行继续
-使用 kernel 的模型、工具、checkpoint 与截止时间机制。这个上限独立于父运行的工具批次并发。
-
-## ProviderTool 接入
-
-执行归属在类型、请求、结果、事件和计数中保持一致：
-
-| 层面 | 应用执行 | 服务端执行 |
-| --- | --- | --- |
-| 声明 | RuntimeToolSpec | ProviderToolSpec |
-| 调用 | RuntimeToolCall | ProviderToolCall |
-| 注册 | RuntimeToolRegistry / runtime_tools | ProviderTools 适配器 + provider_tools 声明 |
-| 执行 | RuntimeTool::invoke，由 kernel 调度 | 服务端执行，框架记录与回放 |
-| 增量 | ModelDelta::RuntimeTool、RuntimeToolProgress | ModelDelta::ProviderToolProgress |
-| 原始协议 | ModelDelta::ProtocolEvent | ModelDelta::ProtocolEvent |
-| 计数 | Metrics.runtime_tool_calls | 保留在模型输出与调用记录中 |
-
-`zhir::models::provider_tools::ProviderToolAdapter` 是编解码会话接口，没有 invoke。
-用户实现 identity、encode、decode；ProviderOutput 构建的结果可直接使用默认 replay，
-自定义回放、choice 和 event 按需实现，然后在每次
-模型调用的扩展工厂中创建 ProviderTools 并 register。注册适配器不自动启用能力：
-RunRequest::provider_tools 或 RuntimeBuilder::defaults 还需要显式传入 ProviderToolSpec。
-
-声明中的 provider/name 是用户选择的能力身份，不受传输协议名称限制；options 是用户
-载荷，由适配器解释。编码结果必须是原生声明对象。显式选择的原生格式由 choice 返回，
-不根据 name 猜测。decode 可以返回 None（未认领）、Some(empty)（消费关联结果项）或
-本能力的 ProviderToolCall；调用保持响应顺序，身份不能越过该适配器注册的范围。
-
-扩展按以下位置接入标准 HTTP/SSE 流程：
-
-- encode_provider_tool / encode_provider_choice：在标准请求编码阶段运行。
-- decode_output_item：在单个输出项的标准解码前运行，同时提供完整原生响应。
-- encode_provider_history：对已记录的 ProviderToolCall 生成当前请求的回放项。
-- decode_event：在标准流累积前处理原生帧；框架同时保留原始 ProtocolEvent。
-- encode_request / decode_response：仍可对完整请求或响应进行用户定义的转换。
-
-ExtensionChain 的整请求、事件和整响应 hook 按顺序组合。声明、选择、输出项与回放项
-使用唯一归属规则：多个扩展同时认领同一项直接报错。ProviderTools 在每次模型调用内
-维护独立状态，拒绝未启用能力的输出；事件只能生成本适配器身份的 ProviderToolProgress。
-
-未映射的执行请求和未知顶层输出项明确报错。框架不会根据类型名称后缀或原生 completed
-状态推断执行归属。应用执行的特殊协议项由用户的 ProtocolExtension 映射为
-RuntimeToolCall，结果仍通过唯一的 RuntimeTool 执行与提交路径处理。
-
-完整消费者实现见 [provider_fixture](../crates/zhir/tests/provider_fixture/mod.rs)，
-执行、混合工具及回放测试见 [provider_integration](../crates/zhir/tests/provider_integration.rs)。
-这些具体能力映射仅存在于消费者测试中。
-
-## 产物存取与结果查询
-
-`zhir::core::artifact::ArtifactStore` 提供异步 put/get。存储实现由用户提供：put 成功返回
-时引用应已持久化；相同 key 和内容应返回相同引用。应用负责回收未提交响应遗留的产物。
-框架不会替用户部署存储服务。
-
-`ArtifactModel` 包装任意 Model，在调用前解析类型化 MediaSource::Artifact，在调用后
-保存规范化输出中的 Inline 产物。重放映射错误返回 Protocol 并结算为 Failed；
-引用和内容错误返回结构化 Artifact 错误，实际存储错误原样传播。失败响应不会把部分模型输出追加到历史。保存 key 根据 run 身份、媒体类型和内容生成，同一响应
-的相同内容只写一次。读取在本次请求内缓存，并检查引用与内容的媒体类型一致。
-
-```rust
-let model = ArtifactModel::new(model, artifact_store);
-
-for record in zhir::output::provider_calls(&checkpoint) {
-    println!("{}:{} {}", record.message_index, record.output_index, record.call.name);
-    // record.call.status / output / data 可直接按标准 Rust 迭代器筛选。
-}
-```
-
-在 ProviderToolAdapter::decode 中同时构建规范化输出和原生回放：
-
-```rust
-let output = ProviderOutput::new(provider, name, id, status)
-    .native(item.clone())
-    .image("/result", "image/png")?
-    .finish()?;
-Ok(Some(vec![output]))
-```
-
-image 从当前原生条目的本地 JSON Pointer 读取 base64，并记录媒体关联。通用 media
-接收 `FnOnce(MediaSource) -> Content`，可构建音频、视频和文件。反复调用 native 可追加
-成对或多项回放，随后声明的媒体始终关联最近追加的原生条目。普通 content 可附加文本和 URL。
-
-规范化产物变为 MediaSource::Artifact，原生字段变为
-`{"$zhir_artifact":{"id":"...","mime_type":"..."}}`。唯一原生载荷在 call.data 的
-`$zhir_provider_replay` 中，内部保存 items 与本地媒体关联；应用使用
-`ProviderOutput::replay(call)` 读取原生项。绑定必须唯一且内容一致，未解析的引用在模型 I/O 前加载。
-
-原始快照仍包含未绑定的相同载荷时，保存流程报错，避免 checkpoint 继续携带一份内联
-产物。普通业务参数中名为 kind/id 的对象不会被当成产物。部分流事件只用于观察；它们
-不会由 ArtifactModel 自动升级为最终输出。存储失败返回原错误，kernel 保留最后一个
-成功提交的 checkpoint；存储错误以 RunError.last_checkpoint 提供恢复位置。
-
-ProviderToolRecord 的 message_index/output_index 只在对应 checkpoint 内有效；原生
-call id 可能在不同模型轮次重复。查询保留这些位置，不把不同轮次的同名调用合并。
-
-原生响应中被 ProviderTool 认领的位置替换为 `{"$zhir_provider_calls":[call_id,...]}`，
-无需另存一份同样的媒体载荷。回放根据 call id 找到同一响应内的规范化调用，交给用户适配器；
-重排规范化 output 不影响关联。成对消费项使用空数组标记，不重复回放。缺失调用或重复位置
-报错；原生 id/call_id/token 等身份字段完全由用户解码器解释。消费项目改写整个响应时，也须
-保留这些关联的完整性；普通未认领内容和响应级元数据保持原样。
-
-ProviderToolCall.output 是服务端产物，独立于模型的原生输入模态。模型只支持文本输入时，
-用户适配器仍可以返回音频、视频和文件，并按服务端引用回放。普通 User/Assistant 内容
-直接携带这些媒体时，仍执行模型输入能力校验。
-
-## 结束结果、结构化错误与上下文
-
-Invocation::result 和 runs::drive 返回 RunCompletion。它只保存一个已校验 checkpoint，
-outcome() 提供 Completed(content)、Suspended(ticket)、Failed(failure)、Limited(reason)
-四种视图。checkpoint() 借用 Arc，into_checkpoint() 显式取出。基础设施中断继续通过
-RunError 携带 error 和 last_checkpoint；Failed 并不等于基础设施错误。
-
-```rust
-let result = runtime.start(request)?.result().await?;
-match result.outcome() {
-    RunOutcome::Completed(content) => render(content),
-    RunOutcome::Suspended(ticket) => enqueue(ticket),
-    RunOutcome::Failed(failure) => report_failure(failure),
-    RunOutcome::Limited(reason) => report_limit(reason),
-}
-```
-
-Error::Resume 区分 StoreRequired、RunNotFound、StaleTicket、NotSuspended、NotActive、
-SelectorMismatch、MessagesNotAllowed、InvalidTicketIdentity。当前 head 已经结束也属于
-旧票据 StaleTicket；CAS 冲突仍为 Error::Conflict。Error::Catalog 包含缺失、未选择、
-重复及规格漂移；ValidationError 包含 Schema、Value（实例与 schema 路径）、Decode
-和 InputKind。调用方按类型处理，无需检查文案；自定义 Failure.code 仍由业务定义。
-
-```rust
-const JOB: ContextKey<JobContext> = ContextKey::new("app.job");
-let request = RunRequest::new(messages).context_value(JOB, job)?;
-let job = ctx.run.require(JOB)?;
-// RunContext::get 返回 Result<Option<T>>，缺失与 JSON null 分开。
-// ResumeRequest::context_value 追加恢复时的 metadata 更新。
-```
-
-ContextKey<T> 关联静态键名与 serde 类型。存储仍为 JSON metadata；空键、缺失、编码、
-解码错误分别可判断。该视图不改变 wire 格式，也不把 Runtime 变为业务泛型。
-
-## 函数式审批和重试策略
-
-```rust
-let policy = FunctionApprovalPolicy::per_call(review);
-// 整批决策：FunctionApprovalPolicy::batch(review_batch)
-let runtime = Runtime::builder(model).approval(Arc::new(policy)).build()?;
-```
-
-per_call 顺序调用并收集决定，batch 校验返回数量。暂停继续由 kernel 在完整批次上处理，
-错误直接传播，规则由调用方提供。
-
-```rust
-use zhir::policies::{Backoff, RetryPolicy};
-
-let policy = RetryPolicy::new(4)?.backoff(Backoff::exponential(
-    Duration::from_millis(100), Duration::from_secs(2),
-)?);
-let model = RetryingModel::new(model, policy.clone())?;
-let tool = RetryingTool::new(tool, policy)?;
-```
-
-次数包含首次调用。Backoff::fixed / exponential / custom 只计算等待时间；custom 接收
-从 1 开始的失败尝试次数。计数按每次调用独立。模型已发出增量后不会重试，工具仍要求
-幂等声明与可重试错误。退避响应取消和从运行上下文重建的单调截止时间；取消轮询间隔
-为 10ms，实际调度延迟取决于执行器。共享计算由 zhir-policies 提供，具体等待保留在 models/tools。
-单独依赖 zhir-policies 即可使用策略；通过 SDK 使用时启用 policies，models/tools 会自动启用它。
-
-## 产物存储与匹配脚本
-
-```rust
-let artifacts = Arc::new(FilesystemArtifactStore::open("./data/artifacts").await?);
-let model = ArtifactModel::new(model, artifacts);
-```
-
-MemoryArtifactStore 在进程内保留产物。文件实现通过 artifacts-filesystem feature 引入，
-键映射为 SHA-256 文件标识，MIME/base64 保存在一个不可变 JSON 文件中。临时文件写完
-并同步后原子发布；同键同内容幂等，不同内容报 ArtifactError::Conflict。读取校验引用
-MIME，损坏与 I/O 错误分别返回。落盘在 blocking worker 中执行，被丢弃的 future 仍可能
-完成写入，未提交产物的回收由调用方负责。文件实现要求底层文件系统支持原子发布和同步。
-
-```rust
-let model = ScriptedModel::matching([
-    ModelCase::new("job-a")
-        .when(|input| input.run.run_id == "run-a")
-        .steps([ScriptStep::response(ModelResponse::text("done"))]),
-])?;
-// 运行测试……
-model.verify()?;
-```
-
-每个 case 有独立步骤队列。匹配和领取原子完成，异步 delta 在锁外执行。无匹配、多重
-匹配、脚本耗尽即时失败，verify 检查残余步骤和异常调用记录。取消或丢弃已经领取的步骤
-不会返还到队列。测试组件仅在 zhir-testing；条件、协议响应与业务适配由测试作者定义。
+`ToolReply::content` 可以指定资源或文本展示。无类型 JSON 结果使用
+`runtime_tools::reply::json`；复杂异步生命周期直接实现 RuntimeTool。
+重试装饰器只按显式执行事实重试，不能把 Active 工作视为失败后重新发起。
+
+## 恢复与子 Agent
+
+RunCompletion 可提取不可变 checkpoint。`wire::encode_checkpoint/decode_checkpoint`
+使用 v2。持久化运行可生成 SuspensionTicket，通过
+`ResumeRequest::from_ticket` 校验 run、revision、checkpoint 与 suspension。
+
+用 `ResumeRequest::resolve` 为未完成操作提供明确处置：
+
+| RecoveryResolution | 语义 |
+| --- | --- |
+| `Attach { operation_id, reference }` | 提供适配器恢复引用，附着到已有工作 |
+| `Complete { operation_id, outcome }` | 提交外部已经核实的最终结果 |
+| `Abandon { operation_id, reason }` | 明确放弃，产生取消结果 |
+
+`resume` 只接受 Suspended；进程中断留下的 Running checkpoint 使用 `continue_from`。
+两者在打开适配器和恢复工具前提交 Attached CAS。运行不会重发已标记 sent 的命令。
+没有可用会话恢复引用的未确认请求会保持 RecoveryRequired，普通 HTTP 轮次服务无法
+凭空恢复远端请求。提供具备恢复能力的会话适配器，或在产品层完成外部核对与处置。
+
+内置 `ask_question` 产生 Waiting operation。
+`builtins::interaction::response(checkpoint, operation_id, answers)` 校验答案并创建
+Complete resolution。[resume 示例](../crates/zhir/examples/resume.rs) 展示完整闭环。
+
+`agent_run` 也是普通异步 RuntimeTool。`agent` feature 允许注入任意 AgentBackend；
+`agent-runtime` 提供 `RuntimeAgentBackend::new(runtime, system_prompt, max_running)`。
+子运行标识来自父 run/operation，继承截止时间；后台仅驱动同一个 kernel。
+父端脱离后保存子运行的暂停状态，恢复读取子 checkpoint；取消暂停中的子任务也会
+提交子运行的 Cancelled 状态。
+
+## 能力协商与实际确认
+
+RequestProfile 包含 generation、serving、reasoning、language、interaction、显式备选
+值 alternatives 和按命名空间组织的 extensions。`Requirement::Required` 不满足就失败；
+Preferred 只允许使用调用方列出的替代值，未满足项记录原因。
+
+例如，`serving = Required(LowLatency)` 只表达低延迟要求。HTTP 接入通过
+`ProfileMapping::new(key, semantic_value, endpoint_field, wire_value)` 声明端点映射。
+是否映射到服务等级、fast 参数或其他字段由接入方确定，不由模型名称猜测。
+每个 ResourceInput 的 `usage.fidelity = Required(Original)` 表达原图精度要求。
+端点必须声明支持，编码器才能使用相应图片 detail 值。
+
+协商的 selected 值不等于实际执行确认。SessionSnapshot 同时保存 negotiated 与
+`EffectiveProfile`，后者的每个字段是 Provider、Verified 或 Unknown。适配器只能用
+服务端信息或已验证证据填入确认；不能复制请求值假装服务已执行。原始图像、服务
+等级与推理选项仍需要具体账号/模型/端点支持。
+
+RetryingModel 仅重试尚未发送命令的会话建立。FallbackModel 接收
+`FallbackCandidate::new(stable_id, model)` 列表，各候选独立协商；恢复绑定原 ID，
+顺序变化不会把任务迁移到另一服务。ConcurrencyLimitedModel 的共享许可覆盖会话寿命。
+TransformModel 可变换打开请求、StartTurn、命令与事件；异步变换需要遵守取消和预算。
+
+## 资源与媒体流
+
+Content::resource 接收 ResourceRef，或用 ResourceInput 同时指定 ResourceUsage。
+来源为 Inline bytes、URL、Stored key 或 Provider reference；来源与使用精度分离。
+
+ResourceStore::create 返回分块 writer，append 接收顺序号，finish 封存不可变引用。
+ResourceStore::open 返回 reader，每次 read 指定最大字节数。MemoryResourceStore 总是
+可用；FilesystemResourceStore 需要 `resources-filesystem`。同 key 相同数据幂等，
+不同数据明确冲突。
+
+`ResourceModel::new(model, store, max_input_bytes)` 在打开请求、StartTurn、实时 Input
+和 ToolResult 中解析资源。一个请求/命令内按实际物化字节消耗总预算；原生回放中同一
+数据有多份表示时分别计入。超限应改用媒体流。输出资源先封存，再进入 kernel 历史；
+原生 JSON 中的媒体位置需显式绑定，防止内联副本继续进入回放数据。
+
+原生双向模型提供可选 MediaSender/MediaReceiver。宿主通过 Invocation 的 media_input
+和 media_output 使用独立媒体通道，同时驱动 result/control。每个 MediaChunk 显式带
+stream_id、turn_id、epoch、sequence、timestamp_us、media_type、bytes、end。
+媒体序号在同一流内递增；中断后用新 epoch。过期 epoch 不向模型/宿主交付。
+
+媒体在存储完成和 cursor 提交后才交付，输出消费者变慢会向上游施加背压。
+checkpoint 只记录最新封存节点；SealedMedia 的 previous 引用链接历史节点。
+长期资源保留、检索索引、解码/转码与播放界面由产品层负责。
+
+## 凭据与跨供应商能力
+
+ModelConfig.credentials 接收 CredentialProvider。StaticCredential 适合固定 token；
+RefreshingCredential 接收刷新回调，按 audience 缓存，按过期时间刷新，并对被服务端
+拒绝的 generation 做失效处理。Credential.metadata 的 `header:` 项用于适配器需要的
+额外账号请求头。401 只触发一次刷新重试；发送后的其他失败不自动重放推理请求。
+
+这能承载 OAuth access token、账号标识与刷新结果，但不提供 Codex 登录、浏览器回调、
+ChatGPT 聊天记录访问或订阅权益管理。OAuth 登录和端点规则由宿主接入层负责。
+
+OpenAI 模型调用另一供应商的视频/语音服务时，把该服务实现为 RuntimeTool operation；
+使用某供应商模型自带的视频/语音能力时，由 ModelSession/ProviderToolAdapter 报告
+provider operation 或媒体流。供应商任务 ID、轮询/推送、取消和回放映射属于该适配器。
+这两条路径共用资源与恢复契约，不需要为具体供应商向核心增加分支。
+
+## 历史、输出与观察
+
+HistoryEntry 保存稳定 ID、CallRef 与 Message。History::messages 是到达顺序视图；
+`model::conversation(history.entries())` 才是新一轮模型的逻辑会话投影。后者合并同轮
+assistant 输出与完成信息，把异步 provider 更新归回原始调用。用持久化 checkpoint
+分析因果，不要用观察事件重建事实。
+
+JsonOutput<T>（`typed-output`）从同一 Schema 构造请求格式并验证最终结果。
+`runs` 中的便利函数建立在普通 Invocation 上。观察流可能丢弃事件并发出 ObservationGap；
+审计、回放与统计应使用 checkpoint/RunStore 或测试模块中的 RecordingStore。

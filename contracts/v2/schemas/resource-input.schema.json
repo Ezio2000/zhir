@@ -1,0 +1,210 @@
+{
+  "$defs": {
+    "Fidelity": {
+      "enum": [
+        "economy",
+        "high",
+        "original"
+      ],
+      "type": "string"
+    },
+    "Requirement": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "required",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Fidelity"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "preferred",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Fidelity"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ResourceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "media_type": {
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/ResourceSource"
+        }
+      },
+      "required": [
+        "id",
+        "media_type",
+        "source",
+        "metadata"
+      ],
+      "type": "object"
+    },
+    "ResourceSource": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "bytes": {
+              "items": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "inline",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "bytes"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "url",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "url"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "stored",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "key"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "provider",
+              "type": "string"
+            },
+            "provider": {
+              "type": "string"
+            },
+            "reference": true
+          },
+          "required": [
+            "kind",
+            "provider",
+            "reference"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ResourceUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "extensions": {
+          "additionalProperties": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "object"
+        },
+        "fidelity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Requirement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "transforms": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "transforms",
+        "extensions"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "resource": {
+      "$ref": "#/$defs/ResourceRef"
+    },
+    "usage": {
+      "$ref": "#/$defs/ResourceUsage"
+    }
+  },
+  "required": [
+    "resource",
+    "usage"
+  ],
+  "title": "ResourceInput",
+  "type": "object"
+}

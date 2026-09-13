@@ -1,14 +1,14 @@
-//! Explicit native v1 envelopes. Provider payloads and storage layouts are separate.
+//! Explicit native v2 envelopes. Provider payloads and storage layouts are separate.
 use crate::{
     Result,
     error::Error,
-    message::Message,
+    run::{ActiveState, HistoryEntry},
     run::{Checkpoint, Fact, History, Metrics, RunContext, State},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -19,6 +19,7 @@ pub struct CheckpointCore {
     pub revision: u64,
     pub context: RunContext,
     pub state: State,
+    pub active: ActiveState,
     pub metrics: Metrics,
     pub fact: Fact,
     pub history_count: usize,
@@ -33,6 +34,7 @@ impl From<&Checkpoint> for CheckpointCore {
             revision: c.revision,
             context: c.context.clone(),
             state: c.state.clone(),
+            active: c.active.clone(),
             metrics: c.metrics.clone(),
             fact: c.fact.clone(),
             history_count: c.history.len(),
@@ -57,6 +59,7 @@ impl CheckpointCore {
             context: self.context,
             history,
             state: self.state,
+            active: self.active,
             metrics: self.metrics,
             fact: self.fact,
         };
@@ -68,17 +71,17 @@ impl CheckpointCore {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CheckpointEnvelope {
-    #[cfg_attr(feature = "schema", schemars(range(min = 1, max = 1)))]
+    #[cfg_attr(feature = "schema", schemars(range(min = 2, max = 2)))]
     version: u32,
     checkpoint: CheckpointCore,
-    history: Vec<Message>,
+    history: Vec<HistoryEntry>,
 }
 pub fn encode_checkpoint(checkpoint: &Checkpoint) -> Result<Vec<u8>> {
     checkpoint.validate()?;
     serde_json::to_vec(&CheckpointEnvelope {
         version: VERSION,
         checkpoint: checkpoint.into(),
-        history: checkpoint.history.messages(),
+        history: checkpoint.history.entries(),
     })
     .map_err(|e| Error::Invalid(e.to_string()))
 }
@@ -88,10 +91,10 @@ pub fn decode_checkpoint(bytes: &[u8]) -> Result<Checkpoint> {
     if e.version != VERSION {
         return Err(Error::Invalid("unsupported checkpoint version".into()));
     }
-    e.checkpoint.with_history(History::new(e.history)?)
+    e.checkpoint.with_history(History::from_entries(e.history)?)
 }
 
-/// Schemas are generated from explicitly tagged native DTOs and checked into contracts/v1.
+/// Schemas are generated from explicitly tagged native DTOs and checked into contracts/v2.
 #[cfg(feature = "schema")]
 pub fn schemas() -> std::collections::BTreeMap<&'static str, serde_json::Value> {
     use schemars::schema_for;
@@ -111,8 +114,20 @@ pub fn schemas() -> std::collections::BTreeMap<&'static str, serde_json::Value> 
     add!("limits", crate::run::Limits);
     add!("run-options", crate::run::RunOptions);
     add!("suspension-ticket", crate::run::SuspensionTicket);
-    add!("model-response", crate::model::ModelResponse);
+    add!("turn-output", crate::model::TurnOutput);
     add!("tool-spec", crate::tool::RuntimeToolSpec);
     add!("tool-outcome", crate::tool::RuntimeToolOutcome);
+    add!("capability-set", crate::model::CapabilitySet);
+    add!("request-profile", crate::profile::RequestProfile);
+    add!("resource", crate::resource::ResourceRef);
+    add!("resource-input", crate::resource::ResourceInput);
+    add!("sealed-media", crate::resource::SealedMedia);
+    add!("media-chunk", crate::resource::MediaChunk);
+    add!("session-command", crate::model::SessionCommand);
+    add!("session-event", crate::model::SessionEvent);
+    add!("operation", crate::operation::OperationRecord);
+    add!("operation-event", crate::operation::OperationEvent);
+    add!("recovery-resolution", crate::operation::RecoveryResolution);
+    add!("history-entry", crate::run::HistoryEntry);
     schemas
 }

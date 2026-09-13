@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "name": "reject_extra_profile_field",
+  "kind": "value",
+  "schema": "request-profile",
+  "value": {
+    "extra": {}
+  },
+  "valid": false
+}

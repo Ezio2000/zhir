@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "name": "outcome_failure",
+  "kind": "value",
+  "schema": "tool-outcome",
+  "value": {
+    "kind": "failure",
+    "error": {
+      "code": "failed",
+      "message": "failure",
+      "retryable": false
+    }
+  },
+  "valid": true
+}

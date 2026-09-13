@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "name": "reject_resource_inline_string",
+  "kind": "value",
+  "schema": "resource",
+  "value": {
+    "id": "x",
+    "media_type": "image/png",
+    "name": null,
+    "source": {
+      "kind": "inline",
+      "bytes": "base64"
+    },
+    "metadata": {}
+  },
+  "valid": false
+}

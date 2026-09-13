@@ -1,0 +1,85 @@
+{
+  "version": 2,
+  "name": "freeform_operation",
+  "kind": "runtime",
+  "case": {
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "kind": "text",
+            "text": "go"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "output": {
+          "output": [
+            {
+              "kind": "runtime_tool_call",
+              "call": {
+                "id": "c",
+                "name": "echo",
+                "input": {
+                  "kind": "freeform",
+                  "value": "hello"
+                }
+              }
+            }
+          ],
+          "model_id": null,
+          "response_id": null,
+          "finish_reason": null
+        }
+      },
+      {
+        "output": {
+          "output": [
+            {
+              "kind": "content",
+              "content": {
+                "kind": "text",
+                "text": "done"
+              }
+            }
+          ],
+          "model_id": null,
+          "response_id": null,
+          "finish_reason": null
+        }
+      }
+    ],
+    "tools": [
+      {
+        "spec": {
+          "name": "echo",
+          "description": "echo",
+          "input": {
+            "kind": "freeform",
+            "format": null
+          },
+          "output_schema": null,
+          "execution": {
+            "parallel": false,
+            "read_only": false,
+            "idempotent": false
+          }
+        },
+        "outcome": {
+          "kind": "success",
+          "content": [],
+          "structured": "ok"
+        }
+      }
+    ],
+    "expected": {
+      "state": "completed",
+      "tool_outcomes": [
+        "success"
+      ]
+    }
+  }
+}

@@ -56,7 +56,7 @@ impl ProviderToolAdapter for Render {
         Ok(Some(vec![
             ProviderOutput::new("consumer.example", "render", required("id")?, status)
                 .native(item.clone())
-                .image("/result", "image/png")?
+                .media("/result", "image/png")?
                 .finish()?,
         ]))
     }
@@ -140,7 +140,7 @@ pub fn request(stream: bool) -> zhir::model::ModelRequest {
         messages: vec![zhir::message::Message::user("fixture")],
         runtime_tools: vec![],
         provider_tools: vec![spec()],
-        options: Default::default(),
+        profile: Default::default(),
         tool_choice: Default::default(),
         response_format: None,
         stream,

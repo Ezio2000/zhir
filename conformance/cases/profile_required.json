@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "name": "profile_required",
+  "kind": "value",
+  "schema": "request-profile",
+  "value": {
+    "generation": {
+      "temperature": null,
+      "max_output_tokens": null,
+      "seed": null,
+      "parallel_runtime_tools": null
+    },
+    "serving": {
+      "value": "low_latency",
+      "strength": "required"
+    },
+    "reasoning": null,
+    "language": null,
+    "interaction": null,
+    "alternatives": {},
+    "extensions": {}
+  },
+  "valid": true
+}

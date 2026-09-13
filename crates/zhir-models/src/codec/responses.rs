@@ -29,7 +29,7 @@ pub(super) fn encode(
     }
     let tools = request.runtime_tools.iter().map(tool).collect();
     let mut body = json!({"model":model,"stream":request.stream,"input":messages});
-    if let Some(n) = request.options.max_output_tokens {
+    if let Some(n) = request.profile.generation.max_output_tokens {
         body["max_output_tokens"] = json!(n);
     }
     if let Some(format) = &request.response_format {
@@ -80,22 +80,34 @@ fn content(value: &Content, output: bool) -> Result<Value> {
         Content::Text { text } => {
             json!({"type":if output {"output_text"} else {"input_text"},"text":text})
         }
-        Content::Image { source } => json!({"type":"input_image","image_url":data_url(source)?}),
-        Content::File {
-            source: MediaSource::Url { url },
-            ..
-        } => json!({"type":"input_file","file_url":url}),
-        Content::File { source, name } => {
-            json!({"type":"input_file","filename":name,"file_data":data_url(source)?})
-        }
         Content::Opaque { data, .. } => data.clone(),
-        _ => {
-            return Err(Error::Invalid(
-                "unsupported media for selected protocol".into(),
-            ));
+        Content::Resource { input } => {
+            let resource = &input.resource;
+            let mut value = match resource.modality() {
+                "image" => {
+                    let mut value = json!({"type":"input_image","image_url":data_url(resource)?});
+                    if let Some(detail) = fidelity(input) {
+                        value["detail"] = json!(detail);
+                    }
+                    value
+                }
+                "file" => match &resource.source {
+                    ResourceSource::Url { url } => json!({"type":"input_file","file_url":url}),
+                    ResourceSource::Provider { reference, .. } => {
+                        json!({"type":"input_file","file_id":reference})
+                    }
+                    _ => {
+                        json!({"type":"input_file","filename":resource.name,"file_data":data_url(resource)?})
+                    }
+                },
+                _ => return Err(Error::Invalid("unsupported resource modality".into())),
+            };
+            resource_extensions(input, "responses", &mut value)?;
+            value
         }
     })
 }
+
 pub(super) fn choice(
     choice: &ToolChoice,
     tools: &[zhir_core::tool::RuntimeToolSpec],

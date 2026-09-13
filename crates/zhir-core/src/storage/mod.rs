@@ -1,5 +1,5 @@
 mod commit;
-use crate::{BoxFuture, Result, message::Message, run::Checkpoint};
+use crate::{BoxFuture, Result, run::Checkpoint, run::HistoryEntry};
 pub use commit::Commit;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -13,9 +13,9 @@ use std::sync::Arc;
     deny_unknown_fields
 )]
 pub enum HistoryDelta {
-    Initial(Vec<Message>),
-    Append(Vec<Message>),
-    Replace(Vec<Message>),
+    Initial(Vec<HistoryEntry>),
+    Append(Vec<HistoryEntry>),
+    Replace(Vec<HistoryEntry>),
     Unchanged,
 }
 /// Implementations settle atomic writes before returning. A dropped caller does not

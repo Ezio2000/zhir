@@ -30,13 +30,15 @@ pub enum Error {
     #[error(transparent)]
     Context(#[from] ContextError),
     #[error(transparent)]
-    Artifact(#[from] ArtifactError),
+    Resource(#[from] ResourceError),
     #[error("invalid request: {0}")]
     Invalid(String),
     #[error("model: {0:?}")]
     Model(Failure),
     #[error("tool: {0:?}")]
     RuntimeTool(Failure),
+    #[error("external outcome is uncertain: {0}")]
+    Uncertain(String),
     #[error("protocol: {0}")]
     Protocol(String),
     #[error("storage: {0}")]
@@ -72,8 +74,6 @@ pub enum ResumeError {
     NotActive,
     #[error("suspension selector mismatch")]
     SelectorMismatch,
-    #[error("resume messages require idle planning")]
-    MessagesNotAllowed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -119,13 +119,13 @@ pub enum ContextError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum ArtifactError {
-    #[error("artifact not found: {id}")]
+pub enum ResourceError {
+    #[error("resource not found: {id}")]
     NotFound { id: String },
-    #[error("artifact key has different contents: {id}")]
+    #[error("resource key has different contents: {id}")]
     Conflict { id: String },
-    #[error("invalid artifact {id}: {message}")]
+    #[error("invalid resource {id}: {message}")]
     Invalid { id: String, message: String },
-    #[error("artifact {operation} failed: {message}")]
+    #[error("resource {operation} failed: {message}")]
     Io { operation: String, message: String },
 }
