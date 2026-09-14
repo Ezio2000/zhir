@@ -8,12 +8,9 @@ use std::{
 };
 use tokio::sync::Semaphore;
 use zhir_builtins::agent::{AgentBackend, runtime_backend::RuntimeAgentBackend};
+use zhir_core::operation::OperationOutcome;
 use zhir_core::{
-    error::Error,
-    model::TurnOutput,
-    operation::*,
-    run::RunContext,
-    tool::{RuntimeToolContext, RuntimeToolOutcome},
+    error::Error, model::TurnOutput, operation::*, run::RunContext, tool::RuntimeToolContext,
 };
 fn context(id: &str) -> RuntimeToolContext {
     RuntimeToolContext {
@@ -23,7 +20,7 @@ fn context(id: &str) -> RuntimeToolContext {
         progress: None,
     }
 }
-async fn outcome(handle: &mut OperationHandle) -> RuntimeToolOutcome {
+async fn outcome(handle: &mut OperationHandle) -> OperationOutcome {
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let event = handle
@@ -93,18 +90,18 @@ async fn child_admission_is_bounded_and_slots_return_after_cancel_and_completion
     admitted[0].control.cancel().await.unwrap();
     assert!(matches!(
         outcome(&mut admitted[0]).await,
-        RuntimeToolOutcome::Cancelled { .. }
+        OperationOutcome::Cancelled { .. }
     ));
     let mut next = backend.start("work".into(), context("next")).await.unwrap();
     started.acquire().await.unwrap().forget();
     finish.add_permits(2);
     assert!(matches!(
         outcome(&mut admitted[1]).await,
-        RuntimeToolOutcome::Success { .. }
+        OperationOutcome::Success { .. }
     ));
     assert!(matches!(
         outcome(&mut next).await,
-        RuntimeToolOutcome::Success { .. }
+        OperationOutcome::Success { .. }
     ));
 }
 #[tokio::test]
@@ -132,7 +129,7 @@ async fn child_recovery_reads_kernel_checkpoint_without_reexecuting_the_model() 
         .unwrap();
     assert!(matches!(
         outcome(&mut handle).await,
-        RuntimeToolOutcome::Success { .. }
+        OperationOutcome::Success { .. }
     ));
     let record = OperationRecord {
         id: "child".into(),
@@ -159,7 +156,7 @@ async fn child_recovery_reads_kernel_checkpoint_without_reexecuting_the_model() 
     let mut recovered = backend.recover(record, context("child")).await.unwrap();
     assert!(matches!(
         outcome(&mut recovered).await,
-        RuntimeToolOutcome::Success { .. }
+        OperationOutcome::Success { .. }
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
@@ -236,7 +233,7 @@ async fn parent_detach_suspends_child_and_cancelling_recovered_wait_is_durable()
     recovered.control.cancel().await.unwrap();
     assert!(matches!(
         outcome(&mut recovered).await,
-        RuntimeToolOutcome::Cancelled { .. }
+        OperationOutcome::Cancelled { .. }
     ));
     assert!(matches!(
         runtime

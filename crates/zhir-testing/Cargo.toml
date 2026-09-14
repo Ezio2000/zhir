@@ -19,6 +19,7 @@ tokio = { workspace = true, features = ["net", "io-util"] }
 serde_json.workspace = true
 
 [features]
+openai-live = ["zhir/openai-live"]
 minimax = ["zhir/minimax"]
 default = []
 http = []
@@ -50,6 +51,8 @@ name = "history"
 harness = false
 
 [dev-dependencies]
+webrtc = "0.17.1"
+bytes = "1"
 serde.workspace = true
 futures.workspace = true
 zhir.workspace = true
@@ -78,3 +81,7 @@ required-features = ["tools", "openai-chat", "openai-responses", "anthropic"]
 [[test]]
 name = "minimax_tts"
 required-features = ["minimax"]
+
+[[test]]
+name = "gpt_live"
+required-features = ["openai-live"]

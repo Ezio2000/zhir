@@ -10,6 +10,7 @@ pub(super) fn encode(
     let mut freeform = HashSet::new();
     for message in &request.messages {
         match message {
+            Message::DelegationResult { .. } => return Err(Error::Invalid("protocol does not accept delegation history".into())),
             Message::System { content: values } => messages.push(json!({"role":"system","content":parts(values,false,content)?})),
             Message::User { content: values } | Message::External { content: values } => messages.push(json!({"role":"user","content":parts(values,false,content)?})),
             Message::Assistant { output, provider_data } => {
@@ -65,6 +66,7 @@ fn assistant(
     let mut values = Vec::new();
     for item in output {
         match item {
+            Output::Delegation { .. } => return Err(Error::Invalid("protocol does not accept delegation calls".into())),
             Output::Content { content: value } => values.push(json!({"type":"message","role":"assistant","content":[content(value,true)?]})),
             Output::RuntimeToolCall { call } => values.push(match &call.input {
                 RuntimeToolInput::Structured(_) => json!({"type":"function_call","call_id":call.id,"name":call.name,"arguments":call_input(call)}),

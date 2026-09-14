@@ -139,7 +139,7 @@ impl Engine {
                 .recovery
                 .as_ref()
                 .and(self.current.active.session.last_sequence),
-            epoch: self.current.active.session.epoch,
+            output_epoch: self.current.active.session.output_epoch,
             limits: self.current.options.limits.clone(),
             recovery: self.current.active.session.recovery.clone(),
             context: ModelContext {

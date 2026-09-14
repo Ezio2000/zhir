@@ -91,7 +91,7 @@ async fn waiting_operation_recovers_without_repeating_start() {
         checkpoint.state
     );
     let operation_id = checkpoint.active.operations.keys().next().unwrap().clone();
-    let outcome = zhir::tool::RuntimeToolOutcome::Success {
+    let outcome = zhir::operation::OperationOutcome::Success {
         content: vec![],
         structured: json!({"choice":"a"}),
     };
@@ -176,7 +176,7 @@ async fn native_session_runs_tools_before_turn_end_and_tracks_provider_jobs() {
                 event: OperationEvent {
                     sequence: 0,
                     update: OperationUpdate::Finished {
-                        outcome: zhir::tool::RuntimeToolOutcome::Success {
+                        outcome: zhir::operation::OperationOutcome::Success {
                             content: vec![zhir::message::Content::text("video finished")],
                             structured: json!({"job":"video-job"}),
                         },
@@ -310,7 +310,23 @@ async fn native_voice_video_stream_is_lossless_and_sealed_before_delivery() {
             .collect::<Vec<_>>(),
         (0..8).collect::<Vec<_>>()
     );
-    let mut next = Some(checkpoint.active.media["output:voice:0"].sealed.clone());
+    assert!(checkpoint.active.media.is_empty());
+    let mut reader = resources
+        .open(checkpoint.active.session.media_archive.clone().unwrap())
+        .await
+        .unwrap();
+    let mut archive = vec![];
+    loop {
+        let bytes = reader.read(4096).await.unwrap();
+        if bytes.is_empty() {
+            break;
+        }
+        archive.extend(bytes);
+    }
+    let archive: zhir::resource::ArchivedMedia = serde_json::from_slice(&archive).unwrap();
+    assert!(archive.complete);
+    assert_eq!(archive.stream_key, "output:voice:0");
+    let mut next = Some(archive.sealed);
     let mut sequences = vec![];
     while let Some(reference) = next {
         let mut reader = resources.open(reference).await.unwrap();

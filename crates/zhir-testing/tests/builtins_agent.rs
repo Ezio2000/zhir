@@ -4,6 +4,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use zhir_builtins::agent::AgentBackend;
+use zhir_core::operation::OperationOutcome;
 use zhir_core::{BoxFuture, Result, operation::*, tool::*};
 struct Backend(AtomicUsize);
 impl AgentBackend for Backend {
@@ -47,7 +48,7 @@ impl OperationEvents for Events {
             Ok(Some(OperationEvent {
                 sequence: 0,
                 update: OperationUpdate::Finished {
-                    outcome: RuntimeToolOutcome::Success {
+                    outcome: OperationOutcome::Success {
                         content: vec![],
                         structured: serde_json::json!({"done":true}),
                     },

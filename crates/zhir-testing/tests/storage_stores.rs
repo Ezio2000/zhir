@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use zhir_core::operation::OperationOutcome;
 use zhir_core::{
     message::Message,
     run::{Fact, History, HistoryEntry, State},
@@ -127,7 +128,7 @@ async fn pending_recovery(store: Arc<dyn RunStore>) {
         message::Output,
         model::TurnOutput,
         operation::RecoveryResolution,
-        tool::{RuntimeToolCall, RuntimeToolInput, RuntimeToolOutcome},
+        tool::{RuntimeToolCall, RuntimeToolInput},
     };
     let calls: Vec<_> = (0..96)
         .map(|index| Output::RuntimeToolCall {
@@ -205,7 +206,7 @@ async fn pending_recovery(store: Arc<dyn RunStore>) {
     for id in loaded.active.operations.keys().rev() {
         request = request.resolve(RecoveryResolution::Complete {
             operation_id: id.clone(),
-            outcome: RuntimeToolOutcome::Success {
+            outcome: OperationOutcome::Success {
                 content: vec![],
                 structured: serde_json::json!({"answer":"yes"}),
             },
@@ -280,7 +281,7 @@ async fn redis() {
 
 #[tokio::test]
 async fn sqlite_refuses_unversioned_and_other_version_layouts() {
-    for version in [None, Some(1), Some(3)] {
+    for version in [None, Some(1), Some(2), Some(4)] {
         let directory = tempfile::tempdir().unwrap();
         let url = format!(
             "sqlite://{}?mode=rwc",

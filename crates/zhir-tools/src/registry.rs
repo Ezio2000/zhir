@@ -148,7 +148,7 @@ impl RuntimeToolBinding for Binding {
         })
     }
 }
-fn check_output(outcome: &zhir_core::tool::RuntimeToolOutcome, entry: &Entry) -> Result<()> {
+fn check_output(outcome: &zhir_core::operation::OperationOutcome, entry: &Entry) -> Result<()> {
     outcome.validate()?;
     if let (Some(schema), Some(value)) = (&entry.output, outcome.structured()) {
         validate(schema, value)?;
@@ -194,12 +194,12 @@ impl zhir_core::operation::OperationEvents for ValidatedEvents {
 }
 
 fn validated_outcome(
-    outcome: zhir_core::tool::RuntimeToolOutcome,
+    outcome: zhir_core::operation::OperationOutcome,
     entry: &Entry,
-) -> zhir_core::tool::RuntimeToolOutcome {
+) -> zhir_core::operation::OperationOutcome {
     match check_output(&outcome, entry) {
         Ok(()) => outcome,
-        Err(error) => zhir_core::tool::RuntimeToolOutcome::Failure {
+        Err(error) => zhir_core::operation::OperationOutcome::Failure {
             error: zhir_core::error::Failure::new("invalid_tool_output", error.to_string()),
         },
     }

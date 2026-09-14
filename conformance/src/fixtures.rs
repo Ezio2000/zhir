@@ -5,6 +5,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
+use zhir_core::operation::OperationOutcome;
 use zhir_core::{
     BoxFuture, Result,
     error::{Error, Failure},
@@ -82,7 +83,7 @@ impl Model for CaseModel {
 pub struct Tool {
     spec: RuntimeToolSpec,
     #[serde(default)]
-    outcome: Option<RuntimeToolOutcome>,
+    outcome: Option<OperationOutcome>,
     #[serde(default)]
     delay_ms: u64,
     #[serde(default)]

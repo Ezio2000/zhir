@@ -343,5 +343,5 @@
       "type": "object"
     }
   ],
-  "title": "RuntimeToolOutcome"
+  "title": "OperationOutcome"
 }

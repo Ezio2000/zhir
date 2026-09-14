@@ -31,7 +31,7 @@ fn open() -> SessionOpen {
     SessionOpen {
         session_id: "fixture-session".into(),
         after_sequence: None,
-        epoch: 0,
+        output_epoch: 0,
         limits: zhir_kernel::defaults::limits(),
         recovery: None,
         request: ModelRequest {

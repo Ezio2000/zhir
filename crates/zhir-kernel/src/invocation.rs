@@ -76,6 +76,13 @@ pub(crate) struct MediaInput {
     sender: mpsc::Sender<Packet>,
     bytes: Arc<Semaphore>,
     max_chunk: usize,
+    min_epoch: Arc<std::sync::atomic::AtomicU64>,
+}
+impl MediaInput {
+    pub(crate) fn invalidate_before(&self, epoch: u64) {
+        self.min_epoch
+            .store(epoch, std::sync::atomic::Ordering::Release);
+    }
 }
 impl MediaSender for MediaInput {
     fn send(&self, chunk: MediaChunk) -> BoxFuture<'_, Result<()>> {
@@ -101,10 +108,18 @@ impl MediaSender for MediaInput {
 }
 pub struct MediaOutput {
     receiver: mpsc::Receiver<Packet>,
+    min_epoch: Arc<std::sync::atomic::AtomicU64>,
 }
 impl MediaReceiver for MediaOutput {
     fn receive(&mut self) -> BoxFuture<'_, Result<Option<MediaChunk>>> {
-        Box::pin(async move { Ok(self.receiver.recv().await.map(|p| p.chunk)) })
+        Box::pin(async move {
+            while let Some(packet) = self.receiver.recv().await {
+                if packet.chunk.epoch >= self.min_epoch.load(std::sync::atomic::Ordering::Acquire) {
+                    return Ok(Some(packet.chunk));
+                }
+            }
+            Ok(None)
+        })
     }
 }
 pub(crate) fn media_pipe(limit: usize, max_chunk: usize) -> (MediaInput, mpsc::Receiver<Packet>) {
@@ -114,6 +129,7 @@ pub(crate) fn media_pipe(limit: usize, max_chunk: usize) -> (MediaInput, mpsc::R
             sender,
             bytes: Arc::new(Semaphore::new(limit)),
             max_chunk,
+            min_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         },
         receiver,
     )
@@ -149,6 +165,7 @@ impl Invocation {
             limits.max_buffered_media_bytes,
             limits.max_media_chunk_bytes,
         );
+        let output_epoch = media_tx.min_epoch.clone();
         let emitter = Emitter {
             state: Arc::new(Mutex::new(EventState {
                 sequence: 0,
@@ -167,6 +184,7 @@ impl Invocation {
             media_input: Arc::new(media_input),
             media_output: Some(MediaOutput {
                 receiver: media_output,
+                min_epoch: output_epoch,
             }),
             events: Some(events_rx),
             emitter,

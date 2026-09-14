@@ -1,4 +1,5 @@
 use super::*;
+use zhir_core::operation::OperationOutcome;
 
 impl Engine {
     pub(super) fn call(&self, operation: &OperationRecord) -> Result<RuntimeToolCall> {
@@ -64,17 +65,85 @@ impl Engine {
             .operations
             .values()
             .filter(|o| {
-                matches!(
-                    o.state,
-                    OperationState::Running | OperationState::Cancelling
-                )
+                !matches!(o.owner, OperationOwner::Provider { .. })
+                    && matches!(
+                        o.state,
+                        OperationState::Running | OperationState::Cancelling
+                    )
             })
             .count();
         if running + self.admitting.len() + self.current.active.commands.len()
             >= self.current.options.limits.max_control_commands
             || running + self.admitting.len()
-                >= self.current.options.limits.max_runtime_tool_concurrency
+                >= self.current.options.limits.max_operation_concurrency
         {
+            return Ok(());
+        }
+        let delegated: Vec<_> = self
+            .current
+            .active
+            .operations
+            .values()
+            .filter(|o| o.owner == OperationOwner::Delegation && o.state == OperationState::Queued)
+            .take(
+                self.current.options.limits.max_operation_concurrency
+                    - running
+                    - self.admitting.len(),
+            )
+            .cloned()
+            .collect();
+        if !delegated.is_empty() {
+            for record in delegated {
+                let Some(handler) = self.config.delegation.clone() else {
+                    self.finish(
+                        &record.id,
+                        OperationOutcome::Failure {
+                            error: Failure::new(
+                                "delegation_unavailable",
+                                "no delegation handler registered",
+                            ),
+                        },
+                    )
+                    .await?;
+                    continue;
+                };
+                let request = self
+                    .current
+                    .history
+                    .get(record.call_entry)
+                    .and_then(|entry| {
+                        if let Message::Assistant { output, .. } = &entry.message {
+                            output.iter().find_map(|o| {
+                                if let Output::Delegation { request } = o {
+                                    Some(request.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .ok_or_else(|| Error::Protocol("delegation request missing".into()))?;
+                self.local_operation_update(&record.id, OperationState::Running, None)
+                    .await?;
+                let cancellation = Cancellation::default();
+                self.tokens.insert(record.id.clone(), cancellation.clone());
+                self.pending_starts.insert(record.id.clone());
+                let context = DelegationContext {
+                    run: self.current.context.clone(),
+                    operation_id: record.id.clone(),
+                    cancellation,
+                };
+                let tx = self.work_tx.clone();
+                self.tasks.spawn(async move {
+                    let result = handler
+                        .start(request, context)
+                        .await
+                        .map(ToolExecution::Active);
+                    let _ = tx.send(Work::Started(record.id, result)).await;
+                });
+            }
             return Ok(());
         }
         let records: Vec<_> = self
@@ -110,9 +179,7 @@ impl Engine {
         let mut requests = vec![];
         let mut selected = BTreeSet::new();
         for call in admission.calls.into_iter().take(
-            self.current.options.limits.max_runtime_tool_concurrency
-                - running
-                - self.admitting.len(),
+            self.current.options.limits.max_operation_concurrency - running - self.admitting.len(),
         ) {
             if !candidates.contains(&call) || !selected.insert(call.id.clone()) {
                 return Err(Error::Invalid(
@@ -126,7 +193,7 @@ impl Engine {
                 Err(error) => {
                     self.finish(
                         &id,
-                        RuntimeToolOutcome::Failure {
+                        OperationOutcome::Failure {
                             error: crate::failure::failure(&error),
                         },
                     )
@@ -181,7 +248,7 @@ impl Engine {
 }
 
 impl Engine {
-    pub(super) async fn recover_tools(&mut self) -> Result<()> {
+    pub(super) async fn recover_operations(&mut self) -> Result<()> {
         let recovering: Vec<_> = self
             .current
             .active
@@ -196,7 +263,30 @@ impl Engine {
             .cloned()
             .collect();
         for record in recovering {
-            if let OperationOwner::RuntimeTool { .. } = &record.owner {
+            if record.owner == OperationOwner::Delegation {
+                if let Some(handler) = self.config.delegation.clone() {
+                    let cancellation = Cancellation::default();
+                    self.tokens.insert(record.id.clone(), cancellation.clone());
+                    self.pending_starts.insert(record.id.clone());
+                    let context = DelegationContext {
+                        run: self.current.context.clone(),
+                        operation_id: record.id.clone(),
+                        cancellation,
+                    };
+                    let tx = self.work_tx.clone();
+                    self.tasks.spawn(async move {
+                        let id = record.id.clone();
+                        let result = handler
+                            .recover(record, context)
+                            .await
+                            .map(ToolExecution::Active);
+                        let _ = tx.send(Work::Started(id, result)).await;
+                    });
+                } else {
+                    self.unknown(&record.id, "delegation handler unavailable".into())
+                        .await?;
+                }
+            } else if let OperationOwner::RuntimeTool { .. } = &record.owner {
                 let call = self.call(&record)?;
                 match self.catalog.bind(&call) {
                     Ok(binding) => self.spawn_tool(record.id.clone(), binding, Some(record))?,
@@ -290,7 +380,7 @@ impl Engine {
                 ApprovalDecision::Deny(reason) => {
                     self.finish(
                         &id,
-                        RuntimeToolOutcome::Failure {
+                        OperationOutcome::Failure {
                             error: Failure::new("approval_denied", reason),
                         },
                     )

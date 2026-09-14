@@ -1,4 +1,5 @@
 use super::*;
+use zhir_core::operation::OperationOutcome;
 
 impl Engine {
     pub(super) async fn handle(&mut self, work: Work) -> Result<()> {
@@ -37,8 +38,7 @@ impl Engine {
                 self.install_operation(id, handle).await
             }
             Work::Started(id, Err(Error::RuntimeTool(error))) => {
-                self.finish(&id, RuntimeToolOutcome::Failure { error })
-                    .await
+                self.finish(&id, OperationOutcome::Failure { error }).await
             }
             Work::Started(id, Err(error)) => self.unknown(&id, error.to_string()).await,
             Work::Operation(id, Ok(Some(event))) => self.operation_event(&id, event).await,
@@ -58,7 +58,7 @@ impl Engine {
             }
             Work::Admitted(bindings, decisions) => self.admitted(bindings, decisions).await,
             Work::MediaReady(chunk, reference, reply) => {
-                let valid = chunk.epoch == self.current.active.session.epoch
+                let valid = chunk.epoch == self.current.active.session.output_epoch
                     && self.current.active.session.turn_id.as_ref() == Some(&chunk.turn_id);
                 if valid {
                     self.seal_cursor("output", &chunk, reference).await?;
@@ -67,7 +67,7 @@ impl Engine {
                 Ok(())
             }
             Work::InputReady(chunk, reference, reply) => {
-                let valid = chunk.epoch == self.current.active.session.epoch
+                let valid = chunk.epoch == 0
                     && self.current.active.session.turn_id.as_ref() == Some(&chunk.turn_id);
                 if valid {
                     self.seal_cursor("input", &chunk, reference).await?;

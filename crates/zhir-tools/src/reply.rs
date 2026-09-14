@@ -1,8 +1,7 @@
 //! Typed final payloads. Pending work is represented by an OperationHandle.
 use serde::Serialize;
-use zhir_core::{
-    Result, error::Error, message::Content, operation::ToolExecution, tool::RuntimeToolOutcome,
-};
+use zhir_core::operation::OperationOutcome;
+use zhir_core::{Result, error::Error, message::Content, operation::ToolExecution};
 pub struct ToolReply<T> {
     payload: T,
     content: Option<Vec<Content>>,
@@ -24,7 +23,7 @@ impl<T: Serialize> ToolReply<T> {
         let structured = serde_json::to_value(self.payload)
             .map_err(|e| Error::Invalid(format!("tool output: {e}")))?;
         let content = self.content.unwrap_or_else(|| text_content(&structured));
-        let outcome = RuntimeToolOutcome::Success {
+        let outcome = OperationOutcome::Success {
             content,
             structured,
         };
@@ -41,7 +40,7 @@ fn text_content(value: &serde_json::Value) -> Vec<Content> {
     )]
 }
 pub fn json(value: serde_json::Value) -> ToolExecution {
-    ToolExecution::Finished(RuntimeToolOutcome::Success {
+    ToolExecution::Finished(OperationOutcome::Success {
         content: text_content(&value),
         structured: value,
     })

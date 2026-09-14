@@ -27,6 +27,7 @@ jobs:
       - run: cargo test -p zhir-testing --no-default-features --features openai-responses --test models_replay --locked
       - run: cargo check -p zhir-models --no-default-features --features minimax --locked
       - run: cargo test -p zhir-testing --no-default-features --features minimax --test minimax_tts --locked
+      - run: cargo test -p zhir-testing --no-default-features --features openai-live --test gpt_live --locked
       - run: cargo run -p zhir-conformance --bin zhir-conformance --locked
       - run: cargo run -p zhir-conformance --bin schemas --locked -- --check
       - run: cargo run -p zhir --no-default-features --example custom_tool --features models,typed-tools
@@ -36,12 +37,13 @@ jobs:
       - run: cargo test -p zhir-testing --no-default-features --features models,typed-tools,typed-output,memory --test convenience
       - run: cargo run -p zhir --example resume --features models,interaction,memory
       - run: cargo check -p zhir --no-default-features --example minimax_tts --features minimax,memory --locked
+      - run: cargo check -p zhir --no-default-features --example gpt_live --features openai-live,memory --locked
       - run: uv run conformance/package.py --all-features
   features:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        feature: [default, policies, tools, typed-tools, typed-output, models, filesystem, shell, interaction, agent, agent-runtime, openai-chat, openai-responses, anthropic, minimax, memory, sqlite, mysql, redis, resources-filesystem]
+        feature: [default, policies, tools, typed-tools, typed-output, models, filesystem, shell, interaction, agent, agent-runtime, openai-chat, openai-responses, anthropic, minimax, openai-live, memory, sqlite, mysql, redis, resources-filesystem]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master

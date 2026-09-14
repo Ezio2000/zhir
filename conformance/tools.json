@@ -103,7 +103,7 @@
         "approval_suspend_atomic_batch",
         "conversation_insert_during_tool",
         "deadline_precedes_tool_pause",
-        "max_runtime_tool_concurrency",
+        "max_operation_concurrency",
         "pause_precedes_tool_insert"
       ]
     },

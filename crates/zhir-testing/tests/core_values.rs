@@ -1,9 +1,10 @@
 use serde_json::json;
+use zhir_core::operation::OperationOutcome;
 use zhir_core::{
     message::{Message, Output},
     operation::CallRef,
     run::{Fact, History, HistoryEntry},
-    tool::{RuntimeToolCall, RuntimeToolInput, RuntimeToolOutcome},
+    tool::{RuntimeToolCall, RuntimeToolInput},
     wire,
 };
 fn entry(id: impl Into<String>, message: Message) -> HistoryEntry {
@@ -48,7 +49,7 @@ fn tool_turn(count: usize, payload_size: usize) -> (History, Vec<HistoryEntry>) 
             message: Message::RuntimeTool {
                 call_id: origin.call_id,
                 name: "echo".into(),
-                outcome: RuntimeToolOutcome::Success {
+                outcome: OperationOutcome::Success {
                     content: vec![],
                     structured: Default::default(),
                 },
@@ -80,7 +81,7 @@ fn wire_rejects_version_drift_unknown_fields_and_corrupt_history() {
     let checkpoint = zhir_testing::checkpoint(vec![Message::user("hello")]);
     let bytes = wire::encode_checkpoint(&checkpoint).unwrap();
     let original: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    for version in [0, 1, 3] {
+    for version in [0, 1, 2, 4] {
         let mut changed = original.clone();
         changed["version"] = json!(version);
         assert!(wire::decode_checkpoint(&serde_json::to_vec(&changed).unwrap()).is_err());
@@ -96,7 +97,7 @@ fn wire_rejects_version_drift_unknown_fields_and_corrupt_history() {
 fn limits_require_explicit_budgets_and_preserve_caller_values() {
     let mut limits = zhir_kernel::defaults::limits();
     limits.max_model_turns = 3;
-    limits.max_runtime_tool_concurrency = 2;
+    limits.max_operation_concurrency = 2;
     limits.commit_timeout_ms = 17;
     let encoded = serde_json::to_value(&limits).unwrap();
     assert_eq!(
@@ -107,7 +108,7 @@ fn limits_require_explicit_budgets_and_preserve_caller_values() {
         "max_model_turns",
         "max_runtime_tool_calls",
         "max_inflight_operations",
-        "max_runtime_tool_concurrency",
+        "max_operation_concurrency",
         "max_control_commands",
         "max_session_events",
         "max_media_chunk_bytes",
@@ -199,7 +200,7 @@ fn active_records_reference_payloads_and_reject_unknown_kinds() {
     assert_eq!(sizes[0], sizes[1]);
     assert!(serde_json::from_str::<Fact>(r#"{"kind":"control","action":"misspelled"}"#).is_err());
     assert!(
-        serde_json::from_str::<zhir_core::tool::RuntimeToolOutcomeKind>(r#""sucess""#).is_err()
+        serde_json::from_str::<zhir_core::operation::OperationOutcomeKind>(r#""sucess""#).is_err()
     );
 }
 #[test]

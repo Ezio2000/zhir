@@ -43,8 +43,8 @@ struct Expected {
     unused_steps: usize,
 }
 pub async fn run_case(case: &Value) -> Result<()> {
-    if case["version"] != 2 {
-        return Err(Error::Invalid("case requires version 2".into()));
+    if case["version"] != 3 {
+        return Err(Error::Invalid("case requires version 3".into()));
     }
     match case["kind"].as_str() {
         Some("value") => validation::run(case),

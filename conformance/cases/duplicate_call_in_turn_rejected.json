@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "name": "duplicate_call_in_turn_rejected",
   "kind": "runtime",
   "case": {

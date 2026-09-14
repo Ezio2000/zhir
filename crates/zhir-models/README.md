@@ -57,3 +57,52 @@ streaming/minimax_tts.rs for audio boundaries. transport/websocket.rs owns socke
 mechanics. Existing HTTP helpers are isolated in codec/http.rs and streaming/http.rs;
 `minimax` alone does not enable reqwest. Acceptance and live tests remain in
 zhir-testing. See [the SDK example](../zhir/examples/minimax_tts.rs).
+
+## GPT-Live
+
+`openai-live` exposes `openai::live::{LiveConfig, LiveModel, AUDIO_TYPE}`. It uses
+Codex subscription signaling at
+`https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas`,
+then WebRTC Opus media and the `oai-events` DataChannel. Defaults are
+`gpt-live-1-codex` and voice `cove`. This subscription endpoint is distinct from the
+public OpenAI Realtime API; a ChatGPT/Codex entitlement is required. The SDK does not
+implement login or exchange a Codex token for a public API key.
+
+Inject `CredentialProvider` with Bearer credentials and
+`header:ChatGPT-Account-Id` metadata. Hosts may inject a `reqwest::Client` for their
+proxy/TLS policy and configure ICE servers. A rejected HTTP 401 invalidates only the
+rejected credential generation and permits one new authorization attempt. Accepted
+or uncertain creates, DataChannel commands and audio are never automatically replayed.
+
+Audio ports carry one raw Opus packet per `MediaChunk`, with media type `AUDIO_TYPE`
+(`audio/opus;rate=48000;channels=2`). Input uses epoch zero, the current execution turn,
+and caller-owned stream/sequence IDs. Packet duration is derived from its Opus TOC.
+The host paces capture, supplies a continuous audio track, and owns encoding, decoding,
+jitter buffering and playback. Output timestamps use the RTP 48 kHz clock; packets
+are delivered in arrival order. This is not an Ogg file or PCM byte stream. The smoke
+example supplies paced Opus silence while exercising spoken text context.
+
+`turn.done` commits an independent user/assistant `ConversationItem`.
+`delegation.created` introduces a native delegation operation. Register a host
+`DelegationHandler` with `Runtime::builder(...).delegation(...)`; it may use an
+ordinary SDK Runtime for backend work. Durable `OperationUpdate::Context` maps to
+`delegation.context.append` on `commentary`; a final `OperationOutcome` maps to
+`speakable`. UTF-8 fragments are at most 500 bytes. These appends acknowledge local
+transport acceptance: the subscription protocol does not echo a correlating command
+ID or confirm that the speech has finished. There is no function-tool impersonation.
+
+`EndInput` drains accepted audio, requests native closure and waits for session usage
+and media finalization. Disconnects are uncertain and require caller reconciliation.
+Session resume, manual `InterruptOutput`, generation/profile overrides, structured
+output, declared runtime tools and non-text initial history are rejected. Acoustic
+barge-in remains provider behavior; it does not claim an SDK output-epoch barrier.
+
+Run the native example with host-provided environment credentials:
+
+```sh
+cargo run -p zhir --example gpt_live --features openai-live,memory
+```
+
+Protocol reference: the OpenAI Codex source's
+[`methods_frameless_bidi.rs`](https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/endpoint/realtime_websocket/methods_frameless_bidi.rs)
+and [`protocol_frameless_bidi.rs`](https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/endpoint/realtime_websocket/protocol_frameless_bidi.rs).

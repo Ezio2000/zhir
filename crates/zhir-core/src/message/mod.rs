@@ -1,8 +1,5 @@
-use crate::{
-    Result,
-    error::Error,
-    tool::{RuntimeToolCall, RuntimeToolOutcome},
-};
+use crate::operation::OperationOutcome;
+use crate::{Result, error::Error, tool::RuntimeToolCall};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -92,16 +89,16 @@ pub enum ProviderToolOutcome {
     Failure { error: crate::error::Failure },
     Cancelled { reason: String },
 }
-impl From<&RuntimeToolOutcome> for ProviderToolOutcome {
-    fn from(outcome: &RuntimeToolOutcome) -> Self {
+impl From<&OperationOutcome> for ProviderToolOutcome {
+    fn from(outcome: &OperationOutcome) -> Self {
         match outcome {
-            RuntimeToolOutcome::Success { structured, .. } => Self::Success {
+            OperationOutcome::Success { structured, .. } => Self::Success {
                 structured: structured.clone(),
             },
-            RuntimeToolOutcome::Failure { error } => Self::Failure {
+            OperationOutcome::Failure { error } => Self::Failure {
                 error: error.clone(),
             },
-            RuntimeToolOutcome::Cancelled { reason } => Self::Cancelled {
+            OperationOutcome::Cancelled { reason } => Self::Cancelled {
                 reason: reason.clone(),
             },
         }
@@ -123,21 +120,21 @@ pub struct ProviderToolCall {
     pub data: Value,
 }
 impl ProviderToolCall {
-    pub fn matches_outcome(&self, outcome: &RuntimeToolOutcome) -> bool {
+    pub fn matches_outcome(&self, outcome: &OperationOutcome) -> bool {
         let metadata_matches = match (&self.outcome, outcome) {
             (
                 Some(ProviderToolOutcome::Success {
                     structured: previous,
                 }),
-                RuntimeToolOutcome::Success { structured, .. },
+                OperationOutcome::Success { structured, .. },
             ) => previous == structured,
             (
                 Some(ProviderToolOutcome::Failure { error: previous }),
-                RuntimeToolOutcome::Failure { error },
+                OperationOutcome::Failure { error },
             ) => previous == error,
             (
                 Some(ProviderToolOutcome::Cancelled { reason: previous }),
-                RuntimeToolOutcome::Cancelled { reason },
+                OperationOutcome::Cancelled { reason },
             ) => previous == reason,
             _ => false,
         };
@@ -148,9 +145,18 @@ impl ProviderToolCall {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Output {
-    Content { content: Content },
-    RuntimeToolCall { call: RuntimeToolCall },
-    ProviderToolCall { call: ProviderToolCall },
+    Delegation {
+        request: crate::operation::DelegationRequest,
+    },
+    Content {
+        content: Content,
+    },
+    RuntimeToolCall {
+        call: RuntimeToolCall,
+    },
+    ProviderToolCall {
+        call: ProviderToolCall,
+    },
 }
 impl Output {
     pub fn text(s: impl Into<String>) -> Self {
@@ -163,6 +169,10 @@ impl Output {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "role", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Message {
+    DelegationResult {
+        id: String,
+        outcome: OperationOutcome,
+    },
     System {
         content: Vec<Content>,
     },
@@ -180,7 +190,7 @@ pub enum Message {
     RuntimeTool {
         call_id: String,
         name: String,
-        outcome: RuntimeToolOutcome,
+        outcome: OperationOutcome,
     },
 }
 impl Message {
@@ -201,6 +211,7 @@ impl Message {
     }
     pub fn role(&self) -> &'static str {
         match self {
+            Self::DelegationResult { .. } => "delegation_result",
             Self::System { .. } => "system",
             Self::User { .. } => "user",
             Self::External { .. } => "external",
@@ -210,6 +221,12 @@ impl Message {
     }
     pub fn validate(&self) -> Result<()> {
         match self {
+            Self::DelegationResult { id, outcome } => {
+                if id.is_empty() {
+                    return Err(Error::Invalid("empty delegation identity".into()));
+                }
+                outcome.validate()?;
+            }
             Self::System { content } | Self::User { content } | Self::External { content } => {
                 for c in content {
                     c.validate()?;
@@ -234,6 +251,14 @@ pub fn validate_output(output: &[Output]) -> Result<()> {
     let mut ids = std::collections::HashSet::new();
     for item in output {
         match item {
+            Output::Delegation { request } => {
+                if request.id.is_empty()
+                    || request.prompt.trim().is_empty()
+                    || !ids.insert(&request.id)
+                {
+                    return Err(Error::Invalid("invalid delegation".into()));
+                }
+            }
             Output::Content { content } => content.validate()?,
             Output::RuntimeToolCall { call } => {
                 call.validate()?;

@@ -332,7 +332,7 @@ async fn selection_and_context_survive_ticket_resume_with_different_defaults() {
                         .next()
                         .unwrap()
                         .clone(),
-                    outcome: zhir::tool::RuntimeToolOutcome::Success {
+                    outcome: zhir::operation::OperationOutcome::Success {
                         content: vec![],
                         structured: json!(1),
                     },

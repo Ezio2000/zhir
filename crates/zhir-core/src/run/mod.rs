@@ -144,6 +144,14 @@ impl State {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CommandIntent {
+    DelegationContext {
+        operation_id: String,
+        content: Vec<crate::message::Content>,
+    },
+    DelegationResult {
+        operation_id: String,
+        entry: usize,
+    },
     StartTurn {
         turn_id: String,
         history_count: usize,
@@ -161,7 +169,7 @@ pub enum CommandIntent {
         revision: u64,
         profile: crate::profile::RequestProfile,
     },
-    Interrupt {
+    InterruptOutput {
         turn_id: String,
     },
     EndInput,
@@ -186,7 +194,8 @@ pub struct SessionSnapshot {
     pub last_sequence: Option<u64>,
     pub disposition: Option<crate::model::TurnDisposition>,
     pub recovery: Option<crate::operation::RecoveryRef>,
-    pub epoch: u64,
+    pub output_epoch: u64,
+    pub media_archive: Option<crate::resource::ResourceRef>,
     pub input_closed: bool,
     pub closing: bool,
     pub closed: bool,
@@ -233,7 +242,7 @@ pub struct Limits {
     pub max_media_streams: usize,
     pub max_media_chunk_bytes: usize,
     pub max_buffered_media_bytes: usize,
-    pub max_runtime_tool_concurrency: usize,
+    pub max_operation_concurrency: usize,
     pub max_observer_events: usize,
     pub max_total_tokens: Option<u64>,
     pub elapsed_ms: Option<u64>,
@@ -256,7 +265,7 @@ impl Limits {
             || self.max_buffered_media_bytes > u32::MAX as usize
             || self.max_media_chunk_bytes == 0
             || self.max_buffered_media_bytes < self.max_media_chunk_bytes
-            || self.max_runtime_tool_concurrency == 0
+            || self.max_operation_concurrency == 0
             || self.commit_timeout_ms == 0
         {
             Err(Error::Invalid(

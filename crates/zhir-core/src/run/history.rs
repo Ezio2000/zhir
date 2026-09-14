@@ -58,6 +58,7 @@ struct Order {
     ids: im::OrdMap<String, usize>,
     calls: im::OrdMap<CallRef, RuntimeToolCall>,
     completed: im::OrdSet<CallRef>,
+    delegations: im::OrdSet<CallRef>,
     error: Option<&'static str>,
 }
 impl Order {
@@ -78,18 +79,46 @@ impl Order {
         match &entry.message {
             Message::Assistant { output, .. } => {
                 for item in output {
+                    if let Output::Delegation { request } = item {
+                        let mut origin = entry
+                            .origin
+                            .clone()
+                            .ok_or("delegation requires an origin")?;
+                        origin.call_id = request.id.clone();
+                        if self.delegations.contains(&origin)
+                            || self.calls.contains_key(&origin)
+                            || self.completed.contains(&origin)
+                        {
+                            return Err("duplicate operation identity");
+                        }
+                        self.delegations.insert(origin);
+                    }
                     if let Output::RuntimeToolCall { call } = item {
                         let mut origin = entry
                             .origin
                             .clone()
                             .ok_or("tool request requires an origin")?;
                         origin.call_id = call.id.clone();
-                        if self.calls.contains_key(&origin) || self.completed.contains(&origin) {
+                        if self.calls.contains_key(&origin)
+                            || self.delegations.contains(&origin)
+                            || self.completed.contains(&origin)
+                        {
                             return Err("duplicate tool call identity");
                         }
                         self.calls.insert(origin, call.clone());
                     }
                 }
+            }
+            Message::DelegationResult { id, .. } => {
+                let origin = entry
+                    .origin
+                    .as_ref()
+                    .ok_or("delegation result requires an origin")?;
+                if &origin.call_id != id || !self.delegations.contains(origin) {
+                    return Err("delegation result has no matching pending request");
+                }
+                self.delegations.remove(origin);
+                self.completed.insert(origin.clone());
             }
             Message::RuntimeTool { call_id, name, .. } => {
                 let origin = entry
@@ -136,6 +165,9 @@ impl History {
             return Err(Error::Invalid(error.into()));
         }
         Ok(())
+    }
+    pub fn pending_delegations(&self) -> impl Iterator<Item = &CallRef> {
+        self.order.delegations.iter()
     }
     pub fn pending_calls(&self) -> impl Iterator<Item = (&CallRef, &RuntimeToolCall)> {
         self.order.calls.iter()

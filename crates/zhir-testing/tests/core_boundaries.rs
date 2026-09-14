@@ -151,7 +151,7 @@ async fn selection_controls_declaration_and_binding_through_the_kernel() {
             assert_eq!(outcome.structured().unwrap()["n"], 7);
         } else {
             assert!(
-                matches!(outcome, zhir::tool::RuntimeToolOutcome::Failure { error } if error.code == "invalid_arguments")
+                matches!(outcome, zhir::operation::OperationOutcome::Failure { error } if error.code == "invalid_arguments")
             );
         }
         script.verify().unwrap();
@@ -216,7 +216,7 @@ async fn binding_drift_becomes_a_tool_failure_without_invocation() {
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     assert!(matches!(result.checkpoint().state, State::Completed { .. }));
     assert!(
-        matches!(result.checkpoint().history.messages().iter().find(|m| matches!(m, Message::RuntimeTool { .. })).unwrap(), Message::RuntimeTool { outcome: zhir::tool::RuntimeToolOutcome::Failure {error}, .. } if error.code == "invalid_arguments" && error.message.contains("binding changed"))
+        matches!(result.checkpoint().history.messages().iter().find(|m| matches!(m, Message::RuntimeTool { .. })).unwrap(), Message::RuntimeTool { outcome: zhir::operation::OperationOutcome::Failure {error}, .. } if error.code == "invalid_arguments" && error.message.contains("binding changed"))
     );
     script.verify().unwrap();
 }

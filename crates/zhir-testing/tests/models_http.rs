@@ -6,6 +6,7 @@
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use zhir_core::operation::OperationOutcome;
 use zhir_core::{
     BoxFuture, Cancellation, Result,
     message::{Content, Message, Output},
@@ -293,7 +294,7 @@ async fn responses_freeform_call_result_keeps_its_protocol_type() {
     next.messages.push(Message::RuntimeTool {
         call_id: "custom-1".into(),
         name: "code".into(),
-        outcome: zhir_core::tool::RuntimeToolOutcome::Success {
+        outcome: zhir_core::operation::OperationOutcome::Success {
             content: vec![zhir_core::message::Content::text("1")],
             structured: json!("1"),
         },
@@ -559,7 +560,7 @@ async fn extra_conflicts_report_exact_paths_and_reserved_fields_remain_owned() {
 async fn textual_tool_failure_requires_text_input_capability_in_http_adapter() {
     use zhir_core::{
         error::{Error, Failure},
-        tool::{RuntimeToolCall, RuntimeToolInput, RuntimeToolOutcome},
+        tool::{RuntimeToolCall, RuntimeToolInput},
     };
     for protocol in [
         zhir_models::Protocol::Chat,
@@ -584,7 +585,7 @@ async fn textual_tool_failure_requires_text_input_capability_in_http_adapter() {
             Message::RuntimeTool {
                 call_id: "call".into(),
                 name: "read".into(),
-                outcome: RuntimeToolOutcome::Failure {
+                outcome: OperationOutcome::Failure {
                     error: Failure::new("missing", "missing entry"),
                 },
             },
@@ -606,7 +607,7 @@ async fn textual_tool_failure_requires_text_input_capability_in_http_adapter() {
 async fn tool_result_grouping_preserves_order_content_errors_and_turn_boundaries() {
     use zhir_core::{
         error::Failure,
-        tool::{RuntimeToolCall, RuntimeToolInput, RuntimeToolOutcome},
+        tool::{RuntimeToolCall, RuntimeToolInput},
     };
     use zhir_models::Protocol;
     let assistant = |ids: &[&str]| Message::Assistant {
@@ -641,7 +642,7 @@ async fn tool_result_grouping_preserves_order_content_errors_and_turn_boundaries
                 assistant(&["a", "b"]),
                 result(
                     "a",
-                    RuntimeToolOutcome::Success {
+                    OperationOutcome::Success {
                         content: vec![
                             Content::text("first"),
                             Content::resource(zhir_core::resource::ResourceRef {
@@ -663,7 +664,7 @@ async fn tool_result_grouping_preserves_order_content_errors_and_turn_boundaries
                 ),
                 result(
                     "b",
-                    RuntimeToolOutcome::Failure {
+                    OperationOutcome::Failure {
                         error: Failure {
                             code: "missing".into(),
                             message: "missing entry".into(),
@@ -675,7 +676,7 @@ async fn tool_result_grouping_preserves_order_content_errors_and_turn_boundaries
                 assistant(&["c"]),
                 result(
                     "c",
-                    zhir_core::tool::RuntimeToolOutcome::Success {
+                    zhir_core::operation::OperationOutcome::Success {
                         content: vec![zhir_core::message::Content::text("last")],
                         structured: json!("last"),
                     },

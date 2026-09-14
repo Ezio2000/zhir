@@ -85,6 +85,9 @@ pub trait ResourceStore: Send + Sync {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// Stream identity is unique per session direction and epoch. `end` seals it.
+/// Input epoch is zero; output uses the session's current output_epoch.
+/// Payload encoding and packet pacing belong to the selected model and host.
 pub struct MediaChunk {
     pub stream_id: String,
     pub turn_id: String,
@@ -129,5 +132,17 @@ pub struct SealedMedia {
     pub timestamp_us: u64,
     pub end: bool,
     pub resource: ResourceRef,
+    pub previous: Option<ResourceRef>,
+}
+
+/// An immutable archive node. Completed or interrupted streams leave the active
+/// cursor table; their resources remain reachable from the session archive root.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArchivedMedia {
+    pub stream_key: String,
+    pub sealed: ResourceRef,
+    pub complete: bool,
     pub previous: Option<ResourceRef>,
 }

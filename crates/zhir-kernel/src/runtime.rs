@@ -12,6 +12,7 @@ use zhir_core::{
 };
 
 pub(crate) struct Config {
+    pub delegation: Option<Arc<dyn zhir_core::operation::DelegationHandler>>,
     pub model: Arc<dyn Model>,
     pub runtime_tools: Arc<dyn RuntimeToolCatalogProvider>,
     pub store: Option<Arc<dyn RunStore>>,
@@ -29,6 +30,7 @@ impl RuntimeBuilder {
         Self {
             defaults: crate::defaults::run_options(),
             config: Config {
+                delegation: None,
                 model,
                 runtime_tools: Arc::new(crate::defaults::EmptyTools),
                 store: None,
@@ -41,6 +43,10 @@ impl RuntimeBuilder {
     }
     pub fn runtime_tools(mut self, value: Arc<dyn RuntimeToolCatalogProvider>) -> Self {
         self.config.runtime_tools = value;
+        self
+    }
+    pub fn delegation(mut self, handler: Arc<dyn zhir_core::operation::DelegationHandler>) -> Self {
+        self.config.delegation = Some(handler);
         self
     }
     pub fn store(mut self, value: Arc<dyn RunStore>) -> Self {
@@ -119,7 +125,9 @@ impl Runtime {
         }
         let history = History::new(messages)?;
         history.validate()?;
-        if history.pending_calls().next().is_some() {
+        if history.pending_calls().next().is_some()
+            || history.pending_delegations().next().is_some()
+        {
             return Err(Error::Invalid("new run has unresolved work".into()));
         }
         if let Some(ms) = options.limits.elapsed_ms {

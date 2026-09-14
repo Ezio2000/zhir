@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "name": "reject_resource_byte_out_of_range",
   "kind": "value",
   "schema": "resource",

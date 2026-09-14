@@ -73,7 +73,7 @@ impl Commit {
                 return Err(Error::Storage("suspended run requires attach".into()));
             }
             if next.active.session.id != previous.active.session.id
-                || next.active.session.epoch < previous.active.session.epoch
+                || next.active.session.output_epoch < previous.active.session.output_epoch
                 || next.active.session.profile_revision < previous.active.session.profile_revision
                 || next.metrics.model_turns < previous.metrics.model_turns
                 || next.metrics.runtime_tool_calls < previous.metrics.runtime_tool_calls

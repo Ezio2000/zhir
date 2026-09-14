@@ -18,6 +18,7 @@ use zhir::{
     },
     run::{EventData, Limits, State},
 };
+use zhir_core::operation::OperationOutcome;
 
 #[derive(Clone)]
 struct Reply {
@@ -737,7 +738,7 @@ async fn local_transport_scale() {
 /// Standard protocol grouping works without a consumer normalization hook.
 #[tokio::test]
 async fn messages_groups_tool_results_without_extensions() {
-    use zhir::tool::{RuntimeToolCall, RuntimeToolInput, RuntimeToolOutcome};
+    use zhir::tool::{RuntimeToolCall, RuntimeToolInput};
     let mut rows = vec![];
     for count in [2, 3, 16, 64] {
         let mut request = empty_request(false);
@@ -760,7 +761,7 @@ async fn messages_groups_tool_results_without_extensions() {
             request.messages.push(Message::RuntimeTool {
                 call_id: call.id,
                 name: call.name,
-                outcome: RuntimeToolOutcome::Success {
+                outcome: OperationOutcome::Success {
                     content: vec![Content::text("ok")],
                     structured: json!("ok"),
                 },

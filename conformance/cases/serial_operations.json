@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "name": "serial_operations",
   "kind": "runtime",
   "case": {

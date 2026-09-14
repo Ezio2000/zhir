@@ -53,6 +53,10 @@ impl Checkpoint {
                 CommandIntent::ToolResult {
                     operation_id,
                     entry,
+                }
+                | CommandIntent::DelegationResult {
+                    operation_id,
+                    entry,
                 } if self
                     .active
                     .operations
@@ -61,6 +65,22 @@ impl Checkpoint {
                 {
                     return Err(Error::Invalid("invalid result command".into()));
                 }
+                CommandIntent::DelegationContext {
+                    operation_id,
+                    content,
+                } => {
+                    if self
+                        .active
+                        .operations
+                        .get(operation_id)
+                        .is_none_or(|op| op.owner != OperationOwner::Delegation)
+                    {
+                        return Err(Error::Invalid("invalid delegation context command".into()));
+                    }
+                    for part in content {
+                        part.validate()?;
+                    }
+                }
                 CommandIntent::UpdateProfile { revision, .. }
                     if *revision <= self.active.session.profile_revision =>
                 {
@@ -68,6 +88,27 @@ impl Checkpoint {
                 }
                 _ => (),
             }
+        }
+        for command in &self.active.commands {
+            let invalid = match &command.intent {
+                CommandIntent::DelegationResult { operation_id, .. } => self
+                    .active
+                    .operations
+                    .get(operation_id)
+                    .is_none_or(|op| op.owner != OperationOwner::Delegation),
+                CommandIntent::ToolResult { operation_id, .. } => self
+                    .active
+                    .operations
+                    .get(operation_id)
+                    .is_none_or(|op| !matches!(op.owner, OperationOwner::RuntimeTool { .. })),
+                _ => false,
+            };
+            if invalid {
+                return Err(Error::Invalid("result command owner mismatch".into()));
+            }
+        }
+        if let Some(archive) = &self.active.session.media_archive {
+            archive.validate()?;
         }
         self.validate_operations()?;
         if matches!(self.state, State::Completed { .. })
@@ -95,6 +136,17 @@ impl Checkpoint {
 
 impl Checkpoint {
     fn validate_operations(&self) -> Result<()> {
+        for origin in self.history.pending_delegations() {
+            if !self.active.operations.values().any(|op| {
+                &op.origin == origin
+                    && op.owner == OperationOwner::Delegation
+                    && !op.state.terminal()
+            }) {
+                return Err(Error::Invalid(
+                    "pending delegation has no active operation".into(),
+                ));
+            }
+        }
         for (origin, call) in self.history.pending_calls() {
             let present = self.active.operations.values().any(|op| {
                 &op.origin == origin && !op.state.terminal()
@@ -129,6 +181,19 @@ impl Checkpoint {
                 {
                     return Err(Error::Invalid("operation outcome mismatch".into()));
                 }
+            }
+            if operation.owner == OperationOwner::Delegation {
+                let valid = matches!(&call_entry.message, Message::Assistant { output, .. }
+                    if output.iter().any(|o| matches!(o, Output::Delegation { request } if request.id == operation.origin.call_id)));
+                if !valid {
+                    return Err(Error::Invalid("delegation call mismatch".into()));
+                }
+                if let Some(index) = operation.result_entry
+                    && !self.history.get(index).is_some_and(|entry| {
+                        entry.origin.as_ref() == Some(&operation.origin)
+                            && matches!(&entry.message, Message::DelegationResult { id, outcome }
+                                if id == &operation.origin.call_id && OperationState::from(outcome) == operation.state)
+                    }) { return Err(Error::Invalid("delegation outcome mismatch".into())); }
             }
             if id != &operation.id
                 || operation.call_entry >= self.history.len()

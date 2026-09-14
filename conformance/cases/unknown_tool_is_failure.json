@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "name": "unknown_tool_is_failure",
   "kind": "runtime",
   "case": {

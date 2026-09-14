@@ -28,6 +28,33 @@ impl Engine {
         next.active.session.last_sequence = Some(event.sequence);
         let mut entries = vec![];
         match event.body {
+            SessionEventBody::ConversationItem { item_id, message } => {
+                if !self
+                    .session_capabilities()
+                    .supports(Capability::ConversationItems)
+                    || item_id.is_empty()
+                    || !matches!(&message, Message::User { .. } | Message::Assistant { .. })
+                    || matches!(&message, Message::Assistant { output, .. } if output.iter().any(|o| !matches!(o, Output::Content { .. })))
+                {
+                    return Err(Error::Protocol("invalid conversation item".into()));
+                }
+                message.validate()?;
+                let entry = HistoryEntry {
+                    id: serde_json::json!([next.active.session.id, "conversation", item_id])
+                        .to_string(),
+                    // Whole messages have their own history identity. Execution-turn
+                    // grouping applies only to incremental execution outputs.
+                    origin: None,
+                    message,
+                };
+                if let Some(previous) = next.history.by_id(&entry.id) {
+                    if previous != &entry {
+                        return Err(Error::Protocol("conflicting conversation item".into()));
+                    }
+                } else {
+                    entries.push(entry);
+                }
+            }
             SessionEventBody::Acknowledged {
                 command_id,
                 recovery,
@@ -46,6 +73,8 @@ impl Engine {
             SessionEventBody::Closed => {
                 self.model_closed = true;
                 next.active.session.closed = true;
+                next.active.session.input_closed = true;
+                self.media.close();
                 if next.active.session.disposition.is_none() {
                     return self.suspend(WaitReason::Recovery).await;
                 }
@@ -78,7 +107,9 @@ impl Engine {
             .position(|c| c.id == command_id)
             .ok_or_else(|| Error::Protocol("acknowledgement has no pending command".into()))?;
         let command = next.active.commands.remove(index);
-        if let CommandIntent::ToolResult { operation_id, .. } = &command.intent {
+        if let CommandIntent::ToolResult { operation_id, .. }
+        | CommandIntent::DelegationResult { operation_id, .. } = &command.intent
+        {
             next.active.operations.remove(operation_id);
         }
         if let CommandIntent::UpdateProfile { revision, profile } = command.intent {
@@ -123,6 +154,7 @@ impl Engine {
         }
         zhir_core::message::validate_output(std::slice::from_ref(&output))?;
         let call_id = match &output {
+            Output::Delegation { request } => request.id.clone(),
             Output::RuntimeToolCall { call } => call.id.clone(),
             Output::ProviderToolCall { call } => call.id.clone(),
             _ => item_id.clone(),
@@ -183,6 +215,33 @@ impl Engine {
         self.commit_session(next, sequence, vec![entry]).await
     }
     fn record_output(&self, next: &mut Checkpoint, output: Output, origin: CallRef) -> Result<()> {
+        if let Output::Delegation { .. } = &output {
+            if !self.session_capabilities().supports(Capability::Delegation) {
+                return Err(Error::Protocol("undeclared delegation capability".into()));
+            }
+            if next.active.operations.len() >= next.options.limits.max_inflight_operations {
+                return Err(Error::Invalid(
+                    "inflight operation capacity exceeded".into(),
+                ));
+            }
+            let id = new_id();
+            next.active.operations.insert(
+                id.clone(),
+                OperationRecord {
+                    id,
+                    origin,
+                    owner: OperationOwner::Delegation,
+                    state: OperationState::Queued,
+                    call_entry: next.history.len(),
+                    result_entry: None,
+                    recovery: None,
+                    last_sequence: None,
+                    last_update: None,
+                    wait: None,
+                },
+            );
+            return Ok(());
+        }
         if let Output::RuntimeToolCall { call } = output {
             if next
                 .active

@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "name": "reject_state_planning",
   "kind": "value",
   "schema": "state",

@@ -64,6 +64,9 @@ pub enum Capability {
     Seed,
     Duplex,
     Steering,
+    InterruptOutput,
+    ConversationItems,
+    Delegation,
     ProfileUpdates,
     AsyncResults,
     Resume,
@@ -223,6 +226,12 @@ impl ModelRequest {
         }
         for m in &self.messages {
             m.validate()?;
+            if !c.supports(Capability::Delegation)
+                && (matches!(m, Message::DelegationResult { .. })
+                    || matches!(m, Message::Assistant { output, .. } if output.iter().any(|o| matches!(o, Output::Delegation { .. }))))
+            {
+                return invalid("unsupported delegation history");
+            }
             let content = match m {
                 Message::System { content }
                 | Message::User { content }
@@ -240,6 +249,7 @@ impl ModelRequest {
                     })
                     .collect(),
                 Message::RuntimeTool { outcome, .. } => outcome.content().to_vec(),
+                Message::DelegationResult { outcome, .. } => outcome.content().to_vec(),
             };
             for part in content {
                 if part

@@ -1,8 +1,8 @@
 {
-  "version": 2,
+  "version": 3,
   "name": "reject_nonterminal_outcome_accepted",
   "kind": "value",
-  "schema": "tool-outcome",
+  "schema": "operation-outcome",
   "value": {
     "kind": "accepted",
     "content": [],

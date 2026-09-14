@@ -13,6 +13,7 @@ pub(super) fn encode(
             flush_results(&mut messages, &mut results);
         }
         match message {
+            Message::DelegationResult { .. } => return Err(Error::Invalid("protocol does not accept delegation history".into())),
             Message::System { content: values } => system.extend(parts(values,false,content)?),
             Message::User { content: values } | Message::External { content: values } => messages.push(json!({"role":"user","content":parts(values,false,content)?})),
             Message::Assistant { output, provider_data } => {
@@ -22,7 +23,7 @@ pub(super) fn encode(
                 messages.push(json!({"role":"assistant","content":encoded}));
             }
             Message::RuntimeTool { call_id, outcome, .. } => results.push(json!({"type":"tool_result","tool_use_id":call_id,
-                "content":parts(&outcome_content(outcome),false,content)?,"is_error":matches!(outcome,zhir_core::tool::RuntimeToolOutcome::Failure{..})})),
+                "content":parts(&outcome_content(outcome),false,content)?,"is_error":matches!(outcome,zhir_core::operation::OperationOutcome::Failure{..})})),
         }
     }
     flush_results(&mut messages, &mut results);
@@ -62,6 +63,11 @@ fn assistant(
     let mut values = Vec::new();
     for item in output {
         match item {
+            Output::Delegation { .. } => {
+                return Err(Error::Invalid(
+                    "protocol does not accept delegation calls".into(),
+                ));
+            }
             Output::Content { content: value } => values.push(content(value, true)?),
             Output::RuntimeToolCall { call } => {
                 let RuntimeToolInput::Structured(input) = &call.input else {

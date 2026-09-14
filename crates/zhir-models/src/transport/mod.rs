@@ -93,3 +93,6 @@ impl SseDecoder {
 
 #[cfg(feature = "minimax")]
 pub(crate) mod websocket;
+
+#[cfg(feature = "openai-live")]
+pub(crate) mod webrtc;

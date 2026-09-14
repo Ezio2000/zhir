@@ -5,7 +5,7 @@ MemoryRunStore and MemoryResourceStore are always available. Enable `sqlite`,
 CheckpointCore and history deltas with optimistic revisions, identity idempotency
 and shared core validation. They never drive operations.
 
-Wire and run-storage formats are v2. Use fresh SQL databases and Redis namespaces;
+Wire and run-storage formats are v3. Use fresh SQL databases and Redis namespaces;
 unversioned/other-format layouts are rejected without translation. Redis connect
 requires an explicit namespace. FilesystemResourceStore publishes immutable chunk
 resources with atomic finish, explicit same-key conflicts and reconstruction reads.

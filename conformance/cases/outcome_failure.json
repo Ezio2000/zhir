@@ -1,8 +1,8 @@
 {
-  "version": 2,
+  "version": 3,
   "name": "outcome_failure",
   "kind": "value",
-  "schema": "tool-outcome",
+  "schema": "operation-outcome",
   "value": {
     "kind": "failure",
     "error": {

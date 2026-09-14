@@ -1,4 +1,4 @@
-//! Explicit native v2 envelopes. Provider payloads and storage layouts are separate.
+//! Explicit native v3 envelopes. Provider payloads and storage layouts are separate.
 use crate::{
     Result,
     error::Error,
@@ -8,7 +8,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -71,7 +71,7 @@ impl CheckpointCore {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CheckpointEnvelope {
-    #[cfg_attr(feature = "schema", schemars(range(min = 2, max = 2)))]
+    #[cfg_attr(feature = "schema", schemars(range(min = 3, max = 3)))]
     version: u32,
     checkpoint: CheckpointCore,
     history: Vec<HistoryEntry>,
@@ -94,7 +94,7 @@ pub fn decode_checkpoint(bytes: &[u8]) -> Result<Checkpoint> {
     e.checkpoint.with_history(History::from_entries(e.history)?)
 }
 
-/// Schemas are generated from explicitly tagged native DTOs and checked into contracts/v2.
+/// Schemas are generated from explicitly tagged native DTOs and checked into contracts/v3.
 #[cfg(feature = "schema")]
 pub fn schemas() -> std::collections::BTreeMap<&'static str, serde_json::Value> {
     use schemars::schema_for;
@@ -116,11 +116,13 @@ pub fn schemas() -> std::collections::BTreeMap<&'static str, serde_json::Value> 
     add!("suspension-ticket", crate::run::SuspensionTicket);
     add!("turn-output", crate::model::TurnOutput);
     add!("tool-spec", crate::tool::RuntimeToolSpec);
-    add!("tool-outcome", crate::tool::RuntimeToolOutcome);
+    add!("operation-outcome", crate::operation::OperationOutcome);
     add!("capability-set", crate::model::CapabilitySet);
     add!("request-profile", crate::profile::RequestProfile);
     add!("resource", crate::resource::ResourceRef);
     add!("resource-input", crate::resource::ResourceInput);
+    add!("archived-media", crate::resource::ArchivedMedia);
+    add!("delegation-request", crate::operation::DelegationRequest);
     add!("sealed-media", crate::resource::SealedMedia);
     add!("media-chunk", crate::resource::MediaChunk);
     add!("session-command", crate::model::SessionCommand);

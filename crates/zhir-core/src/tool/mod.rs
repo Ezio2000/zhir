@@ -1,7 +1,6 @@
 use crate::{
     BoxFuture, Cancellation, Result,
-    error::{Error, Failure},
-    message::Content,
+    error::Error,
     run::{RunContext, Suspension},
 };
 use serde::{Deserialize, Serialize};
@@ -74,72 +73,6 @@ pub struct RuntimeToolSpec {
     pub output_schema: Option<Value>,
     #[serde(default)]
     pub execution: Execution,
-}
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimeToolOutcomeKind {
-    Success,
-    Failure,
-    Cancelled,
-}
-impl RuntimeToolOutcomeKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Success => "success",
-            Self::Failure => "failure",
-            Self::Cancelled => "cancelled",
-        }
-    }
-}
-impl std::fmt::Display for RuntimeToolOutcomeKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum RuntimeToolOutcome {
-    Success {
-        content: Vec<Content>,
-        structured: Value,
-    },
-    Failure {
-        error: Failure,
-    },
-    Cancelled {
-        reason: String,
-    },
-}
-impl RuntimeToolOutcome {
-    pub fn structured(&self) -> Option<&Value> {
-        if let Self::Success { structured, .. } = self {
-            Some(structured)
-        } else {
-            None
-        }
-    }
-    pub fn content(&self) -> &[Content] {
-        if let Self::Success { content, .. } = self {
-            content
-        } else {
-            &[]
-        }
-    }
-    pub fn kind(&self) -> RuntimeToolOutcomeKind {
-        match self {
-            Self::Success { .. } => RuntimeToolOutcomeKind::Success,
-            Self::Failure { .. } => RuntimeToolOutcomeKind::Failure,
-            Self::Cancelled { .. } => RuntimeToolOutcomeKind::Cancelled,
-        }
-    }
-    pub fn validate(&self) -> Result<()> {
-        for content in self.content() {
-            content.validate()?;
-        }
-        Ok(())
-    }
 }
 pub trait ProgressSink: Send + Sync {
     fn emit(&self, value: Value) -> BoxFuture<'_, Result<()>>;

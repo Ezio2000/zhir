@@ -4,7 +4,7 @@ use futures::{StreamExt, stream};
 #[derive(Default)]
 struct WorkStatus {
     busy: bool,
-    runtime_busy: bool,
+    host_busy: bool,
     unknown: bool,
     progressing: bool,
 }
@@ -13,7 +13,10 @@ impl WorkStatus {
         let mut status = Self::default();
         for operation in operations.values().filter(|op| !op.state.terminal()) {
             status.busy = true;
-            status.runtime_busy |= matches!(operation.owner, OperationOwner::RuntimeTool { .. });
+            status.host_busy |= matches!(
+                operation.owner,
+                OperationOwner::RuntimeTool { .. } | OperationOwner::Delegation
+            );
             status.unknown |= operation.state == OperationState::Unknown;
             status.progressing |= !matches!(
                 operation.state,
@@ -42,7 +45,7 @@ impl Engine {
         if !self.current.state.active() {
             return Ok(());
         }
-        self.recover_tools().await?;
+        self.recover_operations().await?;
         while self.current.state.active() {
             self.check()?;
             self.dispatch_commands().await?;
@@ -95,7 +98,7 @@ impl Engine {
 
     fn can_advance_turn(&self, status: &WorkStatus) -> bool {
         let provider_continuation = self.needs_turn
-            && !status.runtime_busy
+            && !status.host_busy
             && self.current.active.session.disposition == Some(TurnDisposition::Continue);
         (!status.busy || provider_continuation)
             && self.current.active.commands.is_empty()
@@ -164,7 +167,7 @@ impl Engine {
                 })
                 .collect();
             let cancellations = stream::iter(futures)
-                .buffer_unordered(self.current.options.limits.max_runtime_tool_concurrency)
+                .buffer_unordered(self.current.options.limits.max_operation_concurrency)
                 .collect::<Vec<_>>();
             // One cleanup budget for all handles, independent of the number admitted.
             let _ = tokio::time::timeout(Duration::from_millis(50), cancellations).await;
@@ -217,6 +220,7 @@ pub(crate) async fn execute(
         .filter(|command| command.sent)
         .map(|command| command.id.clone())
         .collect();
+    media_output.invalidate_before(first.active.session.output_epoch);
     let mut engine = Engine {
         config,
         store,

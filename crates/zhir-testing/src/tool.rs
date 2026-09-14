@@ -1,10 +1,11 @@
-use zhir_core::{operation::ToolExecution, tool::RuntimeToolOutcome};
+use zhir_core::operation::OperationOutcome;
+use zhir_core::operation::ToolExecution;
 /// Assert that a test call settled synchronously; active operations must be driven explicitly.
 pub trait FinalExecution {
-    fn final_outcome(&self) -> &RuntimeToolOutcome;
+    fn final_outcome(&self) -> &OperationOutcome;
 }
 impl FinalExecution for ToolExecution {
-    fn final_outcome(&self) -> &RuntimeToolOutcome {
+    fn final_outcome(&self) -> &OperationOutcome {
         match self {
             Self::Finished(outcome) => outcome,
             Self::Active(_) => panic!("expected a final outcome, received active work"),
@@ -97,7 +98,7 @@ struct WaitingControl {
     sequence: std::sync::atomic::AtomicU64,
 }
 impl WaitingControl {
-    async fn finish(&self, outcome: RuntimeToolOutcome) -> Result<()> {
+    async fn finish(&self, outcome: OperationOutcome) -> Result<()> {
         self.sender
             .send(OperationEvent {
                 sequence: self.sequence.fetch_add(1, Ordering::SeqCst),
@@ -109,12 +110,12 @@ impl WaitingControl {
 }
 impl OperationControl for WaitingControl {
     fn cancel(&self) -> BoxFuture<'_, Result<()>> {
-        Box::pin(self.finish(RuntimeToolOutcome::Cancelled {
+        Box::pin(self.finish(OperationOutcome::Cancelled {
             reason: "fixture cancellation".into(),
         }))
     }
     fn reply(&self, structured: serde_json::Value) -> BoxFuture<'_, Result<()>> {
-        Box::pin(self.finish(RuntimeToolOutcome::Success {
+        Box::pin(self.finish(OperationOutcome::Success {
             content: vec![],
             structured,
         }))

@@ -19,7 +19,7 @@ cargo run -p zhir-conformance --bin schemas --locked -- --check
 ```
 
 修改公开 DTO 后先执行 `cargo run -p zhir-conformance --bin schemas`，提交生成的
-`contracts/v2/schemas/`，再运行 check。契约 runner 包含 41 个当前 v2 JSON 案例，
+`contracts/v3/schemas/`，再运行 check。契约 runner 包含 41 个当前 v3 JSON 案例，
 覆盖状态、资源、profile、工具结算和运行限制。原生会话时序及故障验收由 Rust 测试覆盖，
 不能用 JSON 案例数量或通过率代替这部分证据。
 
@@ -125,3 +125,27 @@ MiniMax 的复现命令、cc-switch 启动脚本和音频证据说明见
 OAuth 风格刷新与账号头、显式低延迟/原图要求、原生音视频双向流。它们证明 SDK 接口与
 执行语义，不证明任何账号的 token plan 权益、具体模型的最新全部能力或媒体生成质量。
 实际登录流程、其他 WebSocket/WebRTC 协议、供应商后台任务 API 和模型目录由相应接入层补充。
+
+GPT-Live acceptance uses an in-process Rust WebRTC peer for SDP, DataChannel,
+UTF-8 delegation context and bidirectional Opus RTP. It runs without credentials:
+
+```sh
+cargo test -p zhir-testing --no-default-features --features openai-live --test gpt_live
+cargo test -p zhir-testing --test session_semantics
+cargo check -p zhir --no-default-features --example gpt_live --features openai-live,memory
+```
+
+The explicit `codex_subscription_through_native_runtime` ignored test creates one
+voice session with a locally supplied Codex auth file. It checks actual received
+Opus packets, conversation history, completion and archived media. The optional proxy
+is injected into the signaling client; audio uses WebRTC networking.
+
+```sh
+ZHIR_LIVE_AUTH_JSON=/path/to/codex/auth.json \
+  cargo test -p zhir-testing --features openai-live --test gpt_live \
+  codex_subscription -- --ignored --nocapture
+```
+
+Set `ZHIR_LIVE_PROXY` only when signaling needs a proxy. Tests never print credentials.
+Online success establishes the tested account/endpoint combination, not entitlement
+for every account, backend delegation correctness, microphone quality or recovery.

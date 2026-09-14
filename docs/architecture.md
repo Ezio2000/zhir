@@ -2,7 +2,7 @@
 
 zhir is a Rust SDK with one execution state machine. Public contracts describe
 sessions, operations and resources independently of an endpoint, executor or product.
-The 0.2.0 API and v2 wire/storage formats are the only supported contracts.
+The 0.2.0 API and v3 wire/storage formats are the only supported contracts.
 
 ## Ownership
 
@@ -27,7 +27,7 @@ core       -> no other zhir crate
 - **Kernel** owns the only run state machine and checkpoint commit path. It receives
   model sessions, tool bindings, policies and stores through core ports. It does not
   decode provider wire formats, refresh credentials or own provider model catalogs.
-- **Models** implements turn-protocol and native WebSocket sessions, transformations, concurrency,
+- **Models** implements turn-protocol, native WebSocket and WebRTC sessions, transformations, concurrency,
   establishment retry/fallback, credential providers and resource normalization.
   **Tools** owns immutable catalog snapshots, binding, schema validation and tool
   decorators. Neither depends on storage or the other adapter crate.
@@ -50,7 +50,7 @@ A session sender exposes the capabilities of the bound model, so a fallback's
 aggregate advertisement cannot authorize an unsupported command after selection.
 
 Commands carry identities. StartTurn freezes the history prefix, tool declarations
-and profile used for that turn. Input, ToolResult, UpdateProfile, Interrupt,
+and profile used for that turn. Input, ToolResult, UpdateProfile, InterruptOutput,
 EndInput and Close are explicit commands. Events acknowledge commands and report
 incremental deltas, complete output items, operation updates, turn completion,
 recovery references and closure. Complete output items are committed as they arrive;
@@ -123,9 +123,9 @@ copies of sealed media data are rejected.
 MediaChunk carries stream, turn, epoch, sequence, timestamp and end metadata. Separate
 byte-bounded channels apply backpressure. Payload and linked stream-manifest nodes
 are sealed before committing cursors and before external input/output delivery.
-Interrupt advances the epoch in the same commit as its outbox command. EndInput
+InterruptOutput advances the output epoch in the same commit as its outbox command. EndInput
 closes admission and drains accepted input before sending the endpoint command.
-Older epochs cannot advance a stream. Checkpoints keep the latest sealed reference,
+Older output epochs cannot advance a stream; input epoch is zero. Checkpoints keep the latest sealed reference,
 not an ever-growing media transcript. Resource retention/collection belongs to the
 host; the SDK does not delete resources automatically.
 
@@ -151,9 +151,9 @@ The explicit MiniMax live test separately checks TTS drain and interrupt/continu
 it does not establish video support, audio input, transport recovery or load guarantees.
 
 A language binding wraps core values and the SDK invocation/control interfaces. It
-must use v2 DTOs and preserve identities, revisions, cancellation and backpressure.
+must use v3 DTOs and preserve identities, revisions, cancellation and backpressure.
 There is no Python wire compatibility layer, alternate scheduler or migration reader.
-SQL stores require format 2 in a new database; Redis requires a new format-2 namespace.
+SQL stores require format 3 in a new database; Redis requires a new format-3 namespace.
 Filesystem resources use their current format in a new directory. Older layouts are
 rejected rather than translated.
 
@@ -180,3 +180,34 @@ protocol branches. External protocols still implement core Model; ProtocolExtens
 ProviderToolAdapter customize the built-ins. Retry deadlines and the waiting loop are
 shared in policies::timing; adapters supply their executor's timer. Core profile::keys
 owns construction and recognition of built-in negotiation dimension names.
+
+## Independent conversation items and delegated work
+
+Execution turns are scheduling units. `ConversationItem` carries a complete message
+and provider item identity independently of a turn: the kernel deduplicates identical
+items, rejects identity conflicts, and appends user and assistant messages without
+sending them back as `Input`. These entries have their own history IDs and no call
+origin, so conversation projection preserves each speaker boundary. Incremental
+execution outputs continue to use causal turn grouping.
+
+`Output::Delegation` and `Message::DelegationResult` describe host-owned delegated
+work. Core owns `DelegationHandler`, `DelegationRequest`, `DelegationContext` and the
+shared `OperationOutcome`; kernel uses its existing operation admission, cancellation,
+recovery and atomic result/outbox commits. `OperationUpdate::Context` is durable model
+context, unlike lossy observer progress. Tools and delegations share
+`max_operation_concurrency`; models never invoke a backend Runtime. A missing handler
+produces an explicit failure result, and recovery cannot silently restart work.
+
+`InterruptOutput` requires its own capability. Its atomic commit advances only
+`SessionSnapshot.output_epoch`, archives incomplete output cursors, and invalidates
+queued output packets. Input epoch stays zero and accepted microphone audio remains
+valid. A completed stream leaves the active cursor map and appends an immutable
+`ArchivedMedia` node to `SessionSnapshot.media_archive`; it cannot reuse the same
+stream identity in that epoch. Thus `max_media_streams` bounds simultaneous active
+streams. Checkpoints retain constant-size archive references; enumerating archived
+streams (including checking a new identity) reads their linked resource nodes.
+
+`openai-live` supplies subscription WebRTC signaling, DataChannel events and Opus
+ports through these native contracts. It has no public-Realtime, HTTP/SSE or WebSocket
+fallback and advertises no session resume or manual output-interruption guarantee.
+See the model crate README for credential, audio and protocol limits.

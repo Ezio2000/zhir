@@ -204,7 +204,7 @@ async fn sealed_output_retains_identity_and_rejects_duplicate_native_payloads() 
 
 #[tokio::test]
 async fn native_input_and_async_results_resolve_resources_and_seal_operation_output() {
-    use zhir_core::{model::*, operation::*, tool::RuntimeToolOutcome};
+    use zhir_core::{model::*, operation::*};
     let store = Arc::new(zhir_storage::MemoryResourceStore::new());
     let mut writer = store
         .create("live".into(), "image/png".into())
@@ -223,7 +223,7 @@ async fn native_input_and_async_results_resolve_resources_and_seal_operation_out
                     message: Message::User { content },
                 } if index == 0 => content,
                 SessionCommandBody::ToolResult {
-                    outcome: RuntimeToolOutcome::Success { content, .. },
+                    outcome: OperationOutcome::Success { content, .. },
                     ..
                 } if index == 1 => content,
                 _ => panic!("unexpected command"),
@@ -243,7 +243,7 @@ async fn native_input_and_async_results_resolve_resources_and_seal_operation_out
             event: OperationEvent {
                 sequence: 0,
                 update: OperationUpdate::Finished {
-                    outcome: RuntimeToolOutcome::Success {
+                    outcome: OperationOutcome::Success {
                         content: vec![Content::resource(reference(ResourceSource::Inline {
                             bytes: vec![4, 5, 6],
                         }))],
@@ -259,7 +259,7 @@ async fn native_input_and_async_results_resolve_resources_and_seal_operation_out
         .open_session(SessionOpen {
             session_id: "s".into(),
             after_sequence: None,
-            epoch: 0,
+            output_epoch: 0,
             limits: zhir_kernel::defaults::limits(),
             request: request(vec![Message::user("begin")]),
             recovery: None,
@@ -291,7 +291,7 @@ async fn native_input_and_async_results_resolve_resources_and_seal_operation_out
                     caller_id: "model".into(),
                     call_id: "local".into(),
                 },
-                outcome: RuntimeToolOutcome::Success {
+                outcome: OperationOutcome::Success {
                     content: vec![Content::resource(saved)],
                     structured: json!(null),
                 },
@@ -311,7 +311,7 @@ async fn native_input_and_async_results_resolve_resources_and_seal_operation_out
             OperationEvent {
                 update:
                     OperationUpdate::Finished {
-                        outcome: RuntimeToolOutcome::Success { content, .. },
+                        outcome: OperationOutcome::Success { content, .. },
                     },
                 ..
             },

@@ -1,6 +1,6 @@
-# zhir v2 runtime behavior
+# zhir v3 runtime behavior
 
-These rules describe the current Rust values, kernel and v2 schemas. Acceptance
+These rules describe the current Rust values, kernel and v3 schemas. Acceptance
 implementations belong to testing modules and are not exported by production crates.
 
 ## State and identity
@@ -53,7 +53,7 @@ implementations belong to testing modules and are not exported by production cra
     or Active. OperationRecord identity and Running admission are committed before
     start. recover attaches to existing work; inability to recover is not permission
     to repeat start. Queued work has not been dispatched.
-12. RuntimeToolOutcome contains only Success, Failure and Cancelled. Running,
+12. OperationOutcome contains only Success, Failure and Cancelled. Running,
     Waiting, Cancelling and Unknown are unfinished operation states. Waiting prompt
     data is not a model-visible final tool result. Only Finished appends a result.
 13. A local final result, its terminal operation state and delivery command share one
@@ -83,7 +83,7 @@ implementations belong to testing modules and are not exported by production cra
 
 18. A control receipt confirms the committed intent revision, not remote execution.
     Running profile changes require ProfileUpdates; idle turn-protocol changes apply
-    locally for the next turn. Interrupt commits the new epoch with its command.
+    locally for the next turn. InterruptOutput commits the new output epoch with its command.
     EndInput closes media admission, drains accepted chunks, then sends the command.
     Task and Interactive modes have explicit completion boundaries.
 19. ResourceRef carries Inline bytes, URL, Stored key or Provider reference, separately
@@ -92,11 +92,11 @@ implementations belong to testing modules and are not exported by production cra
     declared explicitly; unbound inline copies of sealed media are rejected.
 20. MediaChunk carries stream, turn, epoch, sequence, timestamp, media type and end.
     Media input/output are separate bounded channels. Payload and manifest resources
-    are sealed, and the cursor is committed, before delivery. Old epochs are not
-    delivered. Within a stream/epoch the cursor increases; checkpoints retain only
+    are sealed, and the cursor is committed, before delivery. Old output epochs are not
+    delivered; input epoch is zero. Within a stream/epoch the cursor increases; checkpoints retain only
     the latest immutable manifest reference. EndInput cannot overtake accepted input.
 21. Defaults bound inflight operations to 64, command and session-event queues to 256,
-    concurrent runtime tools to 8, retained media streams to 64, individual media chunks to 1 MiB and buffered media
+    concurrent host operations to 8, simultaneously active media streams to 64, individual media chunks to 1 MiB and buffered media
     bytes to 16 MiB per direction. Observer capacity defaults to 256. Configured
     limits are validated before channel/worker creation.
 22. Observer events can be lost; ObservationGap reports loss when capacity returns.
@@ -119,7 +119,7 @@ implementations belong to testing modules and are not exported by production cra
     to adapters. Credential resolution/refresh is injected, not implemented by kernel.
 26. Run stores use one Commit validator, optimistic revisions and immutable history
     deltas. Same checkpoint ID/digest is idempotent; conflicting identity/revision is
-    rejected. Wire envelope version is exactly 2. SQL and Redis format markers are 2;
+    rejected. Wire envelope version is exactly 3. SQL and Redis format markers are 3;
     unversioned or other-version layouts require a fresh database/namespace. There
     are no aliases, v1 readers, migration paths or compatibility execution modes.
 
@@ -132,3 +132,15 @@ agree with status, and failure/cancellation settlements have no success content.
 Duplicate completion compares this typed outcome and canonical content, including after
 checkpoint encoding/decoding. Adapter replay continues to read its original top-level
 payload on subsequent turns.
+
+27. ConversationItems admits complete User/Assistant content messages with independent
+    identities. Exact duplicates are idempotent; conflicts are protocol errors.
+    Recording a provider-observed user message never creates an outbound Input.
+28. Delegation requires its own capability and a native Delegation operation owner.
+    DelegationHandler executes host work using the existing operation state machine.
+    Durable Context updates and final results use committed outbox commands. Orphan
+    results, duplicate calls and mismatched command owners are rejected.
+29. InterruptOutput requires InterruptOutput capability and affects output only.
+    Input epoch is zero. Ended streams leave active.media and remain reachable through
+    immutable ArchivedMedia nodes; output interruption archives its unfinished streams
+    with complete=false. A stream identity cannot resume after end in the same epoch.

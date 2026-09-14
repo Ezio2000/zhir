@@ -6,11 +6,31 @@ impl Engine {
             return Err(Error::Invalid("pending command capacity exceeded".into()));
         }
         let end_input = matches!(intent, CommandIntent::EndInput);
+        let interrupt = matches!(intent, CommandIntent::InterruptOutput { .. });
         let id = new_id();
         let mut next = self.current.as_ref().clone();
         match &intent {
             CommandIntent::Close => next.active.session.closing = true,
-            CommandIntent::Interrupt { .. } => next.active.session.epoch += 1,
+            CommandIntent::InterruptOutput { .. } => {
+                next.active.session.output_epoch = next
+                    .active
+                    .session
+                    .output_epoch
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Invalid("output epoch overflow".into()))?;
+                let retired: Vec<_> = next
+                    .active
+                    .media
+                    .iter()
+                    .filter(|(key, _)| key.starts_with("output:"))
+                    .map(|(key, cursor)| (key.clone(), cursor.sealed.clone()))
+                    .collect();
+                for (key, sealed) in retired {
+                    self.archive_media(&mut next, key.clone(), sealed, false)
+                        .await?;
+                    next.active.media.remove(&key);
+                }
+            }
             CommandIntent::EndInput => next.active.session.input_closed = true,
             _ => (),
         }
@@ -27,6 +47,10 @@ impl Engine {
             HistoryDelta::Unchanged,
         )
         .await?;
+        if interrupt {
+            self.media_output
+                .invalidate_before(self.current.active.session.output_epoch);
+        }
         if end_input {
             self.media.close();
         }
@@ -106,6 +130,51 @@ impl Engine {
     }
     fn command_body(&self, intent: CommandIntent) -> Result<SessionCommandBody> {
         Ok(match intent {
+            CommandIntent::DelegationContext {
+                operation_id,
+                content,
+            } => {
+                let origin = self
+                    .current
+                    .active
+                    .operations
+                    .get(&operation_id)
+                    .ok_or_else(|| Error::Protocol("delegation context origin missing".into()))?
+                    .origin
+                    .clone();
+                SessionCommandBody::DelegationContext {
+                    operation_id,
+                    origin,
+                    content,
+                }
+            }
+            CommandIntent::DelegationResult {
+                operation_id,
+                entry,
+            } => {
+                let Message::DelegationResult { outcome, .. } = &self
+                    .current
+                    .history
+                    .get(entry)
+                    .ok_or_else(|| Error::Protocol("delegation result missing".into()))?
+                    .message
+                else {
+                    return Err(Error::Protocol("delegation result entry mismatch".into()));
+                };
+                let origin = self
+                    .current
+                    .active
+                    .operations
+                    .get(&operation_id)
+                    .ok_or_else(|| Error::Protocol("delegation origin missing".into()))?
+                    .origin
+                    .clone();
+                SessionCommandBody::DelegationResult {
+                    operation_id,
+                    origin,
+                    outcome: outcome.clone(),
+                }
+            }
             CommandIntent::StartTurn {
                 turn_id,
                 history_count,
@@ -158,7 +227,9 @@ impl Engine {
             CommandIntent::UpdateProfile { revision, profile } => {
                 SessionCommandBody::UpdateProfile { revision, profile }
             }
-            CommandIntent::Interrupt { turn_id } => SessionCommandBody::Interrupt { turn_id },
+            CommandIntent::InterruptOutput { turn_id } => {
+                SessionCommandBody::InterruptOutput { turn_id }
+            }
             CommandIntent::EndInput => SessionCommandBody::EndInput,
             CommandIntent::Close => SessionCommandBody::Close,
         })

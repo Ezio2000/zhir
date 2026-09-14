@@ -98,7 +98,8 @@ pub fn negotiate(
                     _ => None,
                 })
                 .collect(),
-            zhir_core::message::Message::RuntimeTool { outcome, .. } => {
+            zhir_core::message::Message::RuntimeTool { outcome, .. }
+            | zhir_core::message::Message::DelegationResult { outcome, .. } => {
                 outcome.content().iter().collect()
             }
         };
