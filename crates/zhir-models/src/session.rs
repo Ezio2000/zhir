@@ -116,6 +116,8 @@ pub(crate) fn validate_capabilities(capabilities: &CapabilitySet) -> Result<()> 
         Capability::ConversationItems,
         Capability::Delegation,
         Capability::InterruptOutput,
+        Capability::FlushInput,
+        Capability::InputAudioControl,
         Capability::Steering,
         Capability::ProfileUpdates,
         Capability::AsyncResults,
@@ -151,6 +153,9 @@ impl SessionTask {
             SessionCommandBody::InterruptOutput { .. } => Err(Error::Invalid(
                 "turn protocol cannot interrupt natively".into(),
             )),
+            SessionCommandBody::FlushInput | SessionCommandBody::SetInputAudio { .. } => Err(
+                Error::Invalid("turn protocol cannot flush an active input".into()),
+            ),
             SessionCommandBody::DelegationContext { .. }
             | SessionCommandBody::DelegationResult { .. } => Err(Error::Invalid(
                 "turn protocol cannot accept native delegation".into(),

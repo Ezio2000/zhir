@@ -65,7 +65,11 @@ pub(super) fn context(kind: &str, id: &str, text: &str, delegation: Option<&str>
 #[serde(tag = "type")]
 pub(super) enum ServerEvent {
     #[serde(rename = "session.started")]
-    Started,
+    Started { session: Value },
+    #[serde(rename = "input_audio.paused")]
+    AudioPaused,
+    #[serde(rename = "input_audio.resumed")]
+    AudioResumed,
     #[serde(rename = "turn.done")]
     Turn { turn: Turn },
     #[serde(rename = "delegation.created")]
@@ -73,9 +77,14 @@ pub(super) enum ServerEvent {
     #[serde(rename = "session.closed")]
     Closed { reason: String, usage: Value },
     #[serde(rename = "error")]
-    Error { error: Value },
+    Error { error: ServerError },
     #[serde(other)]
     Observation,
+}
+#[derive(Deserialize)]
+pub(super) struct ServerError {
+    pub code: String,
+    pub message: String,
 }
 #[derive(Deserialize)]
 pub(super) struct Turn {
@@ -98,31 +107,34 @@ pub(super) struct TextPart {
     pub text: String,
 }
 
-// RFC 6716 section 3: duration derives from TOC, never host wall-clock timing.
-pub(super) fn opus_duration(packet: &[u8]) -> Result<std::time::Duration> {
-    let toc = *packet
-        .first()
-        .ok_or_else(|| Error::Invalid("empty Opus packet".into()))?;
-    let config = toc >> 3;
-    let micros = if config >= 16 {
-        2500_u64 << (config & 3)
-    } else if config >= 12 {
-        10000_u64 << (config & 1)
-    } else {
-        [10000, 20000, 40000, 60000][(config & 3) as usize]
-    };
-    let frames = match toc & 3 {
-        0 => 1,
-        1 | 2 => 2,
-        _ => u64::from(
-            *packet
-                .get(1)
-                .ok_or_else(|| Error::Invalid("truncated Opus TOC".into()))?
-                & 63,
-        ),
-    };
-    if frames == 0 || micros * frames > 120000 {
-        return Err(Error::Invalid("invalid Opus duration".into()));
-    }
-    Ok(std::time::Duration::from_micros(micros * frames))
+pub(super) fn context_text(content: Vec<Content>) -> Result<String> {
+    content
+        .into_iter()
+        .map(|part| match part {
+            Content::Text { text } => Ok(text),
+            _ => Err(Error::Invalid(
+                "Live delegation context requires text".into(),
+            )),
+        })
+        .collect()
+}
+pub(super) fn outcome_text(outcome: zhir_core::operation::OperationOutcome) -> Result<String> {
+    use zhir_core::operation::OperationOutcome;
+    Ok(match outcome {
+        OperationOutcome::Success {
+            content,
+            structured,
+        } => {
+            let mut text = context_text(content)?;
+            if !structured.is_null() {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(&structured.to_string());
+            }
+            text
+        }
+        OperationOutcome::Failure { error } => format!("Task failed: {}", error.message),
+        OperationOutcome::Cancelled { reason } => format!("Task cancelled: {reason}"),
+    })
 }

@@ -1,12 +1,11 @@
 //! Native WebRTC media and DataChannel transport. No provider session semantics.
+use crate::native::{Buffered, MediaBudget};
 use bytes::Bytes;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc, watch};
 use webrtc::{
     api::{
-        APIBuilder,
-        interceptor_registry::register_default_interceptors,
-        media_engine::{MIME_TYPE_OPUS, MediaEngine},
+        APIBuilder, interceptor_registry::register_default_interceptors, media_engine::MediaEngine,
     },
     data_channel::RTCDataChannel,
     interceptor::registry::Registry,
@@ -16,49 +15,53 @@ use webrtc::{
         peer_connection_state::RTCPeerConnectionState,
         sdp::session_description::RTCSessionDescription,
     },
-    rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
+    rtp_transceiver::rtp_codec::{RTCRtpCodecParameters, RTPCodecType},
     track::track_local::{TrackLocal, track_local_static_sample::TrackLocalStaticSample},
 };
 use zhir_core::{Result, error::Error};
 
-pub(crate) enum Frame {
-    Event(String),
-    Audio { payload: Vec<u8>, timestamp: u32 },
+pub(crate) struct AudioPacket {
+    pub payload: Vec<u8>,
+    pub timestamp: u32,
+    pub sequence: u16,
+    pub ssrc: u32,
 }
+pub(crate) struct PeerConfig {
+    pub connection: RTCConfiguration,
+    pub channel_label: &'static str,
+    pub audio_codec: RTCRtpCodecParameters,
+    pub event_capacity: usize,
+    pub max_event_bytes: usize,
+    pub max_audio_bytes: usize,
+    pub media_budget: MediaBudget,
+}
+
+#[path = "webrtc/connection.rs"]
+mod connection;
+pub(crate) use connection::Connection;
+#[path = "rtp.rs"]
+mod rtp;
+pub(crate) use rtp::RtpTimeline;
 pub(crate) struct Peer {
     pc: Arc<RTCPeerConnection>,
     channel: Arc<RTCDataChannel>,
     track: Arc<TrackLocalStaticSample>,
-    pub frames: mpsc::Receiver<Frame>,
+    pub events: mpsc::Receiver<String>,
+    pub audio: mpsc::UnboundedReceiver<Buffered<AudioPacket>>,
     pub failure: watch::Receiver<Option<Error>>,
+    pub connection: watch::Receiver<Connection>,
     ready: watch::Receiver<bool>,
     readers: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    max_event_bytes: usize,
 }
 fn error(e: impl std::fmt::Display) -> Error {
     Error::Protocol(format!("WebRTC: {e}"))
 }
 impl Peer {
-    pub async fn new(
-        capacity: usize,
-        max_bytes: usize,
-        configuration: RTCConfiguration,
-    ) -> Result<Self> {
+    pub async fn new(config: PeerConfig) -> Result<Self> {
         let mut media = MediaEngine::default();
         media
-            .register_codec(
-                webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters {
-                    capability: RTCRtpCodecCapability {
-                        mime_type: MIME_TYPE_OPUS.into(),
-                        clock_rate: 48000,
-                        channels: 2,
-                        sdp_fmtp_line: "minptime=10;useinbandfec=1".into(),
-                        rtcp_feedback: vec![],
-                    },
-                    payload_type: 111,
-                    ..Default::default()
-                },
-                webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Audio,
-            )
+            .register_codec(config.audio_codec.clone(), RTPCodecType::Audio)
             .map_err(error)?;
         let registry = register_default_interceptors(Registry::new(), &mut media).map_err(error)?;
         let api = APIBuilder::new()
@@ -66,37 +69,52 @@ impl Peer {
             .with_interceptor_registry(registry)
             .build();
         let pc = Arc::new(
-            api.new_peer_connection(configuration)
+            api.new_peer_connection(config.connection)
                 .await
                 .map_err(error)?,
         );
-        let (tx, frames) = mpsc::channel(capacity);
+        let (tx, events) = mpsc::channel(config.event_capacity);
+        // All entries own reservations from the same budget as native output.
+        let (audio_tx, audio) = mpsc::unbounded_channel();
         let (failed, failure) = watch::channel(None);
+        let (state_tx, connection) = watch::channel(Connection::new(RTCPeerConnectionState::New));
         let (ready_tx, ready) = watch::channel(false);
         let readers = Arc::new(Mutex::new(Vec::new()));
-        let audio_tx = tx.clone();
         let audio_failed = failed.clone();
         let audio_readers = readers.clone();
         pc.on_track(Box::new(move |track, _, _| {
             let tx = audio_tx.clone();
             let failed = audio_failed.clone();
             let readers = audio_readers.clone();
+            let budget = config.media_budget.clone();
             Box::pin(async move {
                 let task = tokio::spawn(async move {
                     while let Ok((packet, _)) = track.read_rtp().await {
-                        if packet.payload.len() > max_bytes {
+                        if packet.payload.len() > config.max_audio_bytes {
                             failed.send_replace(Some(error("oversized audio packet")));
                             break;
                         }
+                        let reservation = match budget.try_reserve(packet.payload.len()) {
+                            Ok(reservation) => reservation,
+                            Err(error) => {
+                                failed.send_replace(Some(error));
+                                break;
+                            }
+                        };
                         if tx
-                            .try_send(Frame::Audio {
-                                payload: packet.payload.to_vec(),
-                                timestamp: packet.header.timestamp,
+                            .send(Buffered {
+                                value: AudioPacket {
+                                    payload: packet.payload.to_vec(),
+                                    timestamp: packet.header.timestamp,
+                                    sequence: packet.header.sequence_number,
+                                    ssrc: packet.header.ssrc,
+                                },
+                                reservation,
                             })
                             .is_err()
                         {
                             failed.send_replace(Some(Error::Uncertain(
-                                "WebRTC receive capacity exceeded".into(),
+                                "WebRTC audio receiver closed".into(),
                             )));
                             break;
                         }
@@ -105,19 +123,19 @@ impl Peer {
                 readers.lock().await.push(task);
             })
         }));
-        let state_failed = failed.clone();
         pc.on_peer_connection_state_change(Box::new(move |state| {
-            let failed = state_failed.clone();
+            let tx = state_tx.clone();
             Box::pin(async move {
-                if matches!(
-                    state,
-                    RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected
-                ) {
-                    failed.send_replace(Some(Error::Uncertain("WebRTC connection lost".into())));
-                }
+                tx.send_if_modified(|connection| {
+                    if connection.state == state {
+                        return false;
+                    }
+                    *connection = Connection::new(state);
+                    true
+                });
             })
         }));
-        let channel = match pc.create_data_channel("oai-events", None).await {
+        let channel = match pc.create_data_channel(config.channel_label, None).await {
             Ok(channel) => channel,
             Err(cause) => {
                 let _ = pc.close().await;
@@ -130,18 +148,27 @@ impl Peer {
                 tx.send_replace(true);
             })
         }));
+        let channel_failed = failed.clone();
+        channel.on_close(Box::new(move || {
+            let failed = channel_failed.clone();
+            Box::pin(async move {
+                failed.send_replace(Some(Error::Uncertain(
+                    "WebRTC control channel closed".into(),
+                )));
+            })
+        }));
         channel.on_message(Box::new(move |message| {
             let tx = tx.clone();
             let failed = failed.clone();
             Box::pin(async move {
-                let result = if !message.is_string || message.data.len() > max_bytes {
+                let result = if !message.is_string || message.data.len() > config.max_event_bytes {
                     Err(error("invalid control frame"))
                 } else {
                     String::from_utf8(message.data.to_vec())
                         .map_err(error)
                         .and_then(|text| {
-                            tx.try_send(Frame::Event(text)).map_err(|_| {
-                                Error::Uncertain("WebRTC receive capacity exceeded".into())
+                            tx.try_send(text).map_err(|_| {
+                                Error::Uncertain("WebRTC control receive capacity exceeded".into())
                             })
                         })
                 };
@@ -151,12 +178,7 @@ impl Peer {
             })
         }));
         let track = Arc::new(TrackLocalStaticSample::new(
-            RTCRtpCodecCapability {
-                mime_type: MIME_TYPE_OPUS.into(),
-                clock_rate: 48000,
-                channels: 2,
-                ..Default::default()
-            },
+            config.audio_codec.capability,
             "audio".into(),
             "zhir".into(),
         ));
@@ -178,10 +200,13 @@ impl Peer {
             pc,
             channel,
             track,
-            frames,
+            events,
+            audio,
             failure,
+            connection,
             ready,
             readers,
+            max_event_bytes: config.max_event_bytes,
         })
     }
     pub async fn offer(&self) -> Result<String> {
@@ -206,9 +231,14 @@ impl Peer {
         }
         Ok(())
     }
-    pub async fn send(&self, value: &serde_json::Value) -> Result<()> {
+    pub async fn send(&self, text: &str) -> Result<()> {
+        if text.len() > self.max_event_bytes {
+            return Err(Error::Invalid(
+                "outgoing WebRTC control frame exceeds configured limit".into(),
+            ));
+        }
         self.channel
-            .send_text(value.to_string())
+            .send_text(text.to_owned())
             .await
             .map_err(error)?;
         Ok(())

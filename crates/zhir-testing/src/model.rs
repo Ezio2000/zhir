@@ -247,6 +247,7 @@ pub struct SessionRecord {
     pub session_id: String,
     pub commands: Vec<zhir_core::model::SessionCommand>,
     pub events: Vec<zhir_core::model::SessionEvent>,
+    pub failure: Option<Error>,
 }
 impl RecordingModel {
     pub fn new(inner: Arc<dyn Model>) -> Self {
@@ -288,7 +289,13 @@ struct RecordedEvents {
 impl zhir_core::model::SessionReceiver for RecordedEvents {
     fn receive(&mut self) -> BoxFuture<'_, Result<Option<zhir_core::model::SessionEvent>>> {
         Box::pin(async move {
-            let event = self.inner.receive().await?;
+            let event = match self.inner.receive().await {
+                Ok(event) => event,
+                Err(error) => {
+                    self.records.lock().expect("records")[self.index].failure = Some(error.clone());
+                    return Err(error);
+                }
+            };
             if let Some(event) = &event {
                 self.records.lock().expect("records")[self.index]
                     .events
@@ -321,6 +328,7 @@ impl Model for RecordingModel {
                     session_id: open.session_id.clone(),
                     commands: vec![],
                     events: vec![],
+                    failure: None,
                 });
                 index
             };

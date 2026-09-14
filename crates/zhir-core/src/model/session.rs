@@ -61,6 +61,14 @@ pub enum SessionCommandBody {
     },
     InterruptOutput {
         turn_id: String,
+        output_epoch: u64,
+    },
+    /// Materialize buffered input without ending the session. Acknowledgement
+    /// confirms the provider's flush boundary, not device playback completion.
+    FlushInput,
+    /// Enable or pause remote audio input processing without closing the input port.
+    SetInputAudio {
+        enabled: bool,
     },
     EndInput,
     Close,

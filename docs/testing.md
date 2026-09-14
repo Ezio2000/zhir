@@ -53,7 +53,7 @@ cargo check -p zhir-testing --no-default-features --features http --locked
 cargo check -p zhir-models --no-default-features --features minimax --locked
 cargo test -p zhir-testing --no-default-features --features minimax --test minimax_tts --locked
 cargo check -p zhir --no-default-features --locked
-for feature in policies tools typed-tools typed-output models filesystem shell interaction agent agent-runtime openai-chat openai-responses anthropic minimax memory sqlite mysql redis resources-filesystem; do
+for feature in policies tools typed-tools typed-output models filesystem shell interaction agent agent-runtime openai-chat openai-responses anthropic minimax openai-live memory sqlite mysql redis resources-filesystem; do
   cargo check -p zhir --no-default-features --features "$feature" --locked || exit 1
 done
 cargo run -p zhir --no-default-features --example custom_tool --features models,typed-tools
@@ -119,7 +119,9 @@ ZHIR_DEVELOPER_REPORT="$PWD/test-results/developer-live.json" \
 
 MiniMax 的复现命令、cc-switch 启动脚本和音频证据说明见
 [zhir-testing README](../crates/zhir-testing/README.md#minimax-tts-integration-tests)。
-真实 TTS 测试验证连续输入收尾及同任务中断后继续；不验证断线恢复或音频输入。
+真实 TTS 测试对六种格式运行 18 个收尾、flush 后继续和同任务打断案例，验证持久化后交付与格式标注，
+并通过主机 ffmpeg 严格解码每条完整流。MP3 案例同时发送混音、情绪、归一化、公式、效果、字幕和连续推理配置；
+验证参数被接受与音频可解码，不等于验证主观音质或服务端未返回的字幕。测试不覆盖断线恢复或音频输入。
 
 五类需求的本地验收分别验证：丰富模型/服务端工具扩展、跨服务 runtime operation、
 OAuth 风格刷新与账号头、显式低延迟/原图要求、原生音视频双向流。它们证明 SDK 接口与
@@ -137,7 +139,7 @@ cargo check -p zhir --no-default-features --example gpt_live --features openai-l
 
 The explicit `codex_subscription_through_native_runtime` ignored test creates one
 voice session with a locally supplied Codex auth file. It checks actual received
-Opus packets, conversation history, completion and archived media. The optional proxy
+Opus packets, acknowledged input pause/resume, conversation history, completion and archived media. The optional proxy
 is injected into the signaling client; audio uses WebRTC networking.
 
 ```sh
@@ -148,4 +150,96 @@ ZHIR_LIVE_AUTH_JSON=/path/to/codex/auth.json \
 
 Set `ZHIR_LIVE_PROXY` only when signaling needs a proxy. Tests never print credentials.
 Online success establishes the tested account/endpoint combination, not entitlement
-for every account, backend delegation correctness, microphone quality or recovery.
+for every account, backend delegation correctness, microphone quality or process-restart recovery.
+
+
+`ZHIR_LIVE_INPUT_PACKETS` may point to a JSON array of raw 20 ms Opus byte packets
+for a spoken fixture. The fixture must be shorter than 2.5 seconds; the test waits
+for the StartTurn acknowledgement, supplies a silence lead-in, then sends speech at
+20 ms intervals. The current fixture is MiniMax saying “这是会话测试”, encoded by
+host ffmpeg as 48 kHz stereo Opus. This additionally checks a remote user transcript;
+it does not claim microphone or human barge-in coverage. Reports belong in
+`test-results/native-support/`, and complete MiniMax sentence containers can be decoded
+individually with ffmpeg.
+
+Local regressions cover delayed flush receipts, responsive heartbeat without task
+acknowledgement, blocked media with control progress, and old-epoch packets arriving
+between two current-epoch media-manifest commits (`media_interrupt`). Live control
+pressure tests also verify that closure preserves all received RTP before the end marker.
+
+
+To encode one complete spoken MiniMax sentence and run the spoken Live check:
+
+```sh
+uv run --managed-python crates/zhir-testing/scripts/live_input.py test-results/minimax-tts/mp3-drain-epoch-0-sentence-1.mp3
+ZHIR_LIVE_AUTH_JSON=/path/to/codex/auth.json \
+ZHIR_LIVE_INPUT_PACKETS="$PWD/test-results/native-support/input-packets.json" \
+  cargo test -p zhir-testing --features openai-live --test gpt_live codex_subscription -- --ignored --nocapture
+```
+
+The assertion requires a nonempty provider-observed user transcript distinct from
+outbound text. It does not require exact transcription: the service can misrecognize
+words, which the printed `spoken_transcripts` evidence preserves.
+
+`codex_subscription_survives_udp_blackout` forwards signaling to the real OAuth
+endpoint and rewrites the SDP answer through a test-only UDP relay. It drops both
+directions of the nominated ICE path for eight seconds, then checks acknowledged
+controls, resumed traffic, one remote creation and completed media/history through
+the kernel. This tests continuity of the original peer, not attaching a new peer or
+resuming a checkpoint after process restart. Run the two subscription tests serially:
+
+```sh
+ZHIR_LIVE_AUTH_JSON=/path/to/codex/auth.json \
+  cargo test -p zhir-testing --features openai-live --test gpt_live \
+  codex_subscription_ -- --ignored --nocapture --test-threads=1
+```
+
+Shared confirmation tests reject overlapping or expired confirmations. Live
+fixtures also cover missing/mismatched audio-control acknowledgements and closure
+before acknowledgement, provider error details delivered before failure, and abnormal
+remote closure without a successful close receipt. RTP tests exercise sequence/timestamp wrap, packet loss,
+late/duplicate packets and an unexplained source change.
+
+Live scheduling regressions keep the public event port blocked beyond the command
+deadline while pause/resume receipts continue, and retain twelve small Opus packets
+with an eight-event queue. Separate cases cover actual byte-budget exhaustion,
+single-Close settlement, malformed/duplicate protocol events, rejection under event
+pressure and preservation of accepted history before failure. Shared media tests retain reservations across packet
+mapping, release on consumption, and bound zero-byte markers independently of bytes.
+
+To investigate the remaining subscription boundaries reproducibly:
+
+```sh
+uv run crates/zhir-testing/scripts/live_probe.py \
+  --input test-results/native-support/input-packets.json \
+  --output test-results/native-support/subscription-boundaries
+```
+
+Use a fresh output directory, `--auth` for a Codex OAuth JSON file and `--proxy` if
+`HTTPS_PROXY` is unset. `--mode close|kill|both` selects explicit peer destruction
+or SIGKILL of the separate Rust media process. The runner creates one remote call
+per case, verifies sideband detach/reattach and input controls, sends output-control
+probes during real speech, attempts sideband access after the media process exits,
+and tries the public fork endpoint. The Rust diagnostic uses production WebRTC
+transport source; no copied transport or protocol fallback is shipped.
+
+Evidence contains HTTP status, call identity, correlated command errors, received
+transcripts, RTP identities, process exit and sideband events. PCM observer payloads
+are omitted from this diagnostic. An exit code of zero means the probe completed,
+not that interruption or recovery passed. The JSON retains rejections and the model
+README describes the observed limitations. This is protocol investigation, distinct
+from the native Runtime E2E and the original-peer UDP blackout test above.
+
+To check whether the same OAuth account can start a public primary audio WebSocket:
+
+```sh
+uv run crates/zhir-testing/scripts/live_probe.py --mode primary \
+  --output test-results/native-support/primary-access
+```
+
+This mode needs no speech fixture or Rust media process. It tests startup at
+`wss://api.openai.com/v1/live/sessions` with `gpt-live-1-codex` and `gpt-live-1`,
+records startup rejection separately from the WebSocket handshake, and closes any
+started session. It does not test storage, fork, interruption or media recovery.
+Access to an existing-call sideband does not prove that this primary connection
+is available to the OAuth account.

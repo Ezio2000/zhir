@@ -43,6 +43,17 @@ impl Checkpoint {
                 {
                     return Err(Error::Invalid("invalid turn command".into()));
                 }
+                CommandIntent::InterruptOutput {
+                    turn_id,
+                    output_epoch,
+                } if self.active.session.turn_id.as_ref() != Some(turn_id)
+                    || *output_epoch == 0
+                    || *output_epoch > self.active.session.output_epoch =>
+                {
+                    return Err(Error::Invalid(
+                        "invalid interrupt output epoch or turn".into(),
+                    ));
+                }
                 CommandIntent::Input { entry }
                     if self.history.get(*entry).is_none_or(|e| {
                         !matches!(e.message, Message::User { .. } | Message::External { .. })

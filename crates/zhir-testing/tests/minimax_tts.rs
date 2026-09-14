@@ -1,10 +1,14 @@
-//! A real protocol bridge exercised through the unchanged kernel, with local wire faults.
+//! A real protocol bridge exercised through the native kernel, with local wire faults.
 #[path = "minimax_tts/contracts.rs"]
 mod contracts;
 #[path = "minimax_tts/fixture.rs"]
 mod fixture;
+#[path = "minimax_tts/native.rs"]
+mod native;
 #[path = "minimax_tts/observer.rs"]
 mod observer;
+#[path = "minimax_tts/settings.rs"]
+mod settings;
 
 use observer::{Stats, TtsModel};
 use serde_json::json;
@@ -57,13 +61,12 @@ async fn read_resource(store: &dyn ResourceStore, reference: ResourceRef) -> Vec
 }
 
 async fn exercise(
-    endpoint: String,
-    key: String,
-    model: String,
+    config: zhir_models::minimax::tts::TtsConfig,
     interrupt: bool,
+    flush: bool,
     chunk_limit: usize,
 ) -> Evidence {
-    let (model, mut stats) = TtsModel::new(endpoint, key, model);
+    let (model, mut stats) = TtsModel::new(config);
     let resources = Arc::new(MemoryResourceStore::new());
     let store = Arc::new(RecordingStore::new(Arc::new(MemoryRunStore::new())));
     let runtime = Runtime::builder(Arc::new(model))
@@ -155,6 +158,25 @@ async fn exercise(
             .input(Message::user("测试完成"), "test")
             .await
             .unwrap();
+        if flush {
+            for fragment in [" ", "\n"] {
+                control
+                    .input(Message::user(fragment), "test")
+                    .await
+                    .unwrap();
+            }
+            control.flush_input().await.unwrap();
+            wait_stats(&mut stats, |s| s.flushes == 1).await;
+            assert_eq!(
+                stats.borrow().finishes,
+                0,
+                "flush closed the synthesis task"
+            );
+            control
+                .input(Message::user("再次继续"), "test")
+                .await
+                .unwrap();
+        }
         control.end_input().await.unwrap();
     };
     let (completion, (), (chunks, first_audio_ms)) =
@@ -177,6 +199,7 @@ async fn exercise(
     );
     assert_eq!(stats.cancellations, usize::from(interrupt));
     assert_eq!(stats.finishes, 1);
+    assert_eq!(stats.flushes, usize::from(flush));
     assert!(checkpoint.active.commands.is_empty());
     assert!(chunks.iter().any(|c| !c.bytes.is_empty()));
     assert!(chunks.last().unwrap().end);
@@ -239,7 +262,13 @@ async fn exercise(
 #[tokio::test]
 async fn websocket_tts_preserves_fragments_and_drains_tail_before_completion() {
     let (endpoint, server) = fixture::serve(fixture::Fault::None).await;
-    let result = exercise(endpoint, String::new(), "fixture".into(), false, 4).await;
+    let result = exercise(
+        TtsModel::config(endpoint, String::new(), "fixture".into()),
+        false,
+        false,
+        4,
+    )
+    .await;
     assert_eq!(
         result
             .chunks
@@ -263,7 +292,13 @@ async fn websocket_tts_preserves_fragments_and_drains_tail_before_completion() {
 #[tokio::test]
 async fn websocket_tts_interrupt_keeps_one_session_and_rejects_late_old_epoch_audio() {
     let (endpoint, server) = fixture::serve(fixture::Fault::None).await;
-    let result = exercise(endpoint, String::new(), "fixture".into(), true, 4).await;
+    let result = exercise(
+        TtsModel::config(endpoint, String::new(), "fixture".into()),
+        true,
+        false,
+        4,
+    )
+    .await;
     assert_eq!(
         result
             .chunks
@@ -290,7 +325,13 @@ async fn websocket_tts_interrupt_keeps_one_session_and_rejects_late_old_epoch_au
 #[tokio::test]
 async fn websocket_tts_slow_consumer_drains_beyond_the_media_byte_budget() {
     let (endpoint, server) = fixture::serve(fixture::Fault::Burst).await;
-    let result = exercise(endpoint, String::new(), "fixture".into(), false, 4).await;
+    let result = exercise(
+        TtsModel::config(endpoint, String::new(), "fixture".into()),
+        false,
+        false,
+        4,
+    )
+    .await;
     assert_eq!(result.chunks.len(), 27);
     assert_eq!(result.stats.wire_audio_bytes, 76);
     server.await.unwrap();
@@ -305,7 +346,7 @@ async fn websocket_tts_disconnect_is_uncertain_and_bad_audio_is_not_committed() 
         fixture::Fault::OversizedAudio,
     ] {
         let (endpoint, server) = fixture::serve(fault).await;
-        let (model, _) = TtsModel::new(endpoint, String::new(), "fixture".into());
+        let (model, _) = TtsModel::new(TtsModel::config(endpoint, String::new(), "fixture".into()));
         let runtime = Runtime::builder(Arc::new(model))
             .resources(Arc::new(MemoryResourceStore::new()))
             .build()
@@ -344,42 +385,132 @@ async fn live_minimax_tts_session() {
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-results/minimax-tts");
     std::fs::create_dir_all(&directory).unwrap();
-    for interrupt in [false, true] {
-        let result = exercise(
-            endpoint.clone(),
-            key.clone(),
-            model.clone(),
-            interrupt,
-            128 * 1024,
-        )
-        .await;
-        let name = if interrupt { "interrupt" } else { "drain" };
-        let mut epoch_bytes: BTreeMap<u64, usize> = BTreeMap::new();
-        let mut streams = BTreeMap::new();
-        for chunk in &result.chunks {
-            *epoch_bytes.entry(chunk.epoch).or_default() += chunk.bytes.len();
-            let (bytes, complete) = streams
-                .entry((chunk.epoch, chunk.stream_id.clone()))
-                .or_insert((Vec::new(), false));
-            bytes.extend(&chunk.bytes);
-            *complete = chunk.end;
-        }
-        let mut audio = vec![];
-        for (index, ((epoch, stream_id), (bytes, complete))) in streams.iter().enumerate() {
-            let file = format!("{name}-epoch-{epoch}-sentence-{index}.mp3");
-            std::fs::write(directory.join(&file), bytes).unwrap();
-            audio.push(json!({"file":file,"epoch":epoch,"stream_id":stream_id,
-                "bytes":bytes.len(),"complete":complete}));
-        }
-        let report = json!({"case":name,"model":model,"state":result.checkpoint.state.kind(),
+    // Pace distinct test sessions against subscription RPM limits. A failed
+    // synthesis is never retried or replayed by the production adapter.
+    let mut next_case = tokio::time::Instant::now();
+    use zhir_models::minimax::tts::{
+        AudioFormat, Emotion, SoundEffect, SubtitleGranularity, TimbreWeight, VoiceEffects,
+    };
+    for (format, extension, rate, mime) in [
+        (AudioFormat::Mp3, "mp3", 32000, "audio/mpeg"),
+        (
+            AudioFormat::Pcm,
+            "pcm",
+            32000,
+            "audio/pcm;encoding=s16le;rate=32000;channels=1",
+        ),
+        (AudioFormat::Wav, "wav", 32000, "audio/wav"),
+        (AudioFormat::Flac, "flac", 32000, "audio/flac"),
+        (
+            AudioFormat::PcmuRaw,
+            "pcmu",
+            8000,
+            "audio/PCMU;rate=8000;channels=1",
+        ),
+        (AudioFormat::PcmuWav, "pcmu.wav", 8000, "audio/wav"),
+    ] {
+        for (case, interrupt, flush) in [
+            ("drain", false, false),
+            ("interrupt", true, false),
+            ("flush", false, true),
+        ] {
+            tokio::time::sleep_until(next_case).await;
+            next_case = tokio::time::Instant::now() + Duration::from_secs(15);
+            let name = format!("{extension}-{case}");
+            let mut config = TtsModel::config(endpoint.clone(), key.clone(), model.clone());
+            config.audio.format = format;
+            config.audio.sample_rate = rate;
+            if format == AudioFormat::Mp3 {
+                config.voice.voice_id.clear();
+                config.timbre_weights = vec![
+                    TimbreWeight {
+                        voice_id: "male-qn-qingse".into(),
+                        weight: 50,
+                    },
+                    TimbreWeight {
+                        voice_id: "female-tianmei".into(),
+                        weight: 50,
+                    },
+                ];
+                config.voice.emotion = Some(Emotion::Calm);
+                config.voice.english_normalization = true;
+                config.voice.latex_read = true;
+                config.voice_effects = Some(VoiceEffects {
+                    pitch: 10,
+                    intensity: 10,
+                    timbre: 10,
+                    sound_effects: Some(SoundEffect::Robotic),
+                });
+                config.subtitles = Some(SubtitleGranularity::WordStreaming);
+                config.continuous_sound = true;
+            }
+            let result = exercise(config, interrupt, flush, 128 * 1024).await;
+            let mut epoch_bytes: BTreeMap<u64, usize> = BTreeMap::new();
+            let mut streams = BTreeMap::new();
+            for chunk in &result.chunks {
+                assert_eq!(chunk.media_type, mime);
+                *epoch_bytes.entry(chunk.epoch).or_default() += chunk.bytes.len();
+                let (bytes, complete) = streams
+                    .entry((chunk.epoch, chunk.stream_id.clone()))
+                    .or_insert((Vec::new(), false));
+                bytes.extend(&chunk.bytes);
+                *complete = chunk.end;
+            }
+            let mut audio = vec![];
+            for (index, ((epoch, stream_id), (bytes, complete))) in streams.iter().enumerate() {
+                let file = format!("{name}-epoch-{epoch}-sentence-{index}.{extension}");
+                std::fs::write(directory.join(&file), bytes).unwrap();
+                if *complete {
+                    assert!(!bytes.is_empty());
+                    if matches!(format, AudioFormat::Wav | AudioFormat::PcmuWav) {
+                        // Wire WAV uses unknown RIFF/data lengths because the header
+                        // precedes synthesis. Preserve that stream and finalize a
+                        // seekable host export; production media stays byte-exact.
+                        std::fs::write(directory.join(format!("{file}.stream")), bytes).unwrap();
+                        std::fs::write(directory.join(&file), settings::wave_export(bytes))
+                            .unwrap();
+                    }
+                    let mut decode = std::process::Command::new("ffmpeg");
+                    decode.args(["-hide_banner", "-v", "error", "-xerror"]);
+                    if matches!(format, AudioFormat::Pcm | AudioFormat::PcmuRaw) {
+                        decode.args([
+                            "-f",
+                            if format == AudioFormat::Pcm {
+                                "s16le"
+                            } else {
+                                "mulaw"
+                            },
+                            "-ar",
+                            &rate.to_string(),
+                            "-ac",
+                            "1",
+                        ]);
+                    }
+                    let result = decode
+                        .arg("-i")
+                        .arg(directory.join(&file))
+                        .args(["-f", "null", "-"])
+                        .output()
+                        .expect("real audio tests require ffmpeg");
+                    assert!(
+                        result.status.success(),
+                        "{file}: {}",
+                        String::from_utf8_lossy(&result.stderr)
+                    );
+                }
+                audio.push(json!({"file":file,"epoch":epoch,"stream_id":stream_id,
+                "bytes":bytes.len(),"complete":complete,"wave_lengths_finalized":*complete && matches!(format, AudioFormat::Wav | AudioFormat::PcmuWav)}));
+            }
+            let report = json!({"case":name,"model":model,"state":result.checkpoint.state.kind(),
             "first_audio_ms":result.first_audio_ms,"elapsed_ms":result.elapsed_ms,
             "commits":result.commits,"chunks":result.chunks.len(),"stats":result.stats,
-            "bytes_by_epoch":epoch_bytes,"audio":audio});
-        std::fs::write(
-            directory.join(format!("{name}.json")),
-            serde_json::to_vec_pretty(&report).unwrap(),
-        )
-        .unwrap();
-        println!("{report}");
+            "bytes_by_epoch":epoch_bytes,"audio":audio,"format":format,"media_type":mime,"sample_rate":rate,"complete_streams_decoded":true});
+            std::fs::write(
+                directory.join(format!("{name}.json")),
+                serde_json::to_vec_pretty(&report).unwrap(),
+            )
+            .unwrap();
+            println!("{report}");
+        }
     }
 }

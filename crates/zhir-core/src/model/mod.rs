@@ -65,6 +65,8 @@ pub enum Capability {
     Duplex,
     Steering,
     InterruptOutput,
+    FlushInput,
+    InputAudioControl,
     ConversationItems,
     Delegation,
     ProfileUpdates,

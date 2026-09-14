@@ -10,15 +10,11 @@ import urllib.request
 from urllib.parse import urlsplit
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--database", type=Path, default=Path.home() / ".cc-switch/cc-switch.db")
-    parser.add_argument("--provider", default="MiniMax")
-    args = parser.parse_args()
-    with sqlite3.connect(args.database.resolve().as_uri() + "?mode=ro", uri=True) as database:
+def subscription(database_path: Path, provider: str) -> tuple[str, str]:
+    with sqlite3.connect(database_path.resolve().as_uri() + "?mode=ro", uri=True) as database:
         rows = database.execute(
             "SELECT settings_config FROM providers WHERE app_type=? AND name=?",
-            ("claude", args.provider),
+            ("claude", provider),
         ).fetchall()
     if len(rows) != 1:
         raise SystemExit("Expected exactly one matching cc-switch Claude provider")
@@ -29,9 +25,18 @@ def main() -> None:
     host = urlsplit(config["ANTHROPIC_BASE_URL"]).hostname
     if host not in {"api.minimaxi.com", "api.minimax.cn", "api.minimax.io"}:
         raise SystemExit("The selected provider must point directly to an official MiniMax API")
+    return key, f"wss://{host}/ws/v1/t2a_v2_bidi"
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--database", type=Path, default=Path.home() / ".cc-switch/cc-switch.db")
+    parser.add_argument("--provider", default="MiniMax")
+    args = parser.parse_args()
+    key, endpoint = subscription(args.database, args.provider)
     environment = os.environ.copy()
     environment["MINIMAX_API_KEY"] = key
-    environment["MINIMAX_TTS_URL"] = f"wss://{host}/ws/v1/t2a_v2_bidi"
+    environment["MINIMAX_TTS_URL"] = endpoint
     # Cargo does not read macOS system proxy settings. Keep changes process-local.
     for scheme, proxy in urllib.request.getproxies().items():
         if scheme in {"http", "https"}:

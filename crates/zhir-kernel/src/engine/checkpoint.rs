@@ -96,6 +96,7 @@ pub(super) fn initial(request: &Request) -> (Checkpoint, HistoryDelta) {
                 recovery: None,
                 output_epoch: 0,
                 media_archive: None,
+                input_audio_enabled: true,
                 input_closed: options.mode == RunMode::Task,
                 closing: false,
                 closed: false,

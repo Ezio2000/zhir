@@ -21,7 +21,22 @@ pub struct Evidence {
     pub commands: Vec<Value>,
     pub audio: usize,
 }
-pub async fn serve() -> (String, tokio::task::JoinHandle<Evidence>) {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Fault {
+    None,
+    MissingAudioConfirmation,
+    WrongAudioConfirmation,
+    CloseBeforeAudioConfirmation,
+    RejectedAudio,
+    ConnectionLostOnClose,
+    ExpiredOnClose,
+    ExpiredWithDelegation,
+    EventPressure,
+    SmallPackets,
+    InvalidEvent(&'static str),
+    RejectedUnderPressure,
+}
+pub async fn serve(fault: Fault) -> (String, tokio::task::JoinHandle<Evidence>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}/calls", listener.local_addr().unwrap());
     let task = tokio::spawn(async move {
@@ -58,7 +73,12 @@ pub async fn serve() -> (String, tokio::task::JoinHandle<Evidence>) {
         assert_eq!(body["session"]["model"], "gpt-live-1-codex");
         let mut media = MediaEngine::default();
         media.register_default_codecs().unwrap();
-        let api = APIBuilder::new().with_media_engine(media).build();
+        let mut settings = webrtc::api::setting_engine::SettingEngine::default();
+        settings.set_lite(true);
+        let api = APIBuilder::new()
+            .with_media_engine(media)
+            .with_setting_engine(settings)
+            .build();
         let pc = Arc::new(
             api.new_peer_connection(RTCConfiguration::default())
                 .await
@@ -133,14 +153,34 @@ pub async fn serve() -> (String, tokio::task::JoinHandle<Evidence>) {
         drop(socket);
         let channel = ready.recv().await.unwrap();
         for event in [
-            json!({"type":"session.started"}),
+            json!({"type":"session.started","session":{"id":"fixture-remote","status":"active"}}),
             json!({"type":"turn.done","turn":{"id":"user-1","role":"user","transcript":"hello"}}),
             json!({"type":"turn.done","turn":{"id":"assistant-1","role":"assistant","transcript":"hi"}}),
             json!({"type":"delegation.created","item":{"id":"delegate-1","type":"delegation","target":"client","content":[{"type":"input_text","text":"inspect files"}]}}),
         ] {
             channel.send_text(event.to_string()).await.unwrap();
         }
-        for _ in 0..4 {
+        if let Fault::InvalidEvent(event) = fault {
+            channel.send_text(event.to_owned()).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            pc.close().await.unwrap();
+            rtcp.abort();
+            let _ = rtcp.await;
+            return Evidence {
+                commands: vec![],
+                audio: audio.load(Ordering::SeqCst),
+            };
+        }
+        if matches!(fault, Fault::EventPressure | Fault::RejectedUnderPressure) {
+            for i in 0..10 {
+                channel
+                    .send_text(json!({"type":"fixture.observation","i":i}).to_string())
+                    .await
+                    .unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }
+        for _ in 0..if fault == Fault::SmallPackets { 12 } else { 4 } {
             track
                 .write_sample(&Sample {
                     data: bytes::Bytes::from_static(&[0xf8, 0xff, 0xfe]),
@@ -152,14 +192,81 @@ pub async fn serve() -> (String, tokio::task::JoinHandle<Evidence>) {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         let mut commands = vec![];
+        let mut faulted = false;
         while let Some(event) = rx.recv().await {
+            match event["type"].as_str() {
+                Some("delegation.context.append") if fault == Fault::ExpiredWithDelegation => {
+                    channel
+                        .send_text(
+                            json!({"type":"session.closed","reason":"expired","usage":{}})
+                                .to_string(),
+                        )
+                        .await
+                        .unwrap();
+                    commands.push(event);
+                    faulted = true;
+                    break;
+                }
+                Some("input_audio.pause")
+                    if matches!(
+                        fault,
+                        Fault::MissingAudioConfirmation
+                            | Fault::WrongAudioConfirmation
+                            | Fault::CloseBeforeAudioConfirmation
+                            | Fault::RejectedAudio
+                            | Fault::RejectedUnderPressure
+                    ) =>
+                {
+                    match fault {
+                        Fault::MissingAudioConfirmation => {
+                            tokio::time::sleep(std::time::Duration::from_millis(200)).await
+                        }
+                        Fault::WrongAudioConfirmation => {
+                            channel
+                                .send_text(json!({"type":"input_audio.resumed"}).to_string())
+                                .await
+                                .unwrap();
+                        }
+                        Fault::CloseBeforeAudioConfirmation => {
+                            channel.send_text(json!({"type":"session.closed","reason":"client_request","usage":{}}).to_string()).await.unwrap();
+                        }
+                        Fault::RejectedAudio | Fault::RejectedUnderPressure => {
+                            channel.send_text(json!({"type":"error","event_id":"server-error","error":{"code":"control_rejected","message":"Input control was rejected","event_id":event["event_id"],"param":"type"}}).to_string()).await.unwrap();
+                        }
+                        _ => unreachable!(),
+                    }
+                    commands.push(event);
+                    faulted = true;
+                    break;
+                }
+                Some("input_audio.pause") => {
+                    channel
+                        .send_text(json!({"type":"input_audio.paused"}).to_string())
+                        .await
+                        .unwrap();
+                }
+                Some("input_audio.resume") => {
+                    channel
+                        .send_text(json!({"type":"input_audio.resumed"}).to_string())
+                        .await
+                        .unwrap();
+                }
+                _ => (),
+            }
             let done = event["type"] == "session.close";
             commands.push(event);
             if done {
                 break;
             }
         }
-        channel.send_text(json!({"type":"session.closed","reason":"client_request","usage":{"audio_duration_ms":80}}).to_string()).await.unwrap();
+        if !faulted {
+            let reason = match fault {
+                Fault::ConnectionLostOnClose => "connection_lost",
+                Fault::ExpiredOnClose => "expired",
+                _ => "client_request",
+            };
+            channel.send_text(json!({"type":"session.closed","reason":reason,"usage":{"audio_duration_ms":80}}).to_string()).await.unwrap();
+        }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         pc.close().await.unwrap();
         rtcp.abort();

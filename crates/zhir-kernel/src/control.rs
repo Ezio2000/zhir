@@ -15,6 +15,8 @@ pub(crate) enum ControlBody {
     ReplyOperation(String, serde_json::Value),
     UpdateProfile(RequestProfile),
     InterruptOutput,
+    FlushInput,
+    SetInputAudio(bool),
     EndInput,
 }
 pub(crate) struct Control {
@@ -75,6 +77,14 @@ impl ControlHandle {
     }
     pub async fn end_input(&self) -> Result<ControlReceipt> {
         self.send(ControlBody::EndInput).await
+    }
+    /// Flush accepted input while keeping the session open.
+    pub async fn flush_input(&self) -> Result<ControlReceipt> {
+        self.send(ControlBody::FlushInput).await
+    }
+    /// Set remote audio input processing. The media port remains open.
+    pub async fn set_input_audio_enabled(&self, enabled: bool) -> Result<ControlReceipt> {
+        self.send(ControlBody::SetInputAudio(enabled)).await
     }
     /// Cancellation bypasses bounded input queues.
     pub fn cancel(&self) {

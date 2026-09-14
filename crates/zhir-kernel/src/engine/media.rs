@@ -214,18 +214,20 @@ impl Engine {
                         let reference =
                             seal_media(resources.as_ref(), &chunk, previous.get(&key).cloned())
                                 .await?;
-                        if chunk.end {
-                            previous.remove(&key);
-                        } else {
-                            // Output interruption invalidates earlier generations.
-                            previous.retain(|key, _| key.ends_with(&format!(":{}", chunk.epoch)));
-                            previous.insert(key, reference.clone());
-                        }
                         let (ack, rx) = oneshot::channel();
-                        tx.send(Work::MediaReady(chunk.clone(), reference, ack))
+                        tx.send(Work::MediaReady(chunk.clone(), reference.clone(), ack))
                             .await
                             .map_err(|_| Error::Cancelled)?;
                         if rx.await.map_err(|_| Error::Cancelled)? {
+                            // Only accepted frames may mutate the chain. A late old
+                            // epoch must not erase the current generation's links.
+                            if chunk.end {
+                                previous.remove(&key);
+                            } else {
+                                previous
+                                    .retain(|key, _| key.ends_with(&format!(":{}", chunk.epoch)));
+                                previous.insert(key, reference);
+                            }
                             output.send(chunk).await?;
                         }
                         Ok(true)

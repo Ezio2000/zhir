@@ -39,6 +39,8 @@ let completion = invocation.result().await?;
 | `cancel_operation(id)` | 取消指定 operation；最终状态由完成事件确认 |
 | `update_profile(profile)` | 按能力修订会话 profile；忙碌会话需声明 ProfileUpdates |
 | `interrupt_output()` | 原生输出打断；output_epoch 与命令在同一提交中更新，输入不失效 |
+| `flush_input()` | 需 FlushInput 能力；请求合成已缓冲输入，保持会话和输入端口开放 |
+| `set_input_audio_enabled(enabled)` | 需 InputAudioControl 能力；持久化并设置远端音频输入处理模式，媒体端口保持开放 |
 | `end_input()` | 关闭输入并排空已接收媒体，再通知模型 |
 | `cancel()` | 绕过控制队列发出整个运行的取消信号 |
 
@@ -48,7 +50,7 @@ let completion = invocation.result().await?;
 ## 模型会话与端点协议
 
 实现 core 的 Model：`capabilities()`、`negotiate(&ModelRequest)`、
-`open_session(SessionOpen)`。SessionOpen 包含稳定 session ID、恢复游标、output_epoch、
+`open_session(SessionOpen)`。SessionOpen 包含稳定 session ID、本地已提交事件序号 after_sequence、output_epoch、
 限制、初始请求、RecoveryRef 和运行上下文。打开会话只建立通道；推理由 StartTurn 发起。
 
 ModelSession 的输入/输出端口分别实现 SessionSender/SessionReceiver。输入端口必须
@@ -91,22 +93,35 @@ Token Plan Key，这个限制不属于 SDK。
 
 返回的 WebSocketModel 直接交给 Runtime::builder。需要配置 ResourceStore 来封存音频。
 使用 Interactive 模式，同时消费 media_output 和驱动 result；通过 control.input 追加
-用户文字，通过 end_input 收完尾音并结束，通过 interrupt 打断后继续输入。
+用户文字，通过 flush_input 合成已缓冲文字并继续输入，通过 end_input 收完尾音并结束，
+通过 interrupt_output 打断后继续输入。空格和换行片段按原文保留。
 [完整示例](../crates/zhir/examples/minimax_tts.rs) 演示这些端口的组合。
 
-StartTurn 只合成请求中最后一条 User 文本，不把整个历史读出来。当前输出为 MP3，
-每句使用独立 stream_id，sequence 从零开始，end 结束该句。消费者按 stream_id/epoch
-分别处理，不能直接拼接多个 MP3 容器；被中断的句子可以不完整。
+StartTurn 只合成请求中最后一条 User 文本，不把整个历史读出来。AudioSettings.format
+可选择 MP3、PCM、FLAC、WAV、原始/WAV μ-law，默认 MP3。μ-law 需要 8 kHz。
+文档中的 Ogg/Opus 在当前 Token Plan 实测返回缺少音频或截尾的容器，因此没有加入生产配置。
 
-connection 配置完整 WebSocket URL、建连/写超时、心跳间隔和消息大小上限。
+每句使用独立 stream_id，sequence 从零开始，end 结束该句。消费者按 stream_id/epoch
+分别处理，独立解码完整容器；被中断的句子可以不完整。
+PCM 的 media_type 明确 s16le、采样率和声道。
+流式 WAV 的 RIFF/data 长度未知，宿主导出可寻址文件时须在 end 后补齐长度，SDK 保留原始流。
+
+connection 配置完整 WebSocket URL、建连/写超时、command_timeout、心跳间隔和消息大小上限。
+启动、flush、取消和结束确认各有独立于心跳活动的等待期限。language_boost 与
+pronunciation_dictionary、情绪、英文归一化、公式朗读、音色混合、语音效果、字幕粒度和
+continuous_sound 都是 TtsConfig 的供应商参数。效果处理仅适用于流式 MP3；公式朗读
+需要显式 Chinese；音色混合使用空 voice_id 和 1–4 个 timbre_weights。
+服务端返回的格式、采样率或声道与请求不一致时失败，不错误标注音频。
+字幕原始字段作为 ProtocolEvent 交付，不凭空构造时间戳。
 CredentialProvider 的 audience 是连接 URL；`header:` metadata 用于额外账号头，
 不能覆盖握手控制头。建连 401 只刷新一次，凭据解析也受建连超时与运行截止时间约束。
 连接中断不会重发文本。服务端队列拒绝且无法关联具体输入时，报告 Uncertain。
 
 该模型支持文本输入、音频输出、Steering 和 Streaming，不提供麦克风输入、工具、
-运行中 profile 更新、断线恢复或显式 task_flush。声音参数通过 TtsConfig 设置；
+运行中 profile 更新或断线恢复。声音参数通过 TtsConfig 设置；
 不支持的 generation/extension 参数会被拒绝。Input 确认只表示适配器已发送文字，
-取消和任务完成则分别等待远端 task_canceled / task_finished。
+flush、取消和任务完成分别等待远端 task_flushed / task_canceled / task_finished。
+协议观察通过原生 SessionReceiver 的 Delta 输出，完成元数据保留最新 extra_info。
 
 ## 同步与异步工具
 
@@ -256,3 +271,42 @@ JsonOutput<T>（`typed-output`）从同一 Schema 构造请求格式并验证最
 发送可持久化进度，`Finished { outcome: OperationOutcome }` 提交最终结果。
 这条路径复用操作身份、并发预算、取消、恢复与结果提交，不需要注册同名函数工具。
 模型提供方的委托、RuntimeTool、ProviderToolCall 是三个明确的语义。
+
+
+Live 的 `set_input_audio_enabled(false/true)` 对应订阅端 `input_audio.pause/resume`，
+适配器等待 `input_audio.paused/resumed` 后确认。它控制远端音频输入处理，保持本地
+媒体端口开放，不推进输出代次。结束时保留远端会话 ID、启动元数据和原生 usage。
+DataChannel 与 RTP 使用独立有界队列；音频背压不会阻断控制确认。
+事件出口暂满时也继续处理远端确认；待投递事件达到上限时明确报告容量错误。
+Live 输出的 `max_buffered_media_bytes` 按实际负载字节计费，同一份预算贯穿 RTP
+接收、待投递输出和媒体端口，消费后释放；输入使用另一份预算。每个方向另有
+4096 块上限，空结束标记只占块数。事件队列容量与最大单块大小不决定音频包数。
+RTP 无法保证向远端施加背压，超出接收预算会以 Uncertain 终止。
+直接使用 ModelSession 时，EndInput 同样关闭媒体输入准入并排空已接收包；
+Close 在收到远端确认、排空接收数据后结束事件端口，无需再次发送 Close。
+
+Live 在原 PeerConnection 短暂 Disconnected 后，按 `LiveConfig.reconnect_timeout`
+等待连接恢复，默认 10 秒；期间暂停新的发送，已有命令的确认期限不延长，不重发已发送命令。
+这条路径有真实 UDP 断流成功记录，也曾触发固定确认期限而进入 RecoveryRequired，
+不能宣称网络故障下始终恢复成功。程序 InterruptOutput 和连接销毁/进程重启后的会话恢复
+尚未实现；已实测的控制命令被拒绝，侧带重连没有恢复主媒体通道，fork 被账号访问控制拒绝。公开 Live 的 fork 派生新会话，
+不能直接代替原连接和未确认命令的恢复。当前订阅入口拒绝公开 API 的 store 参数；
+这不等于 GPT-Live 服务端没有存储或恢复能力。详见模型 crate 的
+[已实现能力与限制](../crates/zhir-models/README.md#gpt-live)。
+
+这两种适配器的职责与剩余边界如下；不能通过扩充核心枚举来补出远端没有确认过的行为。
+
+| 范围 | 归属 | 当前实现与边界 |
+| --- | --- | --- |
+| 控制、恢复引用、能力协商 | core 定义契约，kernel 持久化命令与执行状态 | FlushInput、InputAudioControl、InterruptOutput、恢复处置和输出 epoch 共用同一执行路径 |
+| 有界端口、背压、旧 epoch 过滤、终止交付、确认期限 | models 的 native 共享实现 | Live 与 MiniMax 共用；超时保留所等事件及命令，供应商负责匹配回执 |
+| 合成格式与声音参数 | MiniMax 适配器 | 六种格式及当前 task_start 参数已接入；Ogg/Opus 实测截尾，未声明支持；动态改声没有对应的已文档化 bidi 命令，session_id 仅用于关联 |
+| 双向 Opus/RTP、输入启停、转录、client delegation | Live 适配器 | 已接入；暂时断网只等待原 PeerConnection 恢复，不创建另一条会话 |
+| 程序输出打断、销毁连接后恢复 | Live 适配器依赖的订阅协议 | 探测命令被拒绝；侧带可重连但未恢复主媒体通道和 outbox，fork 被访问控制拒绝，未声明支持 |
+| 直接 RuntimeTools 与后台 profile 更新 | Live Responses delegation | OAuth 创建成功，但 response.create 在服务端解析后台地址失败；没有保留无法验证的生产实现分支 |
+| 图片、结构化结果、推理模型配置 | 处理 client delegation 的后台模型 | 属于后台模型的能力，不转换成 Live 语音前端的同名能力 |
+| 播放设备、解码、WAV 文件封口 | 宿主应用 | 媒体按 stream/epoch 消费；设备缓冲由宿主清理，文件导出不改写已提交媒体 |
+
+供应商依据：[MiniMax bidi](https://platform.minimax.io/docs/api-reference/speech-t2a-websocket-bidi)、
+[Live delegation](https://developers.openai.com/api/docs/guides/live-delegation)。
+真实账号限制与成功记录见 ignored `test-results/native-support/`，不是所有账号的能力保证。

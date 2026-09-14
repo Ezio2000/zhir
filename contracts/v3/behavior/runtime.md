@@ -83,7 +83,8 @@ implementations belong to testing modules and are not exported by production cra
 
 18. A control receipt confirms the committed intent revision, not remote execution.
     Running profile changes require ProfileUpdates; idle turn-protocol changes apply
-    locally for the next turn. InterruptOutput commits the new output epoch with its command.
+    locally for the next turn. InterruptOutput commits and carries the new output epoch
+    with its command. The adapter uses that epoch after its verified remote boundary.
     EndInput closes media admission, drains accepted chunks, then sends the command.
     Task and Interactive modes have explicit completion boundaries.
 19. ResourceRef carries Inline bytes, URL, Stored key or Provider reference, separately
@@ -100,8 +101,11 @@ implementations belong to testing modules and are not exported by production cra
     bytes to 16 MiB per direction. Observer capacity defaults to 256. Configured
     limits are validated before channel/worker creation.
 22. Observer events can be lost; ObservationGap reports loss when capacity returns.
-    Committed checkpoint state is the durable source of truth. Media uses awaited
-    backpressure and cannot be dropped as observation overflow.
+    Committed checkpoint state is the durable source of truth. SDK media sends use
+    awaited backpressure and cannot be dropped as observation overflow. Adapters
+    document additional transport packet limits. Datagram ingress that cannot apply
+    remote backpressure reports an uncertain failure when its receive budget is
+    exhausted; it does not silently discard accepted media as observation overflow.
 23. One monotonic execution deadline includes catalog/model establishment and active
     work. Commit timeout is a separate bounded write budget. Model-turn/tool-call/
     token limits use committed metrics. Drop of an invocation or unfinished observer
@@ -144,3 +148,14 @@ payload on subsequent turns.
     Input epoch is zero. Ended streams leave active.media and remain reachable through
     immutable ArchivedMedia nodes; output interruption archives its unfinished streams
     with complete=false. A stream identity cannot resume after end in the same epoch.
+
+30. FlushInput requires FlushInput capability. It keeps input admission open, drains
+    accepted media input before dispatch, and asks the adapter to materialize buffered
+    input. Acknowledgement confirms its remote flush boundary, not completed playback.
+31. SetInputAudio requires InputAudioControl capability. Kernel commits the requested
+    input_audio_enabled value and outbox intent together. The adapter acknowledges the
+    remote mode transition. Audio admission stays open; output epochs are unchanged.
+32. Native adapters share bounded ports and independent terminal settlement in models.
+    Output pressure must not block command dispatch or acknowledgement timers. Retired
+    output epochs are filtered at both adapter and kernel queues; rejected late chunks
+    cannot remove the accepted epoch’s media-manifest predecessor.

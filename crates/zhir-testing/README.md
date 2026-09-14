@@ -20,11 +20,11 @@ SDK feature names forward to zhir for feature-specific tests. Release verificati
 ## MiniMax TTS integration tests
 
 `tests/minimax_tts.rs` exercises the production `models::minimax::tts` adapter through
-the public SDK facade. The unchanged kernel owns execution, interrupt epochs, media
+the public SDK facade. The kernel owns execution, interrupt epochs, media
 backpressure, resource sealing and checkpoint commits. Only text Input and audio
 output are exposed; microphone input, model tools, profile updates and transport
 recovery are not advertised. The test observer records events without implementing
-any provider protocol.
+any provider protocol, consuming the native SessionReceiver rather than installing a DeltaSink.
 
 Run deterministic local WebSocket tests without credentials:
 
@@ -33,7 +33,8 @@ cargo test -p zhir-testing --no-default-features --features minimax --locked --t
 ```
 
 They check fragment `is_final` versus session completion, flushing trailing text on
-EndInput, interruption without another remote start, old-epoch frames arriving
+EndInput and explicit FlushInput, preserved whitespace fragments, protocol receipt
+deadlines, interruption without another remote start, old-epoch frames arriving
 before cancellation acknowledgement, uncertain disconnects and invalid audio. A
 slow consumer drains a 76-byte burst through an 8-byte kernel media budget.
 Delivered chunks are checked against already committed manifests and stored bytes;
@@ -44,12 +45,20 @@ requests and rejected recovery cursors. Review regressions cover both API-key
 forms through the same handshake, terminal errors with a full event queue, malformed
 field types and missing/duplicate sentence boundaries.
 Each sentence is a separate media stream with its own sequence and end marker:
-MiniMax returns independent MP3 containers, which must not be concatenated into
-one MP3 file. Fragment `is_final` does not close the sentence.
+MiniMax returns independent sentence containers, which must be decoded separately. Fragment `is_final` does not close the sentence.
 
-The ignored live test runs two short syntheses (drain, then interrupt/continue),
+The ignored live test runs 18 short syntheses: drain, interrupt/continue and
+flush/continue for each of six formats (MP3, PCM, WAV, FLAC, raw/WAV μ-law),
 consuming the caller's MiniMax quota. It defaults to `speech-2.8-hd` and the domestic
-`/ws/v1/t2a_v2_bidi` endpoint. With an environment-provided `MINIMAX_API_KEY`:
+`/ws/v1/t2a_v2_bidi` endpoint. It requires host `ffmpeg` and decodes every complete
+stream with strict error handling. MP3 cases also send mixed voices, emotion,
+normalization, formula reading, effects, subtitles and continuous inference.
+Parameter acceptance and decodability do not establish perceptual effects or
+subtitle availability when the provider omits subtitle data.
+Case starts are spaced 15 seconds apart to limit RPM, so the matrix takes about
+four and a half minutes. WAV exports finalize the stream header's unknown lengths; original
+wire bytes remain alongside each export as `.stream` files.
+With an environment-provided `MINIMAX_API_KEY`:
 
 ```sh
 cargo test -p zhir-testing --no-default-features --features minimax --locked --test minimax_tts live_minimax_tts_session -- --ignored --exact --nocapture
@@ -65,12 +74,38 @@ The launcher opens cc-switch read-only and passes the credential only in the chi
 environment. It does not switch providers, copy configuration or log the key.
 `MINIMAX_TTS_MODEL` overrides the voice model. Direct test invocation also accepts
 `MINIMAX_TTS_URL`. Audio and JSON evidence go to ignored `test-results/minimax-tts/`.
-The JSON lists one MP3 per sentence and whether it completed; an interrupted
-sentence can contain a partial container. Decode complete files individually
-with `ffmpeg -xerror -v error -i <file.mp3> -f null -`.
+The JSON lists one file per sentence, its format and whether it completed; an
+interrupted sentence can contain a partial container. The test automatically
+decodes complete files, supplying raw PCM/μ-law parameters when required.
 Timing is observational, with no latency/SLA assertion. These tests do not prove
 audio-input duplex, reconnect/resume, real OAuth login/refresh endpoints, high-load behavior or perceptual
 speech quality. Input acknowledgement means adapter acceptance: the service has no
 per-text command acknowledgement or persisted replay cursor.
 
-Protocol reference: [MiniMax bidirectional streaming TTS](https://platform.minimax.cn/docs/api-reference/speech-t2a-websocket-bidi).
+Protocol reference: [MiniMax bidirectional streaming TTS](https://platform.minimax.io/docs/api-reference/speech-t2a-websocket-bidi).
+
+The documented Ogg/Opus format is not advertised by the production configuration:
+the tested subscription returned incomplete containers. Reproduce the boundary
+with the explicit diagnostic (four synthesis requests; not a feature acceptance test):
+
+```sh
+uv run crates/zhir-testing/scripts/minimax_opus_probe.py --output test-results/minimax-opus-probe
+```
+
+It preserves sentence files, Ogg page flags/granules, provider duration metadata
+and errors. A successful task_finished or decodable prefix is insufficient: an
+absent end page or header-only sentence cannot establish complete audio.
+
+## Live subscription verification
+
+`tests/gpt_live.rs` exercises the adapter through native ports and the Runtime,
+including control confirmation, media pressure, provider rejection details and
+uncertain closure. Its ignored OAuth cases cover real spoken input and an eight
+second blackout of the original WebRTC connection.
+
+`scripts/live_probe.py` orchestrates `tests/live_subscription_probe.rs` as a separate
+media process. It probes output controls during speech, sideband reattachment,
+explicit peer destruction, SIGKILL and fork access using a saved remote call ID.
+See [testing instructions](../../docs/testing.md) for the invocation and evidence
+format. Probe completion does not assert support for interruption or checkpoint
+recovery; successful controls and rejected operations remain distinct in the report.
