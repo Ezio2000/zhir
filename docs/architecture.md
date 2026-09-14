@@ -27,7 +27,7 @@ core       -> no other zhir crate
 - **Kernel** owns the only run state machine and checkpoint commit path. It receives
   model sessions, tool bindings, policies and stores through core ports. It does not
   decode provider wire formats, refresh credentials or own provider model catalogs.
-- **Models** implements turn-protocol sessions, transformations, concurrency,
+- **Models** implements turn-protocol and native WebSocket sessions, transformations, concurrency,
   establishment retry/fallback, credential providers and resource normalization.
   **Tools** owns immutable catalog snapshots, binding, schema validation and tool
   decorators. Neither depends on storage or the other adapter crate.
@@ -59,7 +59,11 @@ tools can start before TurnFinished when the session permits it.
 FunctionModel and the HTTP Chat/Responses/Messages adapters implement the same
 session interface over turn exchanges. They reject unsupported duplex, steering,
 resume and asynchronous-result capabilities. Native transports implement the core
-session ports directly. No second `invoke` or stream runtime is retained.
+session ports directly. The `minimax` feature provides text-input/audio-output TTS:
+websocket.rs owns bounded ports and connection lifetime, transport/websocket.rs owns
+framing and handshake authentication, and codec/streaming retain MiniMax task and
+sentence semantics. Provider protocol phases do not advance runs or commit storage.
+HTTP-only codec/streaming helpers remain feature-isolated. No second `invoke` or stream runtime is retained.
 
 RetryingModel retries establishment only. FallbackModel negotiates candidates
 independently, binds the selected session and wraps recovery references with a
@@ -133,7 +137,7 @@ has no account, OAuth callback, browser login, subscription or token-plan logic.
 ## Product and language boundaries
 
 A future development platform builds on these contracts: account/OAuth login,
-endpoint/model discovery, MiniMax task transports, native realtime clients, media
+endpoint/model discovery, additional video/task transports, native realtime clients, media
 rendering, IDE surfaces, billing, remote workers and artifact retention belong in
 product or adapter packages. Adding a video tool to an OpenAI-driven agent uses a
 RuntimeTool operation; a model service's own video job uses a provider operation.
@@ -142,8 +146,9 @@ Neither requires changing core solely to recognize a provider name.
 The five motivating cases are covered as extension seams: rich model sessions and
 provider tools; cross-provider video/voice operations; injected OAuth-style refreshed
 credentials; explicit low-latency/original-fidelity intent; and native duplex media.
-Synthetic fixtures establish these seams, not the current capabilities, entitlement
-or behavior of OpenAI Astra, Codex OAuth or MiniMax online services.
+Synthetic fixtures establish these seams, not provider entitlement or online behavior.
+The explicit MiniMax live test separately checks TTS drain and interrupt/continue;
+it does not establish video support, audio input, transport recovery or load guarantees.
 
 A language binding wraps core values and the SDK invocation/control interfaces. It
 must use v2 DTOs and preserve identities, revisions, cancellation and backpressure.

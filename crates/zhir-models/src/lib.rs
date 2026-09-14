@@ -1,7 +1,8 @@
 //! Protocol-specific model adapters and model composition.
 //!
 //! User policies belong in [`ProtocolExtension`], created per invocation with
-//! `HttpModel::with_extension`. Protocol capabilities are defaults, not model
+//! `HttpModel::with_extension` for HTTP protocols. MiniMax TTS uses its typed config.
+//! Protocol capabilities are defaults, not model
 //! discovery; use `HttpModel::with_capabilities` for the selected endpoint.
 //!
 //! Responses retain their envelope in `provider_data = {protocol, response}`.
@@ -14,11 +15,6 @@
 #[cfg(feature = "anthropic")]
 pub mod anthropic;
 pub mod capabilities;
-#[cfg(any(
-    feature = "openai-chat",
-    feature = "openai-responses",
-    feature = "anthropic"
-))]
 mod codec;
 pub mod credentials;
 pub mod decorators;
@@ -36,11 +32,6 @@ pub use function::{FunctionDeltaSink, FunctionModel};
 pub use transform::TransformModel;
 #[cfg(any(feature = "openai-chat", feature = "openai-responses"))]
 pub mod openai;
-#[cfg(any(
-    feature = "openai-chat",
-    feature = "openai-responses",
-    feature = "anthropic"
-))]
 mod streaming;
 pub mod transport;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,3 +58,10 @@ pub mod profiles;
     feature = "anthropic"
 ))]
 pub use http::{HttpModel, ModelConfig};
+
+#[cfg(feature = "minimax")]
+pub mod minimax;
+#[cfg(feature = "minimax")]
+mod websocket;
+#[cfg(feature = "minimax")]
+pub use websocket::{WebSocketConfig, WebSocketModel};

@@ -5,7 +5,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "OpenAI and Anthropic protocol adapters for zhir"
+description = "HTTP and WebSocket model protocol adapters for zhir"
 
 [lints]
 workspace = true
@@ -20,8 +20,10 @@ sha2.workspace = true
 tokio.workspace = true
 reqwest = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
+tokio-tungstenite = { version = "0.30", optional = true, features = ["rustls-tls-native-roots"] }
 
 [features]
+minimax = ["dep:tokio-tungstenite", "dep:futures"]
 default = []
 openai-chat = ["dep:reqwest", "dep:futures"]
 openai-responses = ["dep:reqwest", "dep:futures"]
