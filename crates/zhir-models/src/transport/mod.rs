@@ -90,3 +90,6 @@ impl SseDecoder {
         Ok(Vec::new())
     }
 }
+
+#[cfg(feature = "minimax")]
+pub(crate) mod websocket;

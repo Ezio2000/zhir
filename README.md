@@ -56,7 +56,7 @@ if let RunOutcome::Completed(content) = result.outcome() {
 # }
 ```
 
-默认 feature 为空，只引入 core 与 kernel。按需启用 `policies`、`tools`、`typed-tools`、`typed-output`、`models`、`filesystem`、`shell`、`interaction`、`agent`、`agent-runtime`、`openai-chat`、`openai-responses`、`anthropic`、`memory`、`sqlite`、`mysql`、`redis`、`resources-filesystem`。
+默认 feature 为空，只引入 core 与 kernel。按需启用 `policies`、`tools`、`typed-tools`、`typed-output`、`models`、`filesystem`、`shell`、`interaction`、`agent`、`agent-runtime`、`openai-chat`、`openai-responses`、`anthropic`、`minimax`、`memory`、`sqlite`、`mysql`、`redis`、`resources-filesystem`。
 
 模型统一实现 `Model::open_session`。应用工具统一实现 `RuntimeTool::start/recover`，返回最终结果或可恢复的 `OperationHandle`。服务端工具仍由模型适配器执行，kernel 记录其 operation；两种执行归属不会混淆。
 

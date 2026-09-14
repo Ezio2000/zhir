@@ -9,5 +9,7 @@ over the same kernel, not another runtime.
 See the workspace README and docs/developer-api.md for composition, explicit
 recovery, credential injection and media streams. Offline examples: custom_tool
 (features models,typed-tools) and resume (features models,interaction,memory).
+The minimax_tts example (features minimax,memory) performs a live synthesis with
+MINIMAX_API_KEY and consumes quota.
 
 Part of the zhir workspace, version 0.2.0.

@@ -19,6 +19,7 @@ tokio = { workspace = true, features = ["net", "io-util"] }
 serde_json.workspace = true
 
 [features]
+minimax = ["zhir/minimax"]
 default = []
 http = []
 typed-output = ["zhir/typed-output"]
@@ -68,7 +69,12 @@ schemars.workspace = true
 tempfile.workspace = true
 reqwest = { workspace = true, features = ["multipart"] }
 base64 = "0.22"
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
 
 [[test]]
 name = "live_protocols"
 required-features = ["tools", "openai-chat", "openai-responses", "anthropic"]
+
+[[test]]
+name = "minimax_tts"
+required-features = ["minimax"]

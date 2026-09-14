@@ -31,6 +31,7 @@ cargo run -p zhir-conformance --bin schemas --locked -- --check
 | `session_recovery` | 未确认 outbox 不重发、竞争恢复 CAS、跨轮 provider 完成、重复/冲突完成、双向流、中断及 EndInput |
 | `runtime_deadlines` | catalog/model 建立阶段截止时间、未确认 commit 超时 |
 | `refactoring` | provider operation 结算后的跨轮 replay 与 wire 往返、4096 项历史合并顺序、虚拟时钟下有界并发取消及统一退出预算 |
+| `minimax_tts`（feature `minimax`） | 生产 WebSocket TTS：分句封存、中断、尾音、背压、凭据刷新与连接生命周期；ignored 测试访问真实服务 |
 | `models_*` | 请求与流协议、Unicode/分片、回放、装饰器、资源预算、会话资源输入 |
 | `profiles_credentials` | required/preferred、fast/original 映射、Unknown、401 刷新与账号头 |
 | `tools_*`、`policies_*` | 工具 Schema、Active 最终校验、重试/熔断与历史策略 |
@@ -49,8 +50,10 @@ cargo run -p zhir-conformance --bin schemas --locked -- --check
 cargo check -p zhir-core --no-default-features --locked
 cargo check -p zhir-testing --no-default-features --locked
 cargo check -p zhir-testing --no-default-features --features http --locked
+cargo check -p zhir-models --no-default-features --features minimax --locked
+cargo test -p zhir-testing --no-default-features --features minimax --test minimax_tts --locked
 cargo check -p zhir --no-default-features --locked
-for feature in policies tools typed-tools typed-output models filesystem shell interaction agent agent-runtime openai-chat openai-responses anthropic memory sqlite mysql redis resources-filesystem; do
+for feature in policies tools typed-tools typed-output models filesystem shell interaction agent agent-runtime openai-chat openai-responses anthropic minimax memory sqlite mysql redis resources-filesystem; do
   cargo check -p zhir --no-default-features --features "$feature" --locked || exit 1
 done
 cargo run -p zhir --no-default-features --example custom_tool --features models,typed-tools
@@ -62,7 +65,8 @@ uv run conformance/package.py
 manifest 和 lockfile 均没有测试代码或测试包依赖。`zhir-testing` 与 `conformance` 都不发布。
 `publish = false` 不代替打包选择；不要用不带排除项的 `cargo package --workspace`。
 脚本每次生成独立临时 target-dir，防止同版本 registry 复用旧源码；结束后自动清理。
-无网络验证可使用 `uv run conformance/package.py --offline`。
+无网络验证可使用 `uv run conformance/package.py --offline`；新增可选协议后使用
+`uv run conformance/package.py --offline --all-features` 同时编译归档中的可选实现。
 消费者最小 feature 测试运行在 `zhir-testing`，同名 feature 转发到 SDK；CI 保留这些检查。
 示例仍在 `zhir/examples`，生产归档仅允许 src、examples、manifest、README 和 LICENSE（以及 Cargo 生成的元数据）。
 
@@ -97,7 +101,7 @@ SQL 数据库必须是当前格式或空库，Redis namespace 必须是当前格
 
 普通测试只访问本地夹具；带 ignored 的模型测试需要凭据并会产生费用。
 现有线上测试使用 DEEPSEEK_API_KEY，测试自己的端点扩展映射；它们不是 OpenAI Astra、
-Codex OAuth 或 MiniMax 视频/语音的线上验收。
+Codex OAuth 或 MiniMax 视频的线上验收。MiniMax 语音由独立的显式测试验证。
 
 | target | ignored 测试 | 报告路径环境变量 |
 | --- | --- | --- |
@@ -113,7 +117,11 @@ ZHIR_DEVELOPER_REPORT="$PWD/test-results/developer-live.json" \
   cargo test -p zhir-testing --all-features --test scenario_scale live_developer_api -- --ignored --nocapture
 ```
 
+MiniMax 的复现命令、cc-switch 启动脚本和音频证据说明见
+[zhir-testing README](../crates/zhir-testing/README.md#minimax-tts-integration-tests)。
+真实 TTS 测试验证连续输入收尾及同任务中断后继续；不验证断线恢复或音频输入。
+
 五类需求的本地验收分别验证：丰富模型/服务端工具扩展、跨服务 runtime operation、
 OAuth 风格刷新与账号头、显式低延迟/原图要求、原生音视频双向流。它们证明 SDK 接口与
 执行语义，不证明任何账号的 token plan 权益、具体模型的最新全部能力或媒体生成质量。
-实际登录流程、WebSocket/WebRTC、供应商后台任务 API 和模型目录由独立接入层补充。
+实际登录流程、其他 WebSocket/WebRTC 协议、供应商后台任务 API 和模型目录由相应接入层补充。

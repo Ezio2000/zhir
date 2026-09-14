@@ -42,6 +42,7 @@ def verify_archive(path: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--offline", action="store_true")
+    parser.add_argument("--all-features", action="store_true")
     args = parser.parse_args()
     metadata = json.loads(subprocess.check_output(
         ["cargo", "metadata", "--no-deps", "--locked", "--format-version", "1"], cwd=ROOT,
@@ -58,6 +59,8 @@ def main() -> None:
             command.extend(["-p", package])
         if args.offline:
             command.append("--offline")
+        if args.all_features:
+            command.append("--all-features")
         subprocess.run(command, cwd=ROOT, check=True)
         archives = list((Path(target) / "package").glob("*.crate"))
         if len(archives) != len(PACKAGES):

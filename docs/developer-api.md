@@ -69,6 +69,45 @@ CapabilitySet 只描述协议默认能力，实际端点能力应显式提供。
 `ExtensionChain` 组合多个扩展。服务端工具通过 ProviderToolAdapter 绑定具体协议项，
 声明识别、状态、输出与原生回放位置。未知的原生工具项必须有明确归属。
 
+## MiniMax 双向 TTS
+
+启用 `minimax` feature，使用独立的 TtsConfig；不需要启用 HTTP 协议 feature。
+
+```rust
+use std::sync::Arc;
+use zhir::models::{credentials::StaticCredential, minimax::tts::{self, TtsConfig}};
+
+let credentials = Arc::new(StaticCredential::new("Bearer", api_key));
+let mut config = TtsConfig::new("speech-2.8-hd", "male-qn-qingse", credentials);
+config.voice.speed = 1.0;
+let model = tts::model(config)?;
+```
+
+api_key 可使用普通按量 API Key 或 Token Plan Key：二者走相同的 Bearer 鉴权，
+SDK 不检查 Key 前缀、不选择计费模式，也不会在额度耗尽时切换另一把 Key。
+权限与计费由 MiniMax 服务端判断。当前线上验收使用 Token Plan Key；普通 API Key
+覆盖了本地握手测试，尚未验证真实按量计费。测试目录的 cc-switch 启动脚本只读取
+Token Plan Key，这个限制不属于 SDK。
+
+返回的 WebSocketModel 直接交给 Runtime::builder。需要配置 ResourceStore 来封存音频。
+使用 Interactive 模式，同时消费 media_output 和驱动 result；通过 control.input 追加
+用户文字，通过 end_input 收完尾音并结束，通过 interrupt 打断后继续输入。
+[完整示例](../crates/zhir/examples/minimax_tts.rs) 演示这些端口的组合。
+
+StartTurn 只合成请求中最后一条 User 文本，不把整个历史读出来。当前输出为 MP3，
+每句使用独立 stream_id，sequence 从零开始，end 结束该句。消费者按 stream_id/epoch
+分别处理，不能直接拼接多个 MP3 容器；被中断的句子可以不完整。
+
+connection 配置完整 WebSocket URL、建连/写超时、心跳间隔和消息大小上限。
+CredentialProvider 的 audience 是连接 URL；`header:` metadata 用于额外账号头，
+不能覆盖握手控制头。建连 401 只刷新一次，凭据解析也受建连超时与运行截止时间约束。
+连接中断不会重发文本。服务端队列拒绝且无法关联具体输入时，报告 Uncertain。
+
+该模型支持文本输入、音频输出、Steering 和 Streaming，不提供麦克风输入、工具、
+运行中 profile 更新、断线恢复或显式 task_flush。声音参数通过 TtsConfig 设置；
+不支持的 generation/extension 参数会被拒绝。Input 确认只表示适配器已发送文字，
+取消和任务完成则分别等待远端 task_canceled / task_finished。
+
 ## 同步与异步工具
 
 RuntimeTool 是唯一可执行工具接口，`start(call, context)` 和
