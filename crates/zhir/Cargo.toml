@@ -26,6 +26,7 @@ schemars = { workspace = true, optional = true }
 jsonschema = { workspace = true, optional = true }
 
 [features]
+openai-live = ["models", "zhir-models/openai-live"]
 minimax = ["models", "zhir-models/minimax"]
 default = []
 typed-output = ["dep:schemars", "dep:jsonschema"]
@@ -66,3 +67,7 @@ required-features = ["models", "interaction", "memory"]
 [[example]]
 name = "minimax_tts"
 required-features = ["minimax", "memory"]
+
+[[example]]
+name = "gpt_live"
+required-features = ["openai-live", "memory"]

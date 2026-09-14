@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "name": "waiting_operation_is_unfinished",
   "kind": "runtime",
   "case": {

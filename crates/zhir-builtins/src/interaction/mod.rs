@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use zhir_core::operation::OperationOutcome;
 use zhir_core::{
     BoxFuture, Result, error::Error, message::Content, operation::*, run::Checkpoint, tool::*,
 };
@@ -36,7 +37,7 @@ pub fn ask_question() -> Result<Arc<dyn RuntimeTool>> {
         ),
     }))
 }
-fn answers(questions: &[Question], value: Value) -> Result<RuntimeToolOutcome> {
+fn answers(questions: &[Question], value: Value) -> Result<OperationOutcome> {
     let object = value
         .as_object()
         .ok_or_else(|| Error::Invalid("answers must be keyed by question identity".into()))?;
@@ -45,20 +46,20 @@ fn answers(questions: &[Question], value: Value) -> Result<RuntimeToolOutcome> {
             "answers do not match the requested questions".into(),
         ));
     }
-    Ok(RuntimeToolOutcome::Success {
+    Ok(OperationOutcome::Success {
         content: vec![Content::text(value.to_string())],
         structured: value,
     })
 }
 struct Input {
     questions: Vec<Question>,
-    sender: mpsc::Sender<RuntimeToolOutcome>,
+    sender: mpsc::Sender<OperationOutcome>,
 }
 impl OperationControl for Input {
     fn cancel(&self) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
             self.sender
-                .send(RuntimeToolOutcome::Cancelled {
+                .send(OperationOutcome::Cancelled {
                     reason: "question cancelled".into(),
                 })
                 .await
@@ -77,7 +78,7 @@ impl OperationControl for Input {
 struct Events {
     initial: Option<OperationUpdate>,
     sequence: u64,
-    receiver: mpsc::Receiver<RuntimeToolOutcome>,
+    receiver: mpsc::Receiver<OperationOutcome>,
     finished: bool,
 }
 impl OperationEvents for Events {

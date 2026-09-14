@@ -124,11 +124,11 @@ impl Probe {
             self.armed = false;
         }
     }
-    fn outcome(&mut self, outcome: &zhir_core::tool::RuntimeToolOutcome) {
+    fn outcome(&mut self, outcome: &zhir_core::operation::OperationOutcome) {
         self.settle(match outcome {
-            zhir_core::tool::RuntimeToolOutcome::Success { .. } => Some(false),
-            zhir_core::tool::RuntimeToolOutcome::Failure { .. } => Some(true),
-            zhir_core::tool::RuntimeToolOutcome::Cancelled { .. } => None,
+            zhir_core::operation::OperationOutcome::Success { .. } => Some(false),
+            zhir_core::operation::OperationOutcome::Failure { .. } => Some(true),
+            zhir_core::operation::OperationOutcome::Cancelled { .. } => None,
         });
     }
     fn execution(mut self, result: Result<ToolExecution>) -> Result<ToolExecution> {

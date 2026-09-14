@@ -915,7 +915,7 @@ fn complete_wait(
             .unwrap()
             .id
             .clone(),
-        outcome: zhir::tool::RuntimeToolOutcome::Success {
+        outcome: zhir::operation::OperationOutcome::Success {
             content: vec![],
             structured,
         },

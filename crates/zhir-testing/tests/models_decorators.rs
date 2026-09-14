@@ -476,7 +476,7 @@ async fn fallback_recovery_uses_stable_identity_after_candidate_reordering() {
     let mut open = SessionOpen {
         session_id: "session".into(),
         after_sequence: None,
-        epoch: 0,
+        output_epoch: 0,
         limits: zhir_kernel::defaults::limits(),
         request: request(),
         recovery: None,
@@ -518,7 +518,7 @@ async fn session_concurrency_lease_survives_cloned_command_port() {
     let open = SessionOpen {
         session_id: "session".into(),
         after_sequence: None,
-        epoch: 0,
+        output_epoch: 0,
         limits: zhir_kernel::defaults::limits(),
         request: request(),
         recovery: None,

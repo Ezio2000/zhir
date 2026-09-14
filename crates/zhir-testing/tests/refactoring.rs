@@ -6,16 +6,14 @@ use std::{
     },
     time::Duration,
 };
+use zhir_core::operation::OperationOutcome;
 use zhir_core::{
     BoxFuture, Result,
     message::{Content, Message, Output, ProviderToolCall, ProviderToolStatus},
     model::{Capability, SessionCommandBody, SessionEventBody, TurnDisposition, conversation},
     operation::{CallRef, OperationControl, OperationEvent, OperationUpdate, ToolExecution},
     run::{HistoryEntry, State},
-    tool::{
-        Execution, InputSpec, RuntimeToolCall, RuntimeToolInput, RuntimeToolOutcome,
-        RuntimeToolSpec,
-    },
+    tool::{Execution, InputSpec, RuntimeToolCall, RuntimeToolInput, RuntimeToolSpec},
 };
 use zhir_kernel::{RunRequest, Runtime};
 use zhir_models::provider_tools::ProviderOutput;
@@ -24,14 +22,14 @@ use zhir_testing::{RecordingStore, SessionModel};
 #[tokio::test]
 async fn settled_provider_replay_survives_next_turn_and_checkpoint_roundtrip() {
     let outcomes = [
-        RuntimeToolOutcome::Success {
+        OperationOutcome::Success {
             content: vec![Content::text("done")],
             structured: json!({"receipt":42}),
         },
-        RuntimeToolOutcome::Failure {
+        OperationOutcome::Failure {
             error: zhir_core::error::Failure::new("remote", "failed"),
         },
-        RuntimeToolOutcome::Cancelled {
+        OperationOutcome::Cancelled {
             reason: "user cancelled".into(),
         },
     ];
@@ -317,7 +315,7 @@ async fn cleanup_uses_one_budget_and_bounded_concurrent_cancellation() {
         .build()
         .unwrap();
     let limits = zhir_core::run::Limits {
-        max_runtime_tool_concurrency: 4,
+        max_operation_concurrency: 4,
         ..zhir_kernel::defaults::limits()
     };
     let mut invocation = runtime

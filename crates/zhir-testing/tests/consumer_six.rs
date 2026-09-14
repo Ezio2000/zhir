@@ -169,7 +169,7 @@ async fn consumer_transcripts_and_typed_review_compose_without_production_change
                     ResumeRequest::from_ticket(ticket)
                         .resolve(zhir_core::operation::RecoveryResolution::Complete {
                             operation_id,
-                            outcome: zhir::tool::RuntimeToolOutcome::Success {
+                            outcome: zhir::operation::OperationOutcome::Success {
                                 content: vec![],
                                 structured: json!({"document":"draft"}),
                             },

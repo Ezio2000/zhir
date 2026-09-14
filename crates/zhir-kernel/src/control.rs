@@ -14,7 +14,7 @@ pub(crate) enum ControlBody {
     CancelOperation(String),
     ReplyOperation(String, serde_json::Value),
     UpdateProfile(RequestProfile),
-    Interrupt,
+    InterruptOutput,
     EndInput,
 }
 pub(crate) struct Control {
@@ -70,8 +70,8 @@ impl ControlHandle {
     pub async fn update_profile(&self, profile: RequestProfile) -> Result<ControlReceipt> {
         self.send(ControlBody::UpdateProfile(profile)).await
     }
-    pub async fn interrupt(&self) -> Result<ControlReceipt> {
-        self.send(ControlBody::Interrupt).await
+    pub async fn interrupt_output(&self) -> Result<ControlReceipt> {
+        self.send(ControlBody::InterruptOutput).await
     }
     pub async fn end_input(&self) -> Result<ControlReceipt> {
         self.send(ControlBody::EndInput).await

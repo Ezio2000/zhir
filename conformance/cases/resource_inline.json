@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "name": "resource_inline",
   "kind": "value",
   "schema": "resource",

@@ -2,7 +2,7 @@
 
 zhir 是可嵌入的 Rust Agent SDK，为研发平台提供模型会话、异步操作、资源流、运行控制和持久化恢复。宿主提供 Tokio 运行环境、模型客户端、凭据、工具与存储。
 
-当前工作区版本为 **0.2.0**，checkpoint 和存储格式为 **v2**。这是一次直接替换公共契约的重构；使用新的数据库、Redis namespace 和资源目录。
+当前工作区版本为 **0.2.0**，checkpoint 和存储格式为 **v3**。这是一次直接替换公共契约的重构；使用新的数据库、Redis namespace 和资源目录。
 
 ## 组件
 
@@ -11,12 +11,12 @@ zhir 是可嵌入的 Rust Agent SDK，为研发平台提供模型会话、异步
 | `zhir-core` | 公共值、扩展 trait、会话/操作/资源/凭据契约、wire DTO |
 | `zhir-policies` | 能力协商、重试策略、退避与历史窗口；只依赖 core |
 | `zhir-kernel` | 唯一执行状态机、调度、控制、outbox、checkpoint 提交 |
-| `zhir-models` | 会话装饰器、资源解析、凭据刷新及可选 HTTP 协议 |
+| `zhir-models` | 会话装饰器、资源解析、凭据刷新及 HTTP、WebSocket、WebRTC 协议 |
 | `zhir-tools` | 工具注册、结构化/自由文本输入、类型适配、执行结果校验 |
 | `zhir-builtins` | 文件、Shell、交互工具，以及基于 operation 的子 Agent |
 | `zhir-storage` | Memory、SQLite、MySQL、Redis 运行存储；内存/文件资源存储 |
 | `zhir` | SDK facade 与便利 API |
-| `zhir-testing` | 测试模型、HTTP/SSE 夹具、记录、轨迹验收与基准；仅用于研发测试 |
+| `zhir-testing` | 测试模型、HTTP/SSE/WebSocket/WebRTC 夹具、记录、轨迹验收与基准；仅用于研发测试 |
 
 ## 使用
 
@@ -40,7 +40,7 @@ let model = openai::chat::model(ModelConfig::new(
     Arc::new(StaticCredential::new("Bearer", std::env::var("OPENAI_API_KEY")?)),
     std::env::var("OPENAI_MODEL")?,
 ))?;
-let store = SqliteRunStore::connect("sqlite://runs-v2.db?mode=rwc").await?;
+let store = SqliteRunStore::connect("sqlite://runs-v3.db?mode=rwc").await?;
 let runtime = Runtime::builder(Arc::new(model))
     .store(Arc::new(store))
     .defaults(|run| run.stream(true))
@@ -81,4 +81,7 @@ cargo test --workspace --all-features --locked
 
 验收、故障注入、trace 校验和基准只放在不发布的 `zhir-testing` 与 `conformance`。独立 feature、契约、真实数据库和包验证方法见[测试说明](docs/testing.md)。
 
-[架构与职责](docs/architecture.md) · [研发接入](docs/developer-api.md) · [运行契约](contracts/v2/behavior/runtime.md) · [测试说明](docs/testing.md)
+[架构与职责](docs/architecture.md) · [研发接入](docs/developer-api.md) · [运行契约](contracts/v3/behavior/runtime.md) · [测试说明](docs/testing.md)
+
+GPT-Live 原生接入使用 `openai-live` feature，包含订阅端 WebRTC、完整发言历史及后台委托；
+[接入与限制](crates/zhir-models/README.md#gpt-live) · [运行示例](crates/zhir/examples/gpt_live.rs)。

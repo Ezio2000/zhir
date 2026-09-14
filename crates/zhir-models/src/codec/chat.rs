@@ -35,6 +35,11 @@ fn encode_message(
     extension: &mut Option<Box<dyn ProtocolExtension>>,
 ) -> Result<Vec<Value>> {
     let value = match message {
+        Message::DelegationResult { .. } => {
+            return Err(Error::Invalid(
+                "protocol does not accept delegation history".into(),
+            ));
+        }
         Message::System { content: values } => {
             json!({"role":"system","content":parts(values,false,content)?})
         }
@@ -67,6 +72,7 @@ fn assistant(
     let mut values = Vec::new();
     for item in output {
         match item {
+            Output::Delegation { .. } => return Err(Error::Invalid("protocol does not accept delegation calls".into())),
             Output::Content { content: value } => contents.push(content(value, true)?),
             Output::RuntimeToolCall { call } => calls.push(json!({"id":call.id,"type":"function","function":{"name":call.name,"arguments":call_input(call)}})),
             Output::ProviderToolCall { call } => values.extend(provider_history(Protocol::Chat, call, extension)?),

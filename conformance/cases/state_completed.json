@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "name": "state_completed",
   "kind": "value",
   "schema": "state",

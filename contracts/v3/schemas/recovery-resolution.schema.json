@@ -85,112 +85,17 @@
       ],
       "type": "string"
     },
-    "Output": {
+    "OperationOutcome": {
       "oneOf": [
         {
           "additionalProperties": false,
           "properties": {
             "content": {
-              "$ref": "#/$defs/Content"
+              "items": {
+                "$ref": "#/$defs/Content"
+              },
+              "type": "array"
             },
-            "kind": {
-              "const": "content",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "content"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "call": {
-              "$ref": "#/$defs/RuntimeToolCall"
-            },
-            "kind": {
-              "const": "runtime_tool_call",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "call"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "call": {
-              "$ref": "#/$defs/ProviderToolCall"
-            },
-            "kind": {
-              "const": "provider_tool_call",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "call"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "ProviderToolCall": {
-      "additionalProperties": false,
-      "properties": {
-        "data": {
-          "default": null
-        },
-        "id": {
-          "type": "string"
-        },
-        "name": {
-          "type": "string"
-        },
-        "outcome": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ProviderToolOutcome"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Kernel-owned operation settlement. Adapter data remains unchanged."
-        },
-        "output": {
-          "default": [],
-          "items": {
-            "$ref": "#/$defs/Content"
-          },
-          "type": "array"
-        },
-        "provider": {
-          "type": "string"
-        },
-        "status": {
-          "$ref": "#/$defs/ProviderToolStatus"
-        }
-      },
-      "required": [
-        "id",
-        "provider",
-        "name",
-        "status"
-      ],
-      "type": "object"
-    },
-    "ProviderToolOutcome": {
-      "description": "Settlement metadata owned by the runtime. Content is stored once, in the\nprovider call's output, so resource normalization cannot create two versions.",
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
             "kind": {
               "const": "success",
               "type": "string"
@@ -199,6 +104,7 @@
           },
           "required": [
             "kind",
+            "content",
             "structured"
           ],
           "type": "object"
@@ -239,16 +145,19 @@
         }
       ]
     },
-    "ProviderToolStatus": {
-      "enum": [
-        "cancelled",
-        "pending",
-        "running",
-        "completed",
-        "incomplete",
-        "failed"
+    "RecoveryRef": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter": {
+          "type": "string"
+        },
+        "data": true
+      },
+      "required": [
+        "adapter",
+        "data"
       ],
-      "type": "string"
+      "type": "object"
     },
     "Requirement": {
       "oneOf": [
@@ -447,167 +356,73 @@
         "extensions"
       ],
       "type": "object"
-    },
-    "RuntimeToolCall": {
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
       "additionalProperties": false,
       "properties": {
-        "id": {
+        "kind": {
+          "const": "attach",
           "type": "string"
         },
-        "input": {
-          "$ref": "#/$defs/RuntimeToolInput"
+        "operation_id": {
+          "type": "string"
         },
-        "name": {
+        "reference": {
+          "$ref": "#/$defs/RecoveryRef"
+        }
+      },
+      "required": [
+        "kind",
+        "operation_id",
+        "reference"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "complete",
+          "type": "string"
+        },
+        "operation_id": {
+          "type": "string"
+        },
+        "outcome": {
+          "$ref": "#/$defs/OperationOutcome"
+        }
+      },
+      "required": [
+        "kind",
+        "operation_id",
+        "outcome"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "abandon",
+          "type": "string"
+        },
+        "operation_id": {
+          "type": "string"
+        },
+        "reason": {
           "type": "string"
         }
       },
       "required": [
-        "id",
-        "name",
-        "input"
+        "kind",
+        "operation_id",
+        "reason"
       ],
       "type": "object"
-    },
-    "RuntimeToolInput": {
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "kind": {
-              "const": "structured",
-              "type": "string"
-            },
-            "value": true
-          },
-          "required": [
-            "kind",
-            "value"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "kind": {
-              "const": "freeform",
-              "type": "string"
-            },
-            "value": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "value"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "Usage": {
-      "additionalProperties": false,
-      "properties": {
-        "cache_read_tokens": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "cache_write_tokens": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "input_tokens": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "output_tokens": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "reasoning_tokens": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "total_tokens": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        }
-      },
-      "type": "object"
     }
-  },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
-  "properties": {
-    "finish_reason": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "model_id": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "output": {
-      "items": {
-        "$ref": "#/$defs/Output"
-      },
-      "type": "array"
-    },
-    "provider_data": {
-      "default": null
-    },
-    "provider_turn_pending": {
-      "default": false,
-      "type": "boolean"
-    },
-    "response_id": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "usage": {
-      "$ref": "#/$defs/Usage",
-      "default": {
-        "cache_read_tokens": null,
-        "cache_write_tokens": null,
-        "input_tokens": null,
-        "output_tokens": null,
-        "reasoning_tokens": null,
-        "total_tokens": null
-      }
-    }
-  },
-  "required": [
-    "output"
   ],
-  "title": "TurnOutput",
-  "type": "object"
+  "title": "RecoveryResolution"
 }

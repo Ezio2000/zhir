@@ -22,11 +22,9 @@ use zhir::{
     models::{
         HttpModel, ModelConfig, Protocol, ProtocolExtension, anthropic, openai, transport::SseEvent,
     },
-    tool::{
-        Execution, InputSpec, RuntimeToolCall, RuntimeToolInput, RuntimeToolOutcome,
-        RuntimeToolSpec,
-    },
+    tool::{Execution, InputSpec, RuntimeToolCall, RuntimeToolInput, RuntimeToolSpec},
 };
+use zhir_core::operation::OperationOutcome;
 fn request() -> ModelRequest {
     ModelRequest {
         messages: vec![Message::user("hello")],
@@ -85,7 +83,7 @@ fn with_tool_image(mut r: ModelRequest) -> ModelRequest {
         Message::RuntimeTool {
             call_id: "observe-1".into(),
             name: "observe".into(),
-            outcome: RuntimeToolOutcome::Success {
+            outcome: OperationOutcome::Success {
                 content: vec![image()],
                 structured: Value::Null,
             },
@@ -305,7 +303,7 @@ async fn multimodal_tool_results_preserve_order_for_both_responses_tool_kinds() 
             }
         }
         if let Message::RuntimeTool { outcome, .. } = &mut r.messages[2] {
-            *outcome = RuntimeToolOutcome::Success {
+            *outcome = OperationOutcome::Success {
                 content: vec![
                     Content::text("caption"),
                     image(),

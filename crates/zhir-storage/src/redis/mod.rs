@@ -59,8 +59,8 @@ repeat
  cursor=page[1]
  if #page[2]>0 then return 'unversioned' end
 until cursor=='0'
-redis.call('SET',KEYS[1],'2')
-return '2'
+redis.call('SET',KEYS[1],'3')
+return '3'
 "#,
         )
         .key(format!("{namespace}:format"))
@@ -68,7 +68,7 @@ return '2'
         .invoke_async(&mut connection)
         .await
         .map_err(storage_error)?;
-        if format != "2" {
+        if format != "3" {
             return Err(Error::Storage(
                 "unsupported Redis format; use a fresh namespace".into(),
             ));

@@ -4,13 +4,13 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
+use zhir_core::operation::OperationOutcome;
 use zhir_core::{
     error::Error,
     message::{Content, Message, Output, ProviderToolCall, ProviderToolStatus},
     model::{Capability, SessionCommand, SessionCommandBody, SessionEventBody, TurnDisposition},
     operation::{CallRef, OperationEvent, OperationUpdate, RecoveryRef},
     run::{Checkpoint, State},
-    tool::RuntimeToolOutcome,
 };
 use zhir_kernel::{ResumeRequest, RunRequest, Runtime};
 use zhir_testing::{RecordingStore, SessionModel};
@@ -225,7 +225,7 @@ async fn duplicate_provider_completion_is_idempotent_and_conflicts_fail() {
                     event: OperationEvent {
                         sequence: 4,
                         update: OperationUpdate::Finished {
-                            outcome: RuntimeToolOutcome::Success {
+                            outcome: OperationOutcome::Success {
                                 content: vec![Content::text(if conflict && i == 1 {
                                     "different"
                                 } else {
@@ -284,6 +284,7 @@ async fn duplex_end_input_drains_buffered_media_and_interrupt_commits_with_its_i
     caps.features.extend([
         Capability::Duplex,
         Capability::Steering,
+        Capability::InterruptOutput,
         Capability::ProfileUpdates,
     ]);
     caps.constraints
@@ -307,12 +308,12 @@ async fn duplex_end_input_drains_buffered_media_and_interrupt_commits_with_its_i
             let interrupt = peer.commands.recv().await.unwrap();
             assert!(matches!(
                 interrupt.body,
-                SessionCommandBody::Interrupt { .. }
+                SessionCommandBody::InterruptOutput { .. }
             ));
             peer.acknowledge(&interrupt, None).await?;
             for sequence in 0..8 {
                 let chunk = peer.media_input.recv().await.unwrap();
-                assert_eq!(chunk.epoch, 1);
+                assert_eq!(chunk.epoch, 0);
                 assert_eq!(chunk.sequence, sequence);
                 assert_eq!(chunk.bytes, vec![sequence as u8; 4]);
             }
@@ -364,27 +365,14 @@ async fn duplex_end_input_drains_buffered_media_and_interrupt_commits_with_its_i
         })
         .await
         .unwrap();
-    control.interrupt().await.unwrap();
+    control.interrupt_output().await.unwrap();
     let input = invocation.media_input();
-    input
-        .send(MediaChunk {
-            stream_id: "voice".into(),
-            turn_id: turn_id.clone(),
-            epoch: 0,
-            sequence: 0,
-            timestamp_us: 0,
-            media_type: "audio/pcm".into(),
-            bytes: vec![9],
-            end: false,
-        })
-        .await
-        .unwrap();
     for sequence in 0..8 {
         input
             .send(MediaChunk {
                 stream_id: "voice".into(),
                 turn_id: turn_id.clone(),
-                epoch: 1,
+                epoch: 0,
                 sequence,
                 timestamp_us: sequence * 1000,
                 media_type: "audio/pcm".into(),
@@ -413,7 +401,7 @@ async fn duplex_end_input_drains_buffered_media_and_interrupt_commits_with_its_i
     let commits = store.commits();
     let interrupted = commits
         .iter()
-        .find(|c| c.checkpoint.active.session.epoch == 1)
+        .find(|c| c.checkpoint.active.session.output_epoch == 1)
         .unwrap();
     assert!(
         interrupted
@@ -421,7 +409,7 @@ async fn duplex_end_input_drains_buffered_media_and_interrupt_commits_with_its_i
             .active
             .commands
             .iter()
-            .any(|c| matches!(c.intent, CommandIntent::Interrupt { .. }))
+            .any(|c| matches!(c.intent, CommandIntent::InterruptOutput { .. }))
     );
     let ended = commits
         .iter()
@@ -435,7 +423,7 @@ async fn duplex_end_input_drains_buffered_media_and_interrupt_commits_with_its_i
             .iter()
             .any(|c| matches!(c.intent, CommandIntent::EndInput))
     );
-    assert_eq!(completion.active.media.len(), 1);
-    assert_eq!(completion.active.media.values().next().unwrap().sequence, 7);
+    assert!(completion.active.media.is_empty());
+    assert!(completion.active.session.media_archive.is_some());
     store.verify_traces().unwrap();
 }

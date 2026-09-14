@@ -186,7 +186,7 @@ impl HttpModel {
                 matches!(
                     m,
                     zhir_core::message::Message::RuntimeTool {
-                        outcome: zhir_core::tool::RuntimeToolOutcome::Failure { .. },
+                        outcome: zhir_core::operation::OperationOutcome::Failure { .. },
                         ..
                     }
                 )

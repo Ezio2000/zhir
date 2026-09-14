@@ -16,7 +16,7 @@ use std::{
 use tokio::sync::watch;
 use zhir_core::{
     message::Message,
-    resource::{MediaChunk, MediaReceiver, ResourceRef, ResourceStore, SealedMedia},
+    resource::{ArchivedMedia, MediaChunk, MediaReceiver, ResourceRef, ResourceStore, SealedMedia},
     run::{Checkpoint, RunMode, State},
 };
 use zhir_kernel::{RunRequest, Runtime};
@@ -91,21 +91,37 @@ async fn exercise(
         let mut first_audio_ms = None;
         while let Some(chunk) = output.receive().await.unwrap() {
             // Prove durability at delivery time, not just at eventual completion.
-            let cursor = store
-                .commits()
-                .into_iter()
-                .find_map(|commit| {
+            let commits = store.commits();
+            let key = format!("output:{}:{}", chunk.stream_id, chunk.epoch);
+            let reference = if chunk.end {
+                let mut found = None;
+                for commit in &commits {
+                    if let Some(reference) = &commit.checkpoint.active.session.media_archive {
+                        let node: ArchivedMedia = serde_json::from_slice(
+                            &read_resource(resources.as_ref(), reference.clone()).await,
+                        )
+                        .unwrap();
+                        if node.stream_key == key && node.complete {
+                            found = Some(node.sealed);
+                            break;
+                        }
+                    }
+                }
+                found
+            } else {
+                commits.iter().find_map(|commit| {
                     commit
                         .checkpoint
                         .active
                         .media
-                        .get(&format!("output:{}:{}", chunk.stream_id, chunk.epoch))
+                        .get(&key)
                         .filter(|cursor| cursor.sequence == chunk.sequence)
-                        .cloned()
+                        .map(|cursor| cursor.sealed.clone())
                 })
-                .expect("media escaped before its checkpoint commit");
+            }
+            .expect("media escaped before its checkpoint commit");
             let manifest: SealedMedia =
-                serde_json::from_slice(&read_resource(resources.as_ref(), cursor.sealed).await)
+                serde_json::from_slice(&read_resource(resources.as_ref(), reference).await)
                     .unwrap();
             assert_eq!(manifest.sequence, chunk.sequence);
             assert_eq!(manifest.epoch, chunk.epoch);
@@ -130,7 +146,7 @@ async fn exercise(
             delivery.changed().await.unwrap();
         }
         if interrupt {
-            control.interrupt().await.unwrap();
+            control.interrupt_output().await.unwrap();
             wait_stats(&mut stats, |s| s.cancellations == 1).await;
         }
         // Two pieces without terminal punctuation: EndInput must flush their tail.
@@ -176,7 +192,7 @@ async fn exercise(
     }
     if interrupt {
         assert!(chunks.iter().any(|c| c.epoch == 1 && !c.bytes.is_empty()));
-        assert_eq!(checkpoint.active.session.epoch, 1);
+        assert_eq!(checkpoint.active.session.output_epoch, 1);
     } else {
         assert!(sequences.values().all(|(_, ended)| *ended));
         assert_eq!(
@@ -188,8 +204,14 @@ async fn exercise(
     let encoded = zhir_core::wire::encode_checkpoint(&checkpoint).unwrap();
     let restored = zhir_core::wire::decode_checkpoint(&encoded).unwrap();
     assert_eq!(restored.revision, checkpoint.revision);
-    for cursor in restored.active.media.values() {
-        let mut reference = Some(cursor.sealed.clone());
+    assert!(restored.active.media.is_empty());
+    let mut archived = restored.active.session.media_archive.clone();
+    let mut streams = 0;
+    while let Some(reference) = archived {
+        let archive: ArchivedMedia =
+            serde_json::from_slice(&read_resource(resources.as_ref(), reference).await).unwrap();
+        archived = archive.previous;
+        let mut reference = Some(archive.sealed);
         let mut previous_sequence = None;
         while let Some(current) = reference {
             let node: SealedMedia =
@@ -200,7 +222,9 @@ async fn exercise(
             previous_sequence = Some(node.sequence);
             reference = node.previous;
         }
+        streams += 1;
     }
+    assert!(streams > 0);
     let commits = store.verify_traces().unwrap();
     Evidence {
         checkpoint,

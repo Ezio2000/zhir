@@ -1,5 +1,6 @@
 use serde_json::json;
-use zhir_core::{error::Failure, message::Content, tool::RuntimeToolOutcome};
+use zhir_core::operation::OperationOutcome;
+use zhir_core::{error::Failure, message::Content};
 use zhir_testing::FinalExecution;
 use zhir_tools::{ToolReply, reply};
 #[test]
@@ -15,7 +16,7 @@ fn typed_and_json_replies_share_final_payload_semantics() {
         &[Content::text("hello")]
     );
     assert!(
-        RuntimeToolOutcome::Failure {
+        OperationOutcome::Failure {
             error: Failure::new("failed", "details")
         }
         .content()

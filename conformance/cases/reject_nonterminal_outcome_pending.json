@@ -1,8 +1,8 @@
 {
-  "version": 2,
+  "version": 3,
   "name": "reject_nonterminal_outcome_pending",
   "kind": "value",
-  "schema": "tool-outcome",
+  "schema": "operation-outcome",
   "value": {
     "kind": "pending",
     "content": [],

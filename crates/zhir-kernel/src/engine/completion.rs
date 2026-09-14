@@ -1,13 +1,14 @@
 use super::*;
+use zhir_core::operation::OperationOutcome;
 
 impl Engine {
-    pub(super) async fn finish(&mut self, id: &str, outcome: RuntimeToolOutcome) -> Result<()> {
+    pub(super) async fn finish(&mut self, id: &str, outcome: OperationOutcome) -> Result<()> {
         self.finish_at(id, outcome, None).await
     }
     pub(super) async fn finish_at(
         &mut self,
         id: &str,
-        outcome: RuntimeToolOutcome,
+        outcome: OperationOutcome,
         sequence: Option<u64>,
     ) -> Result<()> {
         outcome.validate()?;
@@ -44,7 +45,8 @@ impl Engine {
             return Err(Error::Protocol("conflicting operation completion".into()));
         }
         let name = match &record.owner {
-            OperationOwner::RuntimeTool { name } => name.clone(),
+            OperationOwner::RuntimeTool { name } => Some(name.clone()),
+            OperationOwner::Delegation => None,
             OperationOwner::Provider { .. } => {
                 return self.finish_provider(record, outcome, sequence).await;
             }
@@ -56,10 +58,16 @@ impl Engine {
         let entry = HistoryEntry {
             id: format!("operation:{id}:result"),
             origin: Some(record.origin.clone()),
-            message: Message::RuntimeTool {
-                call_id: record.origin.call_id,
-                name,
-                outcome,
+            message: match name {
+                Some(name) => Message::RuntimeTool {
+                    call_id: record.origin.call_id,
+                    name,
+                    outcome,
+                },
+                None => Message::DelegationResult {
+                    id: record.origin.call_id,
+                    outcome,
+                },
             },
         };
         let mut next = self.current.as_ref().clone();
@@ -74,9 +82,16 @@ impl Engine {
         let command_id = new_id();
         next.active.commands.push(PendingCommand {
             id: command_id,
-            intent: CommandIntent::ToolResult {
-                operation_id: id.into(),
-                entry: index,
+            intent: if record.owner == OperationOwner::Delegation {
+                CommandIntent::DelegationResult {
+                    operation_id: id.into(),
+                    entry: index,
+                }
+            } else {
+                CommandIntent::ToolResult {
+                    operation_id: id.into(),
+                    entry: index,
+                }
             },
             sent: false,
         });
@@ -100,7 +115,7 @@ impl Engine {
     pub(super) async fn finish_provider(
         &mut self,
         record: OperationRecord,
-        outcome: RuntimeToolOutcome,
+        outcome: OperationOutcome,
         sequence: Option<u64>,
     ) -> Result<()> {
         let entry = self
@@ -176,9 +191,12 @@ pub(super) fn provider_operation_id(origin: &CallRef) -> String {
     )
 }
 
-pub(super) fn same_outcome(message: &Message, outcome: &RuntimeToolOutcome) -> bool {
+pub(super) fn same_outcome(message: &Message, outcome: &OperationOutcome) -> bool {
     match message {
         Message::RuntimeTool {
+            outcome: previous, ..
+        }
+        | Message::DelegationResult {
             outcome: previous, ..
         } => previous == outcome,
         Message::Assistant { output, .. } => output.iter().any(|item| match item {

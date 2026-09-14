@@ -48,8 +48,13 @@ impl ResourceModel {
                         resolve_message(message, store.as_ref(), &context.cancellation, &mut budget)
                             .await?
                     }
-                    SessionCommandBody::ToolResult {
-                        outcome: zhir_core::tool::RuntimeToolOutcome::Success { content, .. },
+                    SessionCommandBody::DelegationContext { content, .. }
+                    | SessionCommandBody::DelegationResult {
+                        outcome: zhir_core::operation::OperationOutcome::Success { content, .. },
+                        ..
+                    }
+                    | SessionCommandBody::ToolResult {
+                        outcome: zhir_core::operation::OperationOutcome::Success { content, .. },
                         ..
                     } => {
                         for content in content {
@@ -104,6 +109,19 @@ impl SessionReceiver for SealedOutput {
                 return Ok(None);
             };
             match &mut event.body {
+                SessionEventBody::ConversationItem { message, .. } => match message {
+                    Message::User { content } => {
+                        for part in content {
+                            save_content(part, self.store.as_ref(), &self.cancellation).await?;
+                        }
+                    }
+                    Message::Assistant { output, .. } => {
+                        for item in output {
+                            save_output(item, self.store.as_ref(), &self.cancellation).await?;
+                        }
+                    }
+                    _ => return Err(Error::Protocol("invalid conversation item role".into())),
+                },
                 SessionEventBody::Output { output, .. } => {
                     let contents: Vec<_> = match output {
                         Output::Content { content } => vec![&*content],
@@ -132,7 +150,9 @@ impl SessionReceiver for SealedOutput {
                             update:
                                 zhir_core::operation::OperationUpdate::Finished {
                                     outcome:
-                                        zhir_core::tool::RuntimeToolOutcome::Success { content, .. },
+                                        zhir_core::operation::OperationOutcome::Success {
+                                            content, ..
+                                        },
                                 },
                             ..
                         },
@@ -285,8 +305,12 @@ async fn resolve_message(
             }
             resolve_value(provider_data, store, cancellation, budget).await?;
         }
-        Message::RuntimeTool {
-            outcome: zhir_core::tool::RuntimeToolOutcome::Success { content, .. },
+        Message::DelegationResult {
+            outcome: zhir_core::operation::OperationOutcome::Success { content, .. },
+            ..
+        }
+        | Message::RuntimeTool {
+            outcome: zhir_core::operation::OperationOutcome::Success { content, .. },
             ..
         } => {
             for content in content {

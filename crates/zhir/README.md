@@ -3,7 +3,7 @@
 The public composable Rust SDK facade. Default features are empty and include core
 and kernel. Opt into models, tools, policies, typed tools/output, builtins, protocols
 and storage as needed. APIs use ModelSession, ToolExecution/OperationHandle,
-ResourceRef, RequestProfile and v2 checkpoints. This crate adds convenience methods
+ResourceRef, RequestProfile and v3 checkpoints. This crate adds convenience methods
 over the same kernel, not another runtime.
 
 See the workspace README and docs/developer-api.md for composition, explicit

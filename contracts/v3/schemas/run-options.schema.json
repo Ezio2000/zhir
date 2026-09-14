@@ -93,13 +93,13 @@
           "minimum": 0,
           "type": "integer"
         },
-        "max_runtime_tool_calls": {
-          "format": "uint64",
+        "max_operation_concurrency": {
+          "format": "uint",
           "minimum": 0,
           "type": "integer"
         },
-        "max_runtime_tool_concurrency": {
-          "format": "uint",
+        "max_runtime_tool_calls": {
+          "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
@@ -126,7 +126,7 @@
         "max_media_streams",
         "max_media_chunk_bytes",
         "max_buffered_media_bytes",
-        "max_runtime_tool_concurrency",
+        "max_operation_concurrency",
         "max_observer_events",
         "commit_timeout_ms"
       ],

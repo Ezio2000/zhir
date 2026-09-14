@@ -101,7 +101,7 @@ async fn function_output_is_validated() {
             .unwrap()
             .final_outcome()
             .kind()
-            == zhir_core::tool::RuntimeToolOutcomeKind::Failure
+            == zhir_core::operation::OperationOutcomeKind::Failure
     );
 }
 

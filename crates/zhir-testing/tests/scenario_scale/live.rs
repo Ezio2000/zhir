@@ -20,9 +20,10 @@ use zhir::{
     runtime_tools::{FunctionTool, RuntimeToolRegistry},
     tool::{
         ApprovalDecision, ApprovalPolicy, ApprovalRequest, Execution, InputSpec, RuntimeTool,
-        RuntimeToolCall, RuntimeToolContext, RuntimeToolInput, RuntimeToolOutcome, RuntimeToolSpec,
+        RuntimeToolCall, RuntimeToolContext, RuntimeToolInput, RuntimeToolSpec,
     },
 };
+use zhir_core::operation::OperationOutcome;
 
 #[derive(Clone)]
 struct Case {
@@ -112,14 +113,14 @@ impl ToolEnv {
                 let value=match args["region"].as_str() {Some("A")=>17,Some("B")=>23,Some("C")=>31,_=>return Err(Error::Invalid("unknown region".into()))};
                 Ok(zhir::runtime_tools::reply::json(json!({"region":args["region"],"value":value})))
             }
-            "tool_recovery" if attempt==1=>Ok(zhir_core::operation::ToolExecution::Finished(RuntimeToolOutcome::Failure {error:Failure {code:"temporary_lookup".into(),message:"Temporary fixture lookup failure. Call fetch again with the same arguments; the next attempt will succeed.".into(),retryable:true}})),
+            "tool_recovery" if attempt==1=>Ok(zhir_core::operation::ToolExecution::Finished(OperationOutcome::Failure {error:Failure {code:"temporary_lookup".into(),message:"Temporary fixture lookup failure. Call fetch again with the same arguments; the next attempt will succeed.".into(),retryable:true}})),
             "wait_resume"=>Ok(zhir_core::operation::ToolExecution::Active(zhir_testing::waiting_operation(json!({"status":"awaiting_reviewer"}),0))),
             "delegated_agent"=>{
                 let backend=self.child.as_ref().unwrap();
                 let prompt=format!("Reply with exactly {} and nothing else.",self.receipt);
                 Ok(zhir_core::operation::ToolExecution::Active(backend.start(prompt,context).await?))
             }
-            "multimodal_report" if call.name=="read_image"=>Ok(zhir_core::operation::ToolExecution::Finished(RuntimeToolOutcome::Success {content:vec![Content::text("Read the alphanumeric code, then call submit_report with that code."),Content::resource(zhir_core::resource::ResourceRef {id:"vision".into(),media_type:"image/png".into(),name:None,source:zhir_core::resource::ResourceSource::Inline {bytes:include_bytes!("../fixtures/vision.png").to_vec()},metadata:Default::default()})],structured:Value::Null})),
+            "multimodal_report" if call.name=="read_image"=>Ok(zhir_core::operation::ToolExecution::Finished(OperationOutcome::Success {content:vec![Content::text("Read the alphanumeric code, then call submit_report with that code."),Content::resource(zhir_core::resource::ResourceRef {id:"vision".into(),media_type:"image/png".into(),name:None,source:zhir_core::resource::ResourceSource::Inline {bytes:include_bytes!("../fixtures/vision.png").to_vec()},metadata:Default::default()})],structured:Value::Null})),
             "multimodal_report"=>{require(args["code"]=="K7X42","consumer report contains wrong OCR code")?;Ok(zhir::runtime_tools::reply::json(json!({"receipt":self.receipt})))},
             "freeform_pipeline" if call.name=="apply_patch"=>{
                 let patch=args["patch"].as_str().unwrap_or_default();
@@ -403,7 +404,7 @@ async fn workflow(
                 run.limits(Limits {
                     max_model_turns: 8,
                     max_runtime_tool_calls: 12,
-                    max_runtime_tool_concurrency: 3,
+                    max_operation_concurrency: 3,
                     max_observer_events: 4096,
                     elapsed_ms: Some(120_000),
                     ..zhir::kernel::defaults::limits()
@@ -440,7 +441,7 @@ async fn workflow(
         if case.family == "wait_resume" {
             resume = resume.resolve(zhir_core::operation::RecoveryResolution::Complete {
                 operation_id: checkpoint.active.operations.keys().next().unwrap().clone(),
-                outcome: RuntimeToolOutcome::Success {
+                outcome: OperationOutcome::Success {
                     content: vec![],
                     structured: json!({"reviewer":"accepted","receipt":receipt}),
                 },

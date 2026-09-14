@@ -45,7 +45,7 @@ impl WebSocketAdapter for Adapter {
             config: self.0.clone(),
             phase: Phase::Connecting,
             turn: None,
-            audio: Audio::new(open.epoch, open.limits.max_media_chunk_bytes),
+            audio: Audio::new(open.output_epoch, open.limits.max_media_chunk_bytes),
         }))
     }
 }
@@ -106,7 +106,9 @@ impl WebSocketProtocol for Session {
                     ack(command.id),
                 ])
             }
-            SessionCommandBody::Interrupt { turn_id } if matches!(self.phase, Phase::Speaking) => {
+            SessionCommandBody::InterruptOutput { turn_id }
+                if matches!(self.phase, Phase::Speaking) =>
+            {
                 if self.turn.as_ref() != Some(&turn_id) {
                     return Err(protocol("interrupt turn mismatch"));
                 }
@@ -343,6 +345,7 @@ fn capabilities() -> CapabilitySet {
             Capability::Streaming,
             Capability::Duplex,
             Capability::Steering,
+            Capability::InterruptOutput,
         ]
         .into(),
         tool_choices: vec!["auto".into(), "none".into()],

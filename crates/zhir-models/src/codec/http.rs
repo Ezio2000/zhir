@@ -103,7 +103,7 @@ fn call_input(call: &RuntimeToolCall) -> String {
     }
 }
 fn result_content(
-    outcome: &zhir_core::tool::RuntimeToolOutcome,
+    outcome: &zhir_core::operation::OperationOutcome,
     encode: fn(&Content, bool) -> Result<Value>,
 ) -> Result<Value> {
     let content = outcome_content(outcome);
@@ -272,10 +272,10 @@ fn parse_content(provider: &str, value: &Value) -> Result<Output> {
 }
 
 fn outcome_content(
-    outcome: &zhir_core::tool::RuntimeToolOutcome,
+    outcome: &zhir_core::operation::OperationOutcome,
 ) -> std::borrow::Cow<'_, [Content]> {
     match outcome {
-        zhir_core::tool::RuntimeToolOutcome::Failure { error } => {
+        zhir_core::operation::OperationOutcome::Failure { error } => {
             std::borrow::Cow::Owned(vec![Content::text(&error.message)])
         }
         _ => std::borrow::Cow::Borrowed(outcome.content()),

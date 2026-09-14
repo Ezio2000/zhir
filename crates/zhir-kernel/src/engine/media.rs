@@ -17,15 +17,24 @@ impl Engine {
         {
             return Err(Error::Protocol("media sequence did not increase".into()));
         }
+        if !self.current.active.media.contains_key(&key) {
+            self.ensure_new_stream(&key).await?;
+        }
         let mut next = self.current.as_ref().clone();
-        next.active.media.insert(
-            key,
-            StreamCursor {
-                sequence: chunk.sequence,
-                epoch: chunk.epoch,
-                sealed: reference,
-            },
-        );
+        if chunk.end {
+            self.archive_media(&mut next, key.clone(), reference.clone(), true)
+                .await?;
+            next.active.media.remove(&key);
+        } else {
+            next.active.media.insert(
+                key,
+                StreamCursor {
+                    sequence: chunk.sequence,
+                    epoch: chunk.epoch,
+                    sealed: reference,
+                },
+            );
+        }
         self.commit(
             next,
             Fact::Media {
@@ -36,14 +45,69 @@ impl Engine {
         )
         .await
     }
+
+    async fn ensure_new_stream(&self, key: &str) -> Result<()> {
+        let mut reference = self.current.active.session.media_archive.clone();
+        let Some(resources) = &self.config.resources else {
+            return Ok(());
+        };
+        while let Some(node) = reference {
+            self.check()?;
+            let mut reader = resources.open(node).await?;
+            let mut bytes = Vec::new();
+            loop {
+                let part = reader.read(4096).await?;
+                if part.is_empty() {
+                    break;
+                }
+                if bytes.len() + part.len() > 1024 * 1024 {
+                    return Err(Error::Protocol("oversized media archive node".into()));
+                }
+                bytes.extend(part);
+            }
+            let node: zhir_core::resource::ArchivedMedia = serde_json::from_slice(&bytes)
+                .map_err(|_| Error::Protocol("invalid media archive node".into()))?;
+            if node.stream_key == key {
+                return Err(Error::Protocol("media after stream end".into()));
+            }
+            reference = node.previous;
+        }
+        Ok(())
+    }
+    pub(super) async fn archive_media(
+        &self,
+        next: &mut Checkpoint,
+        stream_key: String,
+        sealed: zhir_core::resource::ResourceRef,
+        complete: bool,
+    ) -> Result<()> {
+        let resources = self
+            .config
+            .resources
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("media archive requires resource storage".into()))?;
+        let node = zhir_core::resource::ArchivedMedia {
+            stream_key,
+            sealed,
+            complete,
+            previous: next.active.session.media_archive.clone(),
+        };
+        let mut writer = resources
+            .create(new_id(), "application/vnd.zhir.archived-media+json".into())
+            .await?;
+        writer
+            .append(
+                0,
+                serde_json::to_vec(&node).map_err(|e| Error::Invalid(e.to_string()))?,
+            )
+            .await?;
+        next.active.session.media_archive = Some(writer.finish().await?);
+        Ok(())
+    }
     pub(super) fn input_media(&mut self, packet: Packet) -> Result<()> {
         let chunk = &packet.chunk;
         chunk.validate(self.current.options.limits.max_media_chunk_bytes)?;
-        if chunk.epoch < self.current.active.session.epoch {
-            return Ok(());
-        }
-        if chunk.epoch != self.current.active.session.epoch
-            || self.current.active.session.turn_id.as_ref() != Some(&chunk.turn_id)
+        if chunk.epoch != 0 || self.current.active.session.turn_id.as_ref() != Some(&chunk.turn_id)
         {
             return Err(Error::Invalid("foreign media turn or epoch".into()));
         }
@@ -150,7 +214,13 @@ impl Engine {
                         let reference =
                             seal_media(resources.as_ref(), &chunk, previous.get(&key).cloned())
                                 .await?;
-                        previous.insert(key, reference.clone());
+                        if chunk.end {
+                            previous.remove(&key);
+                        } else {
+                            // Output interruption invalidates earlier generations.
+                            previous.retain(|key, _| key.ends_with(&format!(":{}", chunk.epoch)));
+                            previous.insert(key, reference.clone());
+                        }
                         let (ack, rx) = oneshot::channel();
                         tx.send(Work::MediaReady(chunk.clone(), reference, ack))
                             .await

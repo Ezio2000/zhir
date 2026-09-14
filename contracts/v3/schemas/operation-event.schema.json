@@ -1,29 +1,5 @@
 {
   "$defs": {
-    "CallRef": {
-      "additionalProperties": false,
-      "properties": {
-        "call_id": {
-          "type": "string"
-        },
-        "caller_id": {
-          "type": "string"
-        },
-        "session_id": {
-          "type": "string"
-        },
-        "turn_id": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "session_id",
-        "turn_id",
-        "caller_id",
-        "call_id"
-      ],
-      "type": "object"
-    },
     "Content": {
       "oneOf": [
         {
@@ -109,22 +85,44 @@
       ],
       "type": "string"
     },
-    "OperationOwner": {
+    "OperationOutcome": {
       "oneOf": [
         {
           "additionalProperties": false,
           "properties": {
+            "content": {
+              "items": {
+                "$ref": "#/$defs/Content"
+              },
+              "type": "array"
+            },
             "kind": {
-              "const": "runtime_tool",
+              "const": "success",
               "type": "string"
             },
-            "name": {
+            "structured": true
+          },
+          "required": [
+            "kind",
+            "content",
+            "structured"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/Failure"
+            },
+            "kind": {
+              "const": "failure",
               "type": "string"
             }
           },
           "required": [
             "kind",
-            "name"
+            "error"
           ],
           "type": "object"
         },
@@ -132,36 +130,44 @@
           "additionalProperties": false,
           "properties": {
             "kind": {
-              "const": "provider",
+              "const": "cancelled",
               "type": "string"
             },
-            "provider": {
+            "reason": {
               "type": "string"
             }
           },
           "required": [
             "kind",
-            "provider"
+            "reason"
           ],
           "type": "object"
         }
       ]
     },
-    "OperationState": {
-      "enum": [
-        "queued",
-        "running",
-        "waiting",
-        "cancelling",
-        "succeeded",
-        "failed",
-        "cancelled",
-        "unknown"
-      ],
-      "type": "string"
-    },
     "OperationUpdate": {
       "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Durable context to be delivered to the model, distinct from UI progress.",
+          "properties": {
+            "content": {
+              "items": {
+                "$ref": "#/$defs/Content"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "context",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "content"
+          ],
+          "type": "object"
+        },
         {
           "additionalProperties": false,
           "properties": {
@@ -233,7 +239,7 @@
               "type": "string"
             },
             "outcome": {
-              "$ref": "#/$defs/RuntimeToolOutcome"
+              "$ref": "#/$defs/OperationOutcome"
             }
           },
           "required": [
@@ -472,133 +478,24 @@
         "extensions"
       ],
       "type": "object"
-    },
-    "RuntimeToolOutcome": {
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "content": {
-              "items": {
-                "$ref": "#/$defs/Content"
-              },
-              "type": "array"
-            },
-            "kind": {
-              "const": "success",
-              "type": "string"
-            },
-            "structured": true
-          },
-          "required": [
-            "kind",
-            "content",
-            "structured"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "error": {
-              "$ref": "#/$defs/Failure"
-            },
-            "kind": {
-              "const": "failure",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "error"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "kind": {
-              "const": "cancelled",
-              "type": "string"
-            },
-            "reason": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "reason"
-          ],
-          "type": "object"
-        }
-      ]
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
-    "call_entry": {
-      "format": "uint",
+    "sequence": {
+      "format": "uint64",
       "minimum": 0,
       "type": "integer"
     },
-    "id": {
-      "type": "string"
-    },
-    "last_sequence": {
-      "format": "uint64",
-      "minimum": 0,
-      "type": [
-        "integer",
-        "null"
-      ]
-    },
-    "last_update": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/OperationUpdate"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "origin": {
-      "$ref": "#/$defs/CallRef"
-    },
-    "owner": {
-      "$ref": "#/$defs/OperationOwner"
-    },
-    "recovery": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/RecoveryRef"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "result_entry": {
-      "format": "uint",
-      "minimum": 0,
-      "type": [
-        "integer",
-        "null"
-      ]
-    },
-    "state": {
-      "$ref": "#/$defs/OperationState"
-    },
-    "wait": true
+    "update": {
+      "$ref": "#/$defs/OperationUpdate"
+    }
   },
   "required": [
-    "id",
-    "origin",
-    "owner",
-    "state",
-    "call_entry"
+    "sequence",
+    "update"
   ],
-  "title": "OperationRecord",
+  "title": "OperationEvent",
   "type": "object"
 }

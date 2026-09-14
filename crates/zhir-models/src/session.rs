@@ -113,6 +113,9 @@ pub(crate) fn open(
 pub(crate) fn validate_capabilities(capabilities: &CapabilitySet) -> Result<()> {
     if [
         Capability::Duplex,
+        Capability::ConversationItems,
+        Capability::Delegation,
+        Capability::InterruptOutput,
         Capability::Steering,
         Capability::ProfileUpdates,
         Capability::AsyncResults,
@@ -145,8 +148,12 @@ impl SessionTask {
             SessionCommandBody::UpdateProfile { .. } => Err(Error::Invalid(
                 "turn protocol cannot update an active profile".into(),
             )),
-            SessionCommandBody::Interrupt { .. } => Err(Error::Invalid(
+            SessionCommandBody::InterruptOutput { .. } => Err(Error::Invalid(
                 "turn protocol cannot interrupt natively".into(),
+            )),
+            SessionCommandBody::DelegationContext { .. }
+            | SessionCommandBody::DelegationResult { .. } => Err(Error::Invalid(
+                "turn protocol cannot accept native delegation".into(),
             )),
             SessionCommandBody::Close => {
                 self.acknowledge(command.id).await?;

@@ -38,7 +38,7 @@ let completion = invocation.result().await?;
 | `reply_operation(id, value)` | 向已绑定 operation 发送输入；先记录结果不确定边界 |
 | `cancel_operation(id)` | 取消指定 operation；最终状态由完成事件确认 |
 | `update_profile(profile)` | 按能力修订会话 profile；忙碌会话需声明 ProfileUpdates |
-| `interrupt()` | 原生中断；epoch 与命令在同一提交中更新 |
+| `interrupt_output()` | 原生输出打断；output_epoch 与命令在同一提交中更新，输入不失效 |
 | `end_input()` | 关闭输入并排空已接收媒体，再通知模型 |
 | `cancel()` | 绕过控制队列发出整个运行的取消信号 |
 
@@ -48,7 +48,7 @@ let completion = invocation.result().await?;
 ## 模型会话与端点协议
 
 实现 core 的 Model：`capabilities()`、`negotiate(&ModelRequest)`、
-`open_session(SessionOpen)`。SessionOpen 包含稳定 session ID、恢复游标、epoch、
+`open_session(SessionOpen)`。SessionOpen 包含稳定 session ID、恢复游标、output_epoch、
 限制、初始请求、RecoveryRef 和运行上下文。打开会话只建立通道；推理由 StartTurn 发起。
 
 ModelSession 的输入/输出端口分别实现 SessionSender/SessionReceiver。输入端口必须
@@ -113,7 +113,7 @@ CredentialProvider 的 audience 是连接 URL；`header:` metadata 用于额外�
 RuntimeTool 是唯一可执行工具接口，`start(call, context)` 和
 `recover(record, context)` 都返回 `ToolExecution`：
 
-- `Finished(RuntimeToolOutcome)`：只包含 Success、Failure 或 Cancelled。
+- `Finished(OperationOutcome)`：只包含 Success、Failure 或 Cancelled。
 - `Active(OperationHandle)`：包含 recovery reference、OperationControl 和 OperationEvents。
 
 工具不得把“已受理”或“等待”包装成成功结果。异步工具以 Running/Waiting/Progress/
@@ -145,7 +145,7 @@ let tool = TypedTool::<EchoArgs, String>::new(
 ## 恢复与子 Agent
 
 RunCompletion 可提取不可变 checkpoint。`wire::encode_checkpoint/decode_checkpoint`
-使用 v2。持久化运行可生成 SuspensionTicket，通过
+使用 v3。持久化运行可生成 SuspensionTicket，通过
 `ResumeRequest::from_ticket` 校验 run、revision、checkpoint 与 suspension。
 
 用 `ResumeRequest::resolve` 为未完成操作提供明确处置：
@@ -211,7 +211,7 @@ ResourceStore::open 返回 reader，每次 read 指定最大字节数。MemoryRe
 原生双向模型提供可选 MediaSender/MediaReceiver。宿主通过 Invocation 的 media_input
 和 media_output 使用独立媒体通道，同时驱动 result/control。每个 MediaChunk 显式带
 stream_id、turn_id、epoch、sequence、timestamp_us、media_type、bytes、end。
-媒体序号在同一流内递增；中断后用新 epoch。过期 epoch 不向模型/宿主交付。
+媒体序号在同一流内递增。输入 epoch 固定为 0；输出打断后使用新的 output_epoch，过期输出不会交付给宿主。结束的流从活动表移出，通过 media_archive 保留资源引用。
 
 媒体在存储完成和 cursor 提交后才交付，输出消费者变慢会向上游施加背压。
 checkpoint 只记录最新封存节点；SealedMedia 的 previous 引用链接历史节点。
@@ -242,3 +242,17 @@ assistant 输出与完成信息，把异步 provider 更新归回原始调用。
 JsonOutput<T>（`typed-output`）从同一 Schema 构造请求格式并验证最终结果。
 `runs` 中的便利函数建立在普通 Invocation 上。观察流可能丢弃事件并发出 ObservationGap；
 审计、回放与统计应使用 checkpoint/RunStore 或测试模块中的 RecordingStore。
+
+### GPT-Live 原生会话
+
+启用 `openai-live`，使用 `models::openai::live::LiveConfig` 注入宿主的
+`CredentialProvider`，再创建 `LiveModel`。凭据元数据需要
+`header:ChatGPT-Account-Id`；登录、OAuth 刷新和代理配置归宿主。
+`examples/gpt_live.rs` 演示 Runtime、资源存储、输入 Opus 包、输出消费和 EndInput。
+
+完整发言通过 `ConversationItem` 写入历史；服务端识别的用户发言不会再发回模型。
+`RuntimeBuilder::delegation(Arc<dyn DelegationHandler>)` 注入后台任务执行器。
+执行器返回 `OperationHandle`，可以内部调用普通 Runtime；`OperationUpdate::Context`
+发送可持久化进度，`Finished { outcome: OperationOutcome }` 提交最终结果。
+这条路径复用操作身份、并发预算、取消、恢复与结果提交，不需要注册同名函数工具。
+模型提供方的委托、RuntimeTool、ProviderToolCall 是三个明确的语义。

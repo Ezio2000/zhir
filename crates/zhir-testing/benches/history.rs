@@ -1,4 +1,5 @@
 use std::time::Instant;
+use zhir_core::operation::OperationOutcome;
 use zhir_core::{
     message::Message,
     run::{History, HistoryEntry},
@@ -46,7 +47,7 @@ fn pending_serial(count: usize) -> std::time::Duration {
     use zhir_core::{
         message::Output,
         operation::CallRef,
-        tool::{RuntimeToolCall, RuntimeToolInput, RuntimeToolOutcome},
+        tool::{RuntimeToolCall, RuntimeToolInput},
     };
     let origin = |i| CallRef {
         session_id: "session".into(),
@@ -85,7 +86,7 @@ fn pending_serial(count: usize) -> std::time::Duration {
                 message: Message::RuntimeTool {
                     call_id: format!("c{i}"),
                     name: "echo".into(),
-                    outcome: RuntimeToolOutcome::Success {
+                    outcome: OperationOutcome::Success {
                         content: vec![],
                         structured: serde_json::Value::Null,
                     },

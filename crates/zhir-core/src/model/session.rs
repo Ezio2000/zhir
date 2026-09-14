@@ -14,7 +14,7 @@ use std::sync::Arc;
 pub struct SessionOpen {
     pub session_id: String,
     pub after_sequence: Option<u64>,
-    pub epoch: u64,
+    pub output_epoch: u64,
     pub limits: crate::run::Limits,
     pub request: ModelRequest,
     pub recovery: Option<RecoveryRef>,
@@ -33,6 +33,16 @@ pub struct SessionCommand {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SessionCommandBody {
+    DelegationContext {
+        operation_id: String,
+        origin: CallRef,
+        content: Vec<crate::message::Content>,
+    },
+    DelegationResult {
+        operation_id: String,
+        origin: CallRef,
+        outcome: crate::operation::OperationOutcome,
+    },
     StartTurn {
         turn_id: String,
         request: Box<ModelRequest>,
@@ -43,13 +53,13 @@ pub enum SessionCommandBody {
     ToolResult {
         operation_id: String,
         origin: CallRef,
-        outcome: crate::tool::RuntimeToolOutcome,
+        outcome: crate::operation::OperationOutcome,
     },
     UpdateProfile {
         revision: u64,
         profile: RequestProfile,
     },
-    Interrupt {
+    InterruptOutput {
         turn_id: String,
     },
     EndInput,
@@ -69,6 +79,11 @@ pub enum TurnDisposition {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SessionEventBody {
+    /// A complete conversation message with its own identity, independent of execution turns.
+    ConversationItem {
+        item_id: String,
+        message: Message,
+    },
     Acknowledged {
         command_id: String,
         recovery: Option<RecoveryRef>,

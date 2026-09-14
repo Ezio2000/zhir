@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "description": "Stream identity is unique per session direction and epoch. `end` seals it.\nInput epoch is zero; output uses the session's current output_epoch.\nPayload encoding and packet pacing belong to the selected model and host.",
   "properties": {
     "bytes": {
       "items": {

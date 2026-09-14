@@ -2,6 +2,60 @@ use super::*;
 
 impl Engine {
     pub(super) async fn operation_event(&mut self, id: &str, event: OperationEvent) -> Result<()> {
+        if let OperationUpdate::Context { content } = &event.update {
+            let record = self
+                .current
+                .active
+                .operations
+                .get(id)
+                .ok_or_else(|| Error::Protocol("unknown context operation".into()))?;
+            if record.owner != OperationOwner::Delegation || record.state.terminal() {
+                return Err(Error::Protocol(
+                    "context requires an active delegation".into(),
+                ));
+            }
+            if let Some(previous) = record.last_sequence {
+                if event.sequence < previous {
+                    return Err(Error::Protocol("delegation sequence regressed".into()));
+                }
+                if event.sequence == previous {
+                    return if record.last_update.as_ref() == Some(&event.update) {
+                        Ok(())
+                    } else {
+                        Err(Error::Protocol("conflicting delegation context".into()))
+                    };
+                }
+            }
+            for part in content {
+                part.validate()?;
+            }
+            let mut next = self.current.as_ref().clone();
+            let op = next
+                .active
+                .operations
+                .get_mut(id)
+                .expect("validated operation");
+            op.last_sequence = Some(event.sequence);
+            op.last_update = Some(event.update.clone());
+            next.active.commands.push(PendingCommand {
+                id: new_id(),
+                sent: false,
+                intent: CommandIntent::DelegationContext {
+                    operation_id: id.into(),
+                    content: content.clone(),
+                },
+            });
+            return self
+                .commit(
+                    next,
+                    Fact::Operation {
+                        operation_id: id.into(),
+                        state: record.state,
+                    },
+                    HistoryDelta::Unchanged,
+                )
+                .await;
+        }
         if let Some(record) = self.current.active.operations.get(id)
             && let Some(sequence) = record.last_sequence
         {

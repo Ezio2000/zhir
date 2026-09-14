@@ -97,9 +97,16 @@ pub(crate) fn apply(request: &mut ModelRequest, selected: &NegotiatedProfile) ->
                     }
                 }
             }
-            Message::RuntimeTool {
+            Message::DelegationResult {
                 outcome:
-                    zhir_core::tool::RuntimeToolOutcome::Success {
+                    zhir_core::operation::OperationOutcome::Success {
+                        content: contents, ..
+                    },
+                ..
+            }
+            | Message::RuntimeTool {
+                outcome:
+                    zhir_core::operation::OperationOutcome::Success {
                         content: contents, ..
                     },
                 ..

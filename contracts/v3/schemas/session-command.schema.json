@@ -24,53 +24,6 @@
       ],
       "type": "object"
     },
-    "Confirmation": {
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "source": {
-              "const": "provider",
-              "type": "string"
-            },
-            "value": true
-          },
-          "required": [
-            "source",
-            "value"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "source": {
-              "const": "verified",
-              "type": "string"
-            },
-            "value": true
-          },
-          "required": [
-            "source",
-            "value"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "source": {
-              "const": "unknown",
-              "type": "string"
-            }
-          },
-          "required": [
-            "source"
-          ],
-          "type": "object"
-        }
-      ]
-    },
     "Content": {
       "oneOf": [
         {
@@ -128,18 +81,39 @@
         }
       ]
     },
-    "EffectiveProfile": {
+    "DelegationRequest": {
       "additionalProperties": false,
       "properties": {
-        "values": {
-          "additionalProperties": {
-            "$ref": "#/$defs/Confirmation"
-          },
-          "type": "object"
+        "id": {
+          "type": "string"
+        },
+        "prompt": {
+          "type": "string"
         }
       },
       "required": [
-        "values"
+        "id",
+        "prompt"
+      ],
+      "type": "object"
+    },
+    "Execution": {
+      "additionalProperties": false,
+      "properties": {
+        "idempotent": {
+          "type": "boolean"
+        },
+        "parallel": {
+          "type": "boolean"
+        },
+        "read_only": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "parallel",
+        "read_only",
+        "idempotent"
       ],
       "type": "object"
     },
@@ -171,270 +145,100 @@
       ],
       "type": "string"
     },
-    "ModelDelta": {
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "kind": {
-              "const": "text",
-              "type": "string"
-            },
-            "output_index": {
-              "format": "uint",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "text": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "output_index",
-            "text"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "kind": {
-              "const": "reasoning",
-              "type": "string"
-            },
-            "output_index": {
-              "format": "uint",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "text": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "output_index",
-            "text"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "id": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "input": {
-              "type": "string"
-            },
-            "kind": {
-              "const": "runtime_tool",
-              "type": "string"
-            },
-            "name": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "output_index": {
-              "format": "uint",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "kind",
-            "output_index",
-            "input"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "data": true,
-            "kind": {
-              "const": "protocol_event",
-              "type": "string"
-            },
-            "output_index": {
-              "format": "uint",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "kind",
-            "output_index",
-            "data"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "data": true,
-            "id": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "kind": {
-              "const": "provider_tool_progress",
-              "type": "string"
-            },
-            "name": {
-              "type": "string"
-            },
-            "output_index": {
-              "format": "uint",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "provider": {
-              "type": "string"
-            },
-            "status": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ProviderToolStatus"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          "required": [
-            "kind",
-            "output_index",
-            "provider",
-            "name",
-            "data"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "kind": {
-              "const": "usage",
-              "type": "string"
-            },
-            "usage": {
-              "$ref": "#/$defs/Usage"
-            }
-          },
-          "required": [
-            "kind",
-            "usage"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "OperationEvent": {
+    "GenerationProfile": {
       "additionalProperties": false,
       "properties": {
-        "sequence": {
+        "max_output_tokens": {
           "format": "uint64",
           "minimum": 0,
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
         },
-        "update": {
-          "$ref": "#/$defs/OperationUpdate"
+        "parallel_runtime_tools": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "seed": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "temperature": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
         }
       },
-      "required": [
-        "sequence",
-        "update"
-      ],
       "type": "object"
     },
-    "OperationUpdate": {
+    "InputSpec": {
       "oneOf": [
         {
           "additionalProperties": false,
           "properties": {
             "kind": {
-              "const": "running",
+              "const": "structured",
               "type": "string"
             },
-            "recovery": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/RecoveryRef"
-                },
-                {
-                  "type": "null"
-                }
-              ]
+            "schema": true
+          },
+          "required": [
+            "kind",
+            "schema"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "format": true,
+            "kind": {
+              "const": "freeform",
+              "type": "string"
             }
           },
           "required": [
             "kind"
           ],
           "type": "object"
-        },
+        }
+      ]
+    },
+    "Interaction": {
+      "enum": [
+        "turn_based",
+        "duplex"
+      ],
+      "type": "string"
+    },
+    "Message": {
+      "oneOf": [
         {
           "additionalProperties": false,
           "properties": {
-            "kind": {
-              "const": "waiting",
-              "type": "string"
-            },
-            "prompt": true,
-            "recovery": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/RecoveryRef"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          "required": [
-            "kind",
-            "prompt"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "kind": {
-              "const": "progress",
-              "type": "string"
-            },
-            "value": true
-          },
-          "required": [
-            "kind",
-            "value"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "kind": {
-              "const": "finished",
+            "id": {
               "type": "string"
             },
             "outcome": {
-              "$ref": "#/$defs/RuntimeToolOutcome"
+              "$ref": "#/$defs/OperationOutcome"
+            },
+            "role": {
+              "const": "delegation_result",
+              "type": "string"
             }
           },
           "required": [
-            "kind",
+            "role",
+            "id",
             "outcome"
           ],
           "type": "object"
@@ -442,8 +246,210 @@
         {
           "additionalProperties": false,
           "properties": {
+            "content": {
+              "items": {
+                "$ref": "#/$defs/Content"
+              },
+              "type": "array"
+            },
+            "role": {
+              "const": "system",
+              "type": "string"
+            }
+          },
+          "required": [
+            "role",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "content": {
+              "items": {
+                "$ref": "#/$defs/Content"
+              },
+              "type": "array"
+            },
+            "role": {
+              "const": "user",
+              "type": "string"
+            }
+          },
+          "required": [
+            "role",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "content": {
+              "items": {
+                "$ref": "#/$defs/Content"
+              },
+              "type": "array"
+            },
+            "role": {
+              "const": "external",
+              "type": "string"
+            }
+          },
+          "required": [
+            "role",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "output": {
+              "items": {
+                "$ref": "#/$defs/Output"
+              },
+              "type": "array"
+            },
+            "provider_data": {
+              "default": null
+            },
+            "role": {
+              "const": "assistant",
+              "type": "string"
+            }
+          },
+          "required": [
+            "role",
+            "output"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "call_id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "outcome": {
+              "$ref": "#/$defs/OperationOutcome"
+            },
+            "role": {
+              "const": "runtime_tool",
+              "type": "string"
+            }
+          },
+          "required": [
+            "role",
+            "call_id",
+            "name",
+            "outcome"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ModelRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "messages": {
+          "items": {
+            "$ref": "#/$defs/Message"
+          },
+          "type": "array"
+        },
+        "profile": {
+          "$ref": "#/$defs/RequestProfile"
+        },
+        "provider_tools": {
+          "items": {
+            "$ref": "#/$defs/ProviderToolSpec"
+          },
+          "type": "array"
+        },
+        "response_format": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResponseFormat"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runtime_tools": {
+          "items": {
+            "$ref": "#/$defs/RuntimeToolSpec"
+          },
+          "type": "array"
+        },
+        "stream": {
+          "type": "boolean"
+        },
+        "tool_choice": {
+          "$ref": "#/$defs/ToolChoice"
+        }
+      },
+      "required": [
+        "messages",
+        "runtime_tools",
+        "provider_tools",
+        "profile",
+        "tool_choice",
+        "stream"
+      ],
+      "type": "object"
+    },
+    "OperationOutcome": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "content": {
+              "items": {
+                "$ref": "#/$defs/Content"
+              },
+              "type": "array"
+            },
             "kind": {
-              "const": "unknown",
+              "const": "success",
+              "type": "string"
+            },
+            "structured": true
+          },
+          "required": [
+            "kind",
+            "content",
+            "structured"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/Failure"
+            },
+            "kind": {
+              "const": "failure",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "error"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "cancelled",
               "type": "string"
             },
             "reason": {
@@ -460,6 +466,23 @@
     },
     "Output": {
       "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "delegation",
+              "type": "string"
+            },
+            "request": {
+              "$ref": "#/$defs/DelegationRequest"
+            }
+          },
+          "required": [
+            "kind",
+            "request"
+          ],
+          "type": "object"
+        },
         {
           "additionalProperties": false,
           "properties": {
@@ -612,6 +635,25 @@
         }
       ]
     },
+    "ProviderToolSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "options": {
+          "default": null
+        },
+        "provider": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "name"
+      ],
+      "type": "object"
+    },
     "ProviderToolStatus": {
       "enum": [
         "cancelled",
@@ -623,17 +665,80 @@
       ],
       "type": "string"
     },
-    "RecoveryRef": {
+    "Reasoning": {
+      "enum": [
+        "low",
+        "balanced",
+        "high"
+      ],
+      "type": "string"
+    },
+    "RequestProfile": {
       "additionalProperties": false,
       "properties": {
-        "adapter": {
-          "type": "string"
+        "alternatives": {
+          "additionalProperties": {
+            "items": true,
+            "type": "array"
+          },
+          "description": "Exact, ordered alternatives. An empty list prohibits semantic degradation.",
+          "type": "object"
         },
-        "data": true
+        "extensions": {
+          "additionalProperties": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "object"
+        },
+        "generation": {
+          "$ref": "#/$defs/GenerationProfile"
+        },
+        "interaction": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Requirement5"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "language": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Requirement4"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reasoning": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Requirement3"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "serving": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Requirement2"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
       },
       "required": [
-        "adapter",
-        "data"
+        "generation",
+        "alternatives",
+        "extensions"
       ],
       "type": "object"
     },
@@ -665,6 +770,158 @@
             },
             "value": {
               "$ref": "#/$defs/Fidelity"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Requirement2": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "required",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Serving"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "preferred",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Serving"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Requirement3": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "required",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Reasoning"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "preferred",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Reasoning"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Requirement4": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "required",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "preferred",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Requirement5": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "required",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Interaction"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "preferred",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Interaction"
             }
           },
           "required": [
@@ -835,6 +1092,42 @@
       ],
       "type": "object"
     },
+    "ResponseFormat": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "json",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "schema",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "schema": true
+          },
+          "required": [
+            "kind",
+            "name",
+            "schema"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "RuntimeToolCall": {
       "additionalProperties": false,
       "properties": {
@@ -891,7 +1184,44 @@
         }
       ]
     },
-    "RuntimeToolOutcome": {
+    "RuntimeToolSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "execution": {
+          "$ref": "#/$defs/Execution",
+          "default": {
+            "idempotent": false,
+            "parallel": false,
+            "read_only": false
+          }
+        },
+        "input": {
+          "$ref": "#/$defs/InputSpec"
+        },
+        "name": {
+          "type": "string"
+        },
+        "output_schema": true
+      },
+      "required": [
+        "name",
+        "description",
+        "input"
+      ],
+      "type": "object"
+    },
+    "Serving": {
+      "enum": [
+        "balanced",
+        "low_latency",
+        "low_cost"
+      ],
+      "type": "string"
+    },
+    "SessionCommandBody": {
       "oneOf": [
         {
           "additionalProperties": false,
@@ -903,141 +1233,10 @@
               "type": "array"
             },
             "kind": {
-              "const": "success",
+              "const": "delegation_context",
               "type": "string"
             },
-            "structured": true
-          },
-          "required": [
-            "kind",
-            "content",
-            "structured"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "error": {
-              "$ref": "#/$defs/Failure"
-            },
-            "kind": {
-              "const": "failure",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "error"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "kind": {
-              "const": "cancelled",
-              "type": "string"
-            },
-            "reason": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "reason"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "SessionEventBody": {
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "command_id": {
-              "type": "string"
-            },
-            "kind": {
-              "const": "acknowledged",
-              "type": "string"
-            },
-            "recovery": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/RecoveryRef"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          "required": [
-            "kind",
-            "command_id"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "delta": {
-              "$ref": "#/$defs/ModelDelta"
-            },
-            "kind": {
-              "const": "delta",
-              "type": "string"
-            },
-            "turn_id": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "turn_id",
-            "delta"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "caller_id": {
-              "type": "string"
-            },
-            "item_id": {
-              "type": "string"
-            },
-            "kind": {
-              "const": "output",
-              "type": "string"
-            },
-            "output": {
-              "$ref": "#/$defs/Output"
-            },
-            "turn_id": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "turn_id",
-            "item_id",
-            "caller_id",
-            "output"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "event": {
-              "$ref": "#/$defs/OperationEvent"
-            },
-            "kind": {
-              "const": "operation",
+            "operation_id": {
               "type": "string"
             },
             "origin": {
@@ -1046,57 +1245,55 @@
           },
           "required": [
             "kind",
+            "operation_id",
             "origin",
-            "event"
+            "content"
           ],
           "type": "object"
         },
         {
           "additionalProperties": false,
           "properties": {
-            "disposition": {
-              "$ref": "#/$defs/TurnDisposition"
-            },
-            "effective": {
-              "$ref": "#/$defs/EffectiveProfile"
-            },
-            "finish_reason": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
             "kind": {
-              "const": "turn_finished",
+              "const": "delegation_result",
               "type": "string"
             },
-            "model_id": {
-              "type": [
-                "string",
-                "null"
-              ]
+            "operation_id": {
+              "type": "string"
             },
-            "provider_data": true,
-            "response_id": {
-              "type": [
-                "string",
-                "null"
-              ]
+            "origin": {
+              "$ref": "#/$defs/CallRef"
+            },
+            "outcome": {
+              "$ref": "#/$defs/OperationOutcome"
+            }
+          },
+          "required": [
+            "kind",
+            "operation_id",
+            "origin",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "start_turn",
+              "type": "string"
+            },
+            "request": {
+              "$ref": "#/$defs/ModelRequest"
             },
             "turn_id": {
               "type": "string"
-            },
-            "usage": {
-              "$ref": "#/$defs/Usage"
             }
           },
           "required": [
             "kind",
             "turn_id",
-            "disposition",
-            "usage",
-            "provider_data",
-            "effective"
+            "request"
           ],
           "type": "object"
         },
@@ -1104,16 +1301,16 @@
           "additionalProperties": false,
           "properties": {
             "kind": {
-              "const": "recovery",
+              "const": "input",
               "type": "string"
             },
-            "reference": {
-              "$ref": "#/$defs/RecoveryRef"
+            "message": {
+              "$ref": "#/$defs/Message"
             }
           },
           "required": [
             "kind",
-            "reference"
+            "message"
           ],
           "type": "object"
         },
@@ -1121,7 +1318,85 @@
           "additionalProperties": false,
           "properties": {
             "kind": {
-              "const": "closed",
+              "const": "tool_result",
+              "type": "string"
+            },
+            "operation_id": {
+              "type": "string"
+            },
+            "origin": {
+              "$ref": "#/$defs/CallRef"
+            },
+            "outcome": {
+              "$ref": "#/$defs/OperationOutcome"
+            }
+          },
+          "required": [
+            "kind",
+            "operation_id",
+            "origin",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "update_profile",
+              "type": "string"
+            },
+            "profile": {
+              "$ref": "#/$defs/RequestProfile"
+            },
+            "revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "revision",
+            "profile"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "interrupt_output",
+              "type": "string"
+            },
+            "turn_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "turn_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "end_input",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "close",
               "type": "string"
             }
           },
@@ -1132,85 +1407,102 @@
         }
       ]
     },
-    "TurnDisposition": {
-      "enum": [
-        "finished",
-        "awaiting_tools",
-        "continue"
-      ],
-      "type": "string"
-    },
-    "Usage": {
-      "additionalProperties": false,
-      "properties": {
-        "cache_read_tokens": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+    "ToolChoice": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "auto",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
         },
-        "cache_write_tokens": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "none",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
         },
-        "input_tokens": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "required",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
         },
-        "output_tokens": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "runtime_tool",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ],
+          "type": "object"
         },
-        "reasoning_tokens": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "total_tokens": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "provider_tool",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "provider": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "provider",
+            "name"
+          ],
+          "type": "object"
         }
-      },
-      "type": "object"
+      ]
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
     "body": {
-      "$ref": "#/$defs/SessionEventBody"
+      "$ref": "#/$defs/SessionCommandBody"
     },
-    "sequence": {
-      "format": "uint64",
-      "minimum": 0,
-      "type": "integer"
+    "id": {
+      "type": "string"
     }
   },
   "required": [
-    "sequence",
+    "id",
     "body"
   ],
-  "title": "SessionEvent",
+  "title": "SessionCommand",
   "type": "object"
 }

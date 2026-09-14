@@ -30,7 +30,11 @@ pub mod transform;
 pub use extension::{ExtensionChain, ExtensionContext, ProtocolExtension};
 pub use function::{FunctionDeltaSink, FunctionModel};
 pub use transform::TransformModel;
-#[cfg(any(feature = "openai-chat", feature = "openai-responses"))]
+#[cfg(any(
+    feature = "openai-chat",
+    feature = "openai-responses",
+    feature = "openai-live"
+))]
 pub mod openai;
 mod streaming;
 pub mod transport;

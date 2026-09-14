@@ -353,7 +353,7 @@ pub trait ModelTestExt: Model {
                 .open_session(SessionOpen {
                     session_id: "test-session".into(),
                     after_sequence: None,
-                    epoch: 0,
+                    output_epoch: 0,
                     limits: zhir_kernel::defaults::limits(),
                     request: request.clone(),
                     recovery: None,

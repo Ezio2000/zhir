@@ -139,7 +139,7 @@ async fn typed_tools_keep_output_validation_and_error_lifecycle() {
         .unwrap();
     assert!(matches!(
         bound.start(context()).await.unwrap().final_outcome(),
-        zhir_core::tool::RuntimeToolOutcome::Failure { error } if error.code == "invalid_tool_output"
+        zhir_core::operation::OperationOutcome::Failure { error } if error.code == "invalid_tool_output"
     ));
     let invoked = Arc::new(AtomicUsize::new(0));
     let count = invoked.clone();
@@ -244,7 +244,7 @@ async fn typed_replies_preserve_resources_and_validate_final_payloads() {
             ));
         } else {
             assert!(
-                matches!(result.final_outcome(), zhir_core::tool::RuntimeToolOutcome::Failure { error } if error.code == "invalid_tool_output")
+                matches!(result.final_outcome(), zhir_core::operation::OperationOutcome::Failure { error } if error.code == "invalid_tool_output")
             );
         }
     }

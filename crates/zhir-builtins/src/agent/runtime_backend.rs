@@ -3,13 +3,14 @@ use super::AgentBackend;
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::{Semaphore, mpsc};
+use zhir_core::operation::OperationOutcome;
 use zhir_core::{
     BoxFuture, Result,
     error::{Error, Failure},
     message::Message,
     operation::*,
     run::{RunContext, State},
-    tool::{RuntimeToolContext, RuntimeToolOutcome},
+    tool::RuntimeToolContext,
 };
 use zhir_kernel::{Invocation, ResumeRequest, RunRequest, Runtime, control::ControlHandle};
 
@@ -172,19 +173,19 @@ impl OperationEvents for ChildEvents {
 
 mod child;
 
-fn settled_outcome(state: &State) -> RuntimeToolOutcome {
+fn settled_outcome(state: &State) -> OperationOutcome {
     match state {
-        State::Completed { content } => RuntimeToolOutcome::Success {
+        State::Completed { content } => OperationOutcome::Success {
             content: content.clone(),
             structured: serde_json::Value::Null,
         },
-        State::Failed { error } => RuntimeToolOutcome::Failure {
+        State::Failed { error } => OperationOutcome::Failure {
             error: error.clone(),
         },
-        State::Cancelled => RuntimeToolOutcome::Cancelled {
+        State::Cancelled => OperationOutcome::Cancelled {
             reason: "child cancelled".into(),
         },
-        State::Limited { reason } => RuntimeToolOutcome::Failure {
+        State::Limited { reason } => OperationOutcome::Failure {
             error: Failure::new("child_limit", format!("{reason:?}")),
         },
         _ => unreachable!(),

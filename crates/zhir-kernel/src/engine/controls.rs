@@ -1,4 +1,5 @@
 use super::*;
+use zhir_core::operation::OperationOutcome;
 
 impl Engine {
     pub(super) async fn resolve(&mut self, resolution: RecoveryResolution) -> Result<()> {
@@ -11,7 +12,7 @@ impl Engine {
                 operation_id,
                 reason,
             } => {
-                self.finish(&operation_id, RuntimeToolOutcome::Cancelled { reason })
+                self.finish(&operation_id, OperationOutcome::Cancelled { reason })
                     .await
             }
             RecoveryResolution::Attach {
@@ -91,8 +92,11 @@ impl Engine {
                     Ok(new_id())
                 }
                 ControlBody::UpdateProfile(profile) => self.update_profile(profile).await,
-                ControlBody::Interrupt => {
-                    if !self.session_capabilities().supports(Capability::Steering) {
+                ControlBody::InterruptOutput => {
+                    if !self
+                        .session_capabilities()
+                        .supports(Capability::InterruptOutput)
+                    {
                         return Err(Error::Invalid(
                             "model does not support native interruption".into(),
                         ));
@@ -104,7 +108,7 @@ impl Engine {
                         .turn_id
                         .clone()
                         .ok_or_else(|| Error::Invalid("no turn to interrupt".into()))?;
-                    self.prepare_command(CommandIntent::Interrupt { turn_id })
+                    self.prepare_command(CommandIntent::InterruptOutput { turn_id })
                         .await
                 }
                 ControlBody::EndInput => self.prepare_command(CommandIntent::EndInput).await,
@@ -247,7 +251,7 @@ impl Engine {
         if record.state == OperationState::Queued {
             self.finish(
                 &id,
-                RuntimeToolOutcome::Cancelled {
+                OperationOutcome::Cancelled {
                     reason: "cancelled before dispatch".into(),
                 },
             )
