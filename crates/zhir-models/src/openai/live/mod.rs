@@ -1,7 +1,9 @@
 //! GPT-Live through the native Codex subscription WebRTC endpoint.
 //! Credentials and account login are supplied by the host. Audio chunks contain
 //! one Opus packet (48 kHz clock, negotiated stereo); devices/codecs are host-owned.
+mod audio;
 mod codec;
+mod protocol;
 mod session;
 mod signaling;
 use std::{sync::Arc, time::Duration};
@@ -21,6 +23,9 @@ pub struct LiveConfig {
     pub http_client: reqwest::Client,
     pub connect_timeout: Duration,
     pub command_timeout: Duration,
+    /// Grace for the original WebRTC connection to recover after Disconnected.
+    /// This does not create a new peer or resume a session after process restart.
+    pub reconnect_timeout: Duration,
     pub max_event_bytes: usize,
     pub ice_servers: Vec<String>,
 }
@@ -30,7 +35,8 @@ impl LiveConfig {
             model: "gpt-live-1-codex".into(), voice: "cove".into(), instructions: String::new(),
             endpoint: "https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas".into(),
             credentials, http_client: reqwest::Client::new(), connect_timeout: Duration::from_secs(30),
-            command_timeout: Duration::from_secs(15), max_event_bytes: 1024 * 1024, ice_servers: vec![],
+            command_timeout: Duration::from_secs(15), reconnect_timeout: Duration::from_secs(10),
+            max_event_bytes: 1024 * 1024, ice_servers: vec![],
         }
     }
 }
@@ -54,10 +60,14 @@ impl LiveModel {
             || std::time::Instant::now()
                 .checked_add(config.command_timeout)
                 .is_none()
+            || std::time::Instant::now()
+                .checked_add(config.reconnect_timeout)
+                .is_none()
             || config.model.trim().is_empty()
             || config.voice.trim().is_empty()
             || config.connect_timeout.is_zero()
             || config.command_timeout.is_zero()
+            || config.reconnect_timeout.is_zero()
             || config.max_event_bytes == 0
         {
             return Err(Error::Invalid("invalid Live configuration".into()));
@@ -71,6 +81,7 @@ impl LiveModel {
                     Capability::Streaming,
                     Capability::Duplex,
                     Capability::Steering,
+                    Capability::InputAudioControl,
                     Capability::AsyncResults,
                     Capability::ConversationItems,
                     Capability::Delegation,
@@ -105,7 +116,7 @@ impl Model for LiveModel {
             self.negotiate(&open.request)?;
             if open.recovery.is_some() || open.after_sequence.is_some() {
                 return Err(Error::Protocol(
-                    "Live session recovery is unsupported; no input is replayed".into(),
+                    "Live adapter has no verified subscription session recovery mechanism".into(),
                 ));
             }
             session::open(self.clone(), open)

@@ -1369,13 +1369,51 @@
               "const": "interrupt_output",
               "type": "string"
             },
+            "output_epoch": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
             "turn_id": {
               "type": "string"
             }
           },
           "required": [
             "kind",
-            "turn_id"
+            "turn_id",
+            "output_epoch"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Materialize buffered input without ending the session. Acknowledgement\nconfirms the provider's flush boundary, not device playback completion.",
+          "properties": {
+            "kind": {
+              "const": "flush_input",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Enable or pause remote audio input processing without closing the input port.",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "kind": {
+              "const": "set_input_audio",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "enabled"
           ],
           "type": "object"
         },

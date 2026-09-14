@@ -18,7 +18,7 @@ use zhir::models::{
 };
 use zhir_core::{credential::Credential, error::Error, message::Message, model::*};
 
-fn config(url: &str) -> TtsConfig {
+pub(super) fn config(url: &str) -> TtsConfig {
     let mut config = TtsConfig::new(
         "fixture-model",
         "fixture-voice",
@@ -27,7 +27,7 @@ fn config(url: &str) -> TtsConfig {
     config.connection.url = url.into();
     config
 }
-fn open() -> SessionOpen {
+pub(super) fn open() -> SessionOpen {
     SessionOpen {
         session_id: "fixture-session".into(),
         after_sequence: None,
@@ -50,7 +50,7 @@ fn open() -> SessionOpen {
         },
     }
 }
-async fn send_json(
+pub(super) async fn send_json(
     socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
     value: serde_json::Value,
 ) {
@@ -170,11 +170,11 @@ async fn websocket_refreshes_one_rejected_handshake_and_preserves_account_header
         assert!(session.media_output.is_some());
         got_ping.await.unwrap();
         session.input.send(SessionCommand { id:"close".into(), body:SessionCommandBody::Close }).await.unwrap();
-        let first=session.output.receive().await.unwrap().unwrap();
-        assert_eq!(first.sequence,0);
+        let first=next_event(&mut session.output).await.unwrap().unwrap();
+        assert_eq!(first.sequence,1);
         assert!(matches!(first.body,SessionEventBody::Acknowledged { command_id, .. } if command_id=="close"));
-        assert!(matches!(session.output.receive().await.unwrap().unwrap().body,SessionEventBody::Closed));
-        assert!(session.output.receive().await.unwrap().is_none());
+        assert!(matches!(next_event(&mut session.output).await.unwrap().unwrap().body,SessionEventBody::Closed));
+        assert!(next_event(&mut session.output).await.unwrap().is_none());
         server.await.unwrap();
         assert_eq!(calls.load(Ordering::SeqCst),2);
     }).await.unwrap();
@@ -261,7 +261,7 @@ async fn websocket_cancellation_and_dropped_consumers_release_a_pending_task() {
             if cancel {
                 cancellation.cancel();
                 assert!(matches!(
-                    session.output.receive().await,
+                    next_event(&mut session.output).await,
                     Err(Error::Cancelled)
                 ));
                 assert!(
@@ -337,18 +337,18 @@ async fn websocket_terminal_error_survives_a_full_event_queue() {
             })
             .await
             .unwrap();
-        server.await.unwrap();
         // Delay consumption beyond the previous error-delivery timeout.
         tokio::time::sleep(Duration::from_millis(40)).await;
         assert!(matches!(
-            session.output.receive().await.unwrap().unwrap().body,
+            next_event(&mut session.output).await.unwrap().unwrap().body,
             SessionEventBody::Acknowledged { .. }
         ));
         assert!(matches!(
-            session.output.receive().await,
+            next_event(&mut session.output).await,
             Err(Error::Protocol(_))
         ));
-        assert!(session.output.receive().await.unwrap().is_none());
+        assert!(next_event(&mut session.output).await.unwrap().is_none());
+        server.await.unwrap();
     })
     .await
     .unwrap();
@@ -375,7 +375,7 @@ async fn websocket_rejects_malformed_events_without_guessing_field_types() {
             let model = tts::model(config(&endpoint)).unwrap();
             let mut session = model.open_session(open()).await.unwrap();
             assert!(matches!(
-                session.output.receive().await,
+                next_event(&mut session.output).await,
                 Err(Error::Protocol(_))
             ));
             server.await.unwrap();
@@ -427,7 +427,7 @@ async fn api_and_token_plan_keys_use_the_same_bearer_handshake() {
                 })
                 .await
                 .unwrap();
-            while session.output.receive().await.unwrap().is_some() {}
+            while next_event(&mut session.output).await.unwrap().is_some() {}
             server.await.unwrap();
         })
         .await
@@ -480,7 +480,7 @@ async fn websocket_requires_real_sentence_boundaries_before_completion() {
                 .await
                 .unwrap();
             assert!(matches!(
-                session.output.receive().await.unwrap().unwrap().body,
+                next_event(&mut session.output).await.unwrap().unwrap().body,
                 SessionEventBody::Acknowledged { .. }
             ));
             session
@@ -492,7 +492,7 @@ async fn websocket_requires_real_sentence_boundaries_before_completion() {
                 .await
                 .unwrap();
             assert!(matches!(
-                session.output.receive().await,
+                next_event(&mut session.output).await,
                 Err(Error::Protocol(_))
             ));
             assert_eq!(
@@ -511,5 +511,22 @@ async fn websocket_requires_real_sentence_boundaries_before_completion() {
         })
         .await
         .unwrap();
+    }
+}
+
+pub(super) async fn next_event(
+    output: &mut Box<dyn SessionReceiver>,
+) -> zhir_core::Result<Option<SessionEvent>> {
+    loop {
+        let event = output.receive().await?;
+        if !matches!(
+            &event,
+            Some(SessionEvent {
+                body: SessionEventBody::Delta { .. },
+                ..
+            })
+        ) {
+            return Ok(event);
+        }
     }
 }

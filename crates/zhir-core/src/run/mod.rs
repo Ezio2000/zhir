@@ -171,6 +171,12 @@ pub enum CommandIntent {
     },
     InterruptOutput {
         turn_id: String,
+        output_epoch: u64,
+    },
+    FlushInput,
+    /// Enable or pause remote audio input processing without closing the input port.
+    SetInputAudio {
+        enabled: bool,
     },
     EndInput,
     Close,
@@ -197,6 +203,8 @@ pub struct SessionSnapshot {
     pub output_epoch: u64,
     pub media_archive: Option<crate::resource::ResourceRef>,
     pub input_closed: bool,
+    /// Latest committed audio input mode; pending commands record remote settlement.
+    pub input_audio_enabled: bool,
     pub closing: bool,
     pub closed: bool,
     pub profile_revision: u64,

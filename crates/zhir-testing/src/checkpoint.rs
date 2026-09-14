@@ -51,6 +51,7 @@ pub fn checkpoint_with_history(history: History) -> Checkpoint {
                 recovery: None,
                 output_epoch: 0,
                 media_archive: None,
+                input_audio_enabled: true,
                 input_closed: true,
                 closing: false,
                 closed: false,

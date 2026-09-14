@@ -5,6 +5,7 @@ target/
 *.profdata
 
 # Generated test reports and local runtime data.
+__pycache__/
 /test-results/
 /coverage/
 deepseek-live.json

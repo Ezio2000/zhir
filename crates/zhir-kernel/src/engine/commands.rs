@@ -11,13 +11,8 @@ impl Engine {
         let mut next = self.current.as_ref().clone();
         match &intent {
             CommandIntent::Close => next.active.session.closing = true,
-            CommandIntent::InterruptOutput { .. } => {
-                next.active.session.output_epoch = next
-                    .active
-                    .session
-                    .output_epoch
-                    .checked_add(1)
-                    .ok_or_else(|| Error::Invalid("output epoch overflow".into()))?;
+            CommandIntent::InterruptOutput { output_epoch, .. } => {
+                next.active.session.output_epoch = *output_epoch;
                 let retired: Vec<_> = next
                     .active
                     .media
@@ -32,6 +27,9 @@ impl Engine {
                 }
             }
             CommandIntent::EndInput => next.active.session.input_closed = true,
+            CommandIntent::SetInputAudio { enabled } => {
+                next.active.session.input_audio_enabled = *enabled
+            }
             _ => (),
         }
         next.active.commands.push(PendingCommand {
@@ -116,7 +114,7 @@ impl Engine {
         let busy_turn = self.current.active.session.disposition.is_none()
             && self.current.active.session.turn_id.is_some();
         match &command.intent {
-            CommandIntent::EndInput | CommandIntent::Close => {
+            CommandIntent::EndInput | CommandIntent::Close | CommandIntent::FlushInput => {
                 !self.input_sending && self.media.is_empty()
             }
             CommandIntent::ToolResult { .. } if busy_turn => self
@@ -227,8 +225,16 @@ impl Engine {
             CommandIntent::UpdateProfile { revision, profile } => {
                 SessionCommandBody::UpdateProfile { revision, profile }
             }
-            CommandIntent::InterruptOutput { turn_id } => {
-                SessionCommandBody::InterruptOutput { turn_id }
+            CommandIntent::InterruptOutput {
+                turn_id,
+                output_epoch,
+            } => SessionCommandBody::InterruptOutput {
+                turn_id,
+                output_epoch,
+            },
+            CommandIntent::FlushInput => SessionCommandBody::FlushInput,
+            CommandIntent::SetInputAudio { enabled } => {
+                SessionCommandBody::SetInputAudio { enabled }
             }
             CommandIntent::EndInput => SessionCommandBody::EndInput,
             CommandIntent::Close => SessionCommandBody::Close,

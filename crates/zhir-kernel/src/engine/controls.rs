@@ -108,7 +108,43 @@ impl Engine {
                         .turn_id
                         .clone()
                         .ok_or_else(|| Error::Invalid("no turn to interrupt".into()))?;
-                    self.prepare_command(CommandIntent::InterruptOutput { turn_id })
+                    let output_epoch = self
+                        .current
+                        .active
+                        .session
+                        .output_epoch
+                        .checked_add(1)
+                        .ok_or_else(|| Error::Invalid("output epoch overflow".into()))?;
+                    self.prepare_command(CommandIntent::InterruptOutput {
+                        turn_id,
+                        output_epoch,
+                    })
+                    .await
+                }
+                ControlBody::FlushInput => {
+                    if !self.session_capabilities().supports(Capability::FlushInput) {
+                        return Err(Error::Invalid(
+                            "session does not support input flushing".into(),
+                        ));
+                    }
+                    if self.current.active.session.input_closed {
+                        return Err(Error::Invalid("input is closed".into()));
+                    }
+                    self.prepare_command(CommandIntent::FlushInput).await
+                }
+                ControlBody::SetInputAudio(enabled) => {
+                    if !self
+                        .session_capabilities()
+                        .supports(Capability::InputAudioControl)
+                    {
+                        return Err(Error::Invalid(
+                            "session does not support audio input control".into(),
+                        ));
+                    }
+                    if self.current.active.session.input_closed {
+                        return Err(Error::Invalid("input is closed".into()));
+                    }
+                    self.prepare_command(CommandIntent::SetInputAudio { enabled })
                         .await
                 }
                 ControlBody::EndInput => self.prepare_command(CommandIntent::EndInput).await,

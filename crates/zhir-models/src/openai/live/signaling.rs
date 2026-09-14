@@ -78,12 +78,6 @@ pub(super) async fn create(
                 .await?;
             continue;
         }
-        if !status.is_success() {
-            return Err(Error::Model(Failure::new(
-                format!("http_{}", status.as_u16()),
-                "Live session creation rejected",
-            )));
-        }
         let mut response = response;
         let mut data = Vec::new();
         while let Some(bytes) = response
@@ -95,6 +89,21 @@ pub(super) async fn create(
                 return Err(Error::Protocol("oversized Live SDP".into()));
             }
             data.extend_from_slice(&bytes);
+        }
+        if !status.is_success() {
+            let body = String::from_utf8(data)
+                .map_err(|_| Error::Protocol("invalid Live rejection text".into()))?;
+            let failure = match serde_json::from_str::<Value>(&body) {
+                Ok(value) if value.get("error").is_some() => {
+                    let error: super::codec::ServerError =
+                        serde_json::from_value(value["error"].clone()).map_err(|_| {
+                            Error::Protocol("invalid Live rejection envelope".into())
+                        })?;
+                    Failure::new(error.code, error.message)
+                }
+                _ => Failure::new(format!("http_{}", status.as_u16()), body),
+            };
+            return Err(Error::Model(failure));
         }
         return String::from_utf8(data)
             .map_err(|_| Error::Protocol("invalid Live SDP text".into()));

@@ -18,6 +18,8 @@ pub mod capabilities;
 mod codec;
 pub mod credentials;
 pub mod decorators;
+#[cfg(any(feature = "minimax", feature = "openai-live"))]
+mod native;
 pub mod resources;
 mod session;
 pub use resources::ResourceModel;

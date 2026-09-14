@@ -9,9 +9,10 @@ pub(crate) struct Audio {
     open: bool,
     limit: usize,
     started_at: Instant,
+    media_type: String,
 }
 impl Audio {
-    pub fn new(epoch: u64, limit: usize) -> Self {
+    pub fn new(epoch: u64, limit: usize, media_type: String) -> Self {
         Self {
             epoch,
             sentence: 0,
@@ -19,6 +20,7 @@ impl Audio {
             open: false,
             limit,
             started_at: Instant::now(),
+            media_type,
         }
     }
     pub fn start(&mut self) -> Result<()> {
@@ -33,11 +35,15 @@ impl Audio {
         self.open = true;
         Ok(())
     }
-    pub fn cancel(&mut self) -> Result<()> {
-        self.epoch = self
-            .epoch
-            .checked_add(1)
-            .ok_or_else(|| protocol("epoch overflow"))?;
+    pub fn validate_epoch(&self, epoch: u64) -> Result<()> {
+        if epoch <= self.epoch {
+            return Err(protocol("interrupt must advance the kernel output epoch"));
+        }
+        Ok(())
+    }
+    pub fn cancel(&mut self, epoch: u64) -> Result<()> {
+        self.validate_epoch(epoch)?;
+        self.epoch = epoch;
         self.open = false;
         self.sequence = 0;
         Ok(())
@@ -69,7 +75,7 @@ impl Audio {
             epoch: self.epoch,
             sequence: self.sequence,
             timestamp_us: self.started_at.elapsed().as_micros().min(u64::MAX as u128) as u64,
-            media_type: "audio/mpeg".into(),
+            media_type: self.media_type.clone(),
             bytes,
             end,
         };

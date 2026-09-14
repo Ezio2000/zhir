@@ -1,14 +1,11 @@
 //! Persistent model-session orchestration, independent of provider wire semantics.
+use crate::native::{self, Outputs, guarded};
 use crate::transport::websocket::{Socket, WireMessage};
 use std::{sync::Arc, time::Duration};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use zhir_core::{
-    BoxFuture, Result,
-    credential::CredentialProvider,
-    error::Error,
-    model::*,
-    profile::NegotiatedProfile,
-    resource::{MediaChunk, MediaReceiver},
+    BoxFuture, Result, credential::CredentialProvider, error::Error, model::*,
+    profile::NegotiatedProfile, resource::MediaChunk,
 };
 
 #[derive(Clone)]
@@ -18,6 +15,8 @@ pub struct WebSocketConfig {
     /// Includes credential resolution and the optional single 401 refresh.
     pub connect_timeout: Duration,
     pub write_timeout: Duration,
+    /// Maximum wait for protocol startup, flush, cancellation or completion.
+    pub command_timeout: Duration,
     /// Ping interval for idle connections. This does not replay model commands.
     pub heartbeat_interval: Duration,
     pub max_message_bytes: usize,
@@ -29,6 +28,7 @@ impl WebSocketConfig {
             credentials,
             connect_timeout: Duration::from_secs(15),
             write_timeout: Duration::from_secs(15),
+            command_timeout: Duration::from_secs(30),
             heartbeat_interval: Duration::from_secs(30),
             max_message_bytes: 4 * 1024 * 1024,
         }
@@ -44,6 +44,7 @@ impl WebSocketConfig {
             || [
                 self.connect_timeout,
                 self.write_timeout,
+                self.command_timeout,
                 self.heartbeat_interval,
             ]
             .iter()
@@ -74,8 +75,12 @@ pub(crate) trait WebSocketAdapter: Send + Sync {
     fn open(&self, open: &SessionOpen) -> Result<Box<dyn WebSocketProtocol>>;
 }
 pub(crate) trait WebSocketProtocol: Send {
+    fn connected(&mut self) -> Result<()>;
     fn commands_allowed(&self) -> bool;
     fn finished(&self) -> bool;
+    fn turn_id(&self) -> Option<&str>;
+    fn deadline(&self) -> Option<tokio::time::Instant>;
+    fn check_deadline(&self) -> Result<()>;
     fn command(&mut self, command: SessionCommand) -> Result<Vec<Action>>;
     fn receive(&mut self, message: WireMessage) -> Result<Vec<Action>>;
 }
@@ -84,6 +89,7 @@ pub(crate) enum Action {
     Event(SessionEventBody),
     Observe(ModelDelta),
     Media(MediaChunk),
+    Fail(Error),
     Close,
 }
 impl WebSocketModel {
@@ -109,125 +115,74 @@ impl Model for WebSocketModel {
             self.negotiate(&open.request)?;
             let deadline = zhir_policies::timing::deadline(&open.context.run)?;
             zhir_policies::timing::check(&open.context.cancellation, deadline)?;
-            let protocol = self.adapter.open(&open)?;
+            let mut protocol = self.adapter.open(&open)?;
             let connect = async {
                 tokio::time::timeout(self.config.connect_timeout, Socket::connect(&self.config))
                     .await
                     .map_err(|_| Error::Deadline)?
             };
             let socket = guarded(connect, &open.context.cancellation, deadline).await?;
-            let (sender, commands) = mpsc::channel(open.limits.max_control_commands);
-            let (events, receiver) = mpsc::channel(open.limits.max_session_events);
-            let (completion, terminal) = oneshot::channel();
-            let limit = open.limits.max_media_chunk_bytes;
-            let capacity = (open.limits.max_buffered_media_bytes / limit).max(1);
-            let (media, media_receiver) = mpsc::channel(capacity);
-            let driver = Driver {
+            protocol.connected()?;
+            let (session, ports) = native::ports(
+                Arc::new(self.clone()),
+                &open.limits,
+                false,
+                open.output_epoch,
+            );
+            drop(ports.audio_input);
+            let event_port = ports.outputs.events.clone();
+            let mut driver = Driver {
                 socket,
                 protocol,
-                commands,
-                events: events.clone(),
-                media,
-                sequence: 0,
-                limit,
+                commands: ports.commands,
+                outputs: ports.outputs,
                 heartbeat_interval: self.config.heartbeat_interval,
-                deltas: open.context.deltas.clone(),
             };
             tokio::spawn(async move {
                 let result = tokio::select! {
                     result = guarded(driver.run(), &open.context.cancellation, deadline) => result,
-                    _ = events.closed() => Err(Error::Cancelled),
+                    _ = event_port.closed() => Err(Error::Cancelled),
                 };
-                // Terminal delivery is independent of the bounded event queue.
-                // It neither blocks actor cleanup nor loses errors under backpressure.
-                let _ = completion.send(result);
+                let _ = ports.terminal.send(driver.outputs.settle(result));
             });
-            Ok(ModelSession {
-                input: Arc::new(Input {
-                    sender,
-                    model: self.clone(),
-                }),
-                output: Box::new(Events {
-                    receiver,
-                    terminal: Some(terminal),
-                }),
-                media_input: None,
-                media_output: Some(Box::new(Media(media_receiver))),
-            })
+            Ok(session)
         })
-    }
-}
-struct Input {
-    sender: mpsc::Sender<SessionCommand>,
-    model: WebSocketModel,
-}
-impl SessionSender for Input {
-    fn capabilities(&self) -> &CapabilitySet {
-        self.model.capabilities()
-    }
-    fn negotiate(&self, request: &ModelRequest) -> Result<NegotiatedProfile> {
-        self.model.negotiate(request)
-    }
-    fn send(&self, command: SessionCommand) -> BoxFuture<'_, Result<()>> {
-        Box::pin(async move {
-            self.sender
-                .send(command)
-                .await
-                .map_err(|_| Error::Cancelled)
-        })
-    }
-}
-struct Events {
-    receiver: mpsc::Receiver<SessionEvent>,
-    terminal: Option<oneshot::Receiver<Result<()>>>,
-}
-impl SessionReceiver for Events {
-    fn receive(&mut self) -> BoxFuture<'_, Result<Option<SessionEvent>>> {
-        Box::pin(async move {
-            if let Some(event) = self.receiver.recv().await {
-                return Ok(Some(event));
-            }
-            if let Some(terminal) = self.terminal.take() {
-                terminal.await.map_err(|_| {
-                    Error::Uncertain("WebSocket session task stopped without a result".into())
-                })??;
-            }
-            Ok(None)
-        })
-    }
-}
-struct Media(mpsc::Receiver<MediaChunk>);
-impl MediaReceiver for Media {
-    fn receive(&mut self) -> BoxFuture<'_, Result<Option<MediaChunk>>> {
-        Box::pin(async move { Ok(self.0.recv().await) })
     }
 }
 struct Driver {
     socket: Socket,
     protocol: Box<dyn WebSocketProtocol>,
     commands: mpsc::Receiver<SessionCommand>,
-    events: mpsc::Sender<SessionEvent>,
-    media: mpsc::Sender<MediaChunk>,
-    sequence: u64,
-    limit: usize,
+    outputs: Outputs,
     heartbeat_interval: Duration,
-    deltas: Option<Arc<dyn DeltaSink>>,
 }
 impl Driver {
-    async fn run(mut self) -> Result<()> {
+    async fn run(&mut self) -> Result<()> {
         let mut socket_closed = false;
+        let mut closing = false;
         let mut heartbeat = tokio::time::interval_at(
             tokio::time::Instant::now() + self.heartbeat_interval,
             self.heartbeat_interval,
         );
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
+            if closing && !self.outputs.pending() {
+                return Ok(());
+            }
             let actions = tokio::select! {
-                command = self.commands.recv(), if self.protocol.commands_allowed() => {
-                    let Some(command) = command else { return Ok(()); };
-                    self.protocol.command(command)?
+                result = self.outputs.flush_one(), if self.outputs.pending() => { result?; vec![] }
+                _ = native::confirmation_deadline(self.protocol.deadline()) => {
+                    self.protocol.check_deadline()?;
+                    vec![]
                 }
-                message = self.socket.receive(), if !socket_closed => {
+                command = self.commands.recv(), if !closing && self.protocol.commands_allowed() => {
+                    let Some(command) = command else { return Ok(()); };
+                    let epoch = match &command.body { SessionCommandBody::InterruptOutput { output_epoch, .. } => Some(*output_epoch), _ => None };
+                    let actions = self.protocol.command(command)?;
+                    if let Some(epoch) = epoch { self.outputs.invalidate_before(epoch); }
+                    actions
+                }
+                message = self.socket.receive(), if !socket_closed && !closing && self.outputs.can_receive() => {
                     match message? {
                         Some(message) => {
                             self.protocol.receive(message)?
@@ -245,48 +200,25 @@ impl Driver {
                 match action {
                     Action::Send(message) => self.socket.send(message).await?,
                     Action::Observe(delta) => {
-                        if let Some(sink) = &self.deltas {
-                            sink.emit(delta).await?;
-                        }
-                    }
-                    Action::Event(body) => {
-                        self.events
-                            .send(SessionEvent {
-                                sequence: self.sequence,
-                                body,
-                            })
-                            .await
-                            .map_err(|_| Error::Cancelled)?;
-                        self.sequence = self.sequence.checked_add(1).ok_or_else(|| {
-                            Error::Protocol("session event sequence overflow".into())
+                        self.outputs.event(SessionEventBody::Delta {
+                            turn_id: self.protocol.turn_id().unwrap_or_default().into(),
+                            delta,
                         })?;
                     }
-                    Action::Media(chunk) => {
-                        chunk.validate(self.limit)?;
-                        self.media.send(chunk).await.map_err(|_| Error::Cancelled)?;
-                    }
+                    Action::Event(body) => self.outputs.event(body)?,
+                    Action::Media(chunk) => self.outputs.media(chunk)?,
+                    Action::Fail(error) => return Err(error),
                     Action::Close => {
                         if !socket_closed {
                             let _ = self.socket.close().await;
                         }
-                        return Ok(());
+                        closing = true;
                     }
                 }
             }
-        }
-    }
-}
-async fn guarded<T>(
-    work: impl std::future::Future<Output = Result<T>>,
-    cancellation: &zhir_core::Cancellation,
-    deadline: Option<std::time::Instant>,
-) -> Result<T> {
-    tokio::pin!(work);
-    loop {
-        zhir_policies::timing::check(cancellation, deadline)?;
-        tokio::select! {
-            result = &mut work => return result,
-            _ = tokio::time::sleep(Duration::from_millis(10)) => (),
+            if self.protocol.finished() {
+                self.outputs.end_media();
+            }
         }
     }
 }

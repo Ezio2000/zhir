@@ -60,9 +60,17 @@ FunctionModel and the HTTP Chat/Responses/Messages adapters implement the same
 session interface over turn exchanges. They reject unsupported duplex, steering,
 resume and asynchronous-result capabilities. Native transports implement the core
 session ports directly. The `minimax` feature provides text-input/audio-output TTS:
-websocket.rs owns bounded ports and connection lifetime, transport/websocket.rs owns
+native.rs owns bounded ports, output scheduling, epoch filtering, terminal delivery
+and monotonic confirmation deadlines shared with Live. websocket.rs owns connection
+lifetime; transport/websocket.rs owns
 framing and handshake authentication, and codec/streaming retain MiniMax task and
-sentence semantics. Provider protocol phases do not advance runs or commit storage.
+sentence semantics. Format/voice/subtitle configuration remains in the MiniMax
+adapter; Opus format selection and Codex subscription commands remain in Live,
+while RTP wire mechanics stay in transport. Core owns public
+commands and capabilities, kernel owns durable command intent and output epochs,
+and policies own runtime-independent strategy. Provider protocol phases do not
+advance runs or commit storage. Session IDs and sideband attachments alone do not
+satisfy recovery: an adapter must also restore media and reconcile pending commands.
 HTTP-only codec/streaming helpers remain feature-isolated. No second `invoke` or stream runtime is retained.
 
 RetryingModel retries establishment only. FallbackModel negotiates candidates
@@ -123,7 +131,9 @@ copies of sealed media data are rejected.
 MediaChunk carries stream, turn, epoch, sequence, timestamp and end metadata. Separate
 byte-bounded channels apply backpressure. Payload and linked stream-manifest nodes
 are sealed before committing cursors and before external input/output delivery.
-InterruptOutput advances the output epoch in the same commit as its outbox command. EndInput
+InterruptOutput advances the output epoch in the same commit as its outbox command;
+the command carries that exact epoch to the adapter. Providers do not allocate a
+second independent epoch. Late rejected media cannot mutate the current manifest chain. EndInput
 closes admission and drains accepted input before sending the endpoint command.
 Older output epochs cannot advance a stream; input epoch is zero. Checkpoints keep the latest sealed reference,
 not an ever-growing media transcript. Resource retention/collection belongs to the
@@ -147,7 +157,7 @@ The five motivating cases are covered as extension seams: rich model sessions an
 provider tools; cross-provider video/voice operations; injected OAuth-style refreshed
 credentials; explicit low-latency/original-fidelity intent; and native duplex media.
 Synthetic fixtures establish these seams, not provider entitlement or online behavior.
-The explicit MiniMax live test separately checks TTS drain and interrupt/continue;
+The explicit MiniMax live test separately checks TTS drain, flush/continue and interrupt/continue;
 it does not establish video support, audio input, transport recovery or load guarantees.
 
 A language binding wraps core values and the SDK invocation/control interfaces. It
@@ -210,4 +220,62 @@ streams (including checking a new identity) reads their linked resource nodes.
 `openai-live` supplies subscription WebRTC signaling, DataChannel events and Opus
 ports through these native contracts. It has no public-Realtime, HTTP/SSE or WebSocket
 fallback and advertises no session resume or manual output-interruption guarantee.
-See the model crate README for credential, audio and protocol limits.
+Verified sideband attachment belongs to Live's control transport; it neither restores
+a destroyed media peer nor establishes command replay or deduplication. It is not a
+generic recovery capability. See the model crate README for credential, audio and
+protocol limits.
+
+The shared native output scheduler transfers remaining bounded control events and
+the worker outcome through one terminal port. Receivers first drain channel events,
+then the transferred events, then receive the terminal error once. Producer teardown
+never waits for output consumption. This is shared by WebRTC Live and WebSocket TTS;
+remote confirmation matching and close-reason interpretation stay in each adapter.
+
+
+`FlushInput` and `SetInputAudio` are provider-neutral core commands, each with an
+explicit capability. Kernel commits their outbox intents; the latter also records
+`SessionSnapshot.input_audio_enabled`. A control receipt establishes intent durability,
+while a session acknowledgement establishes the adapter’s documented remote boundary.
+Flush leaves input admission open. Audio input gating leaves the media port open and
+does not advance output epochs. Provider event names and confirmation matching stay
+in models; neither core nor kernel knows MiniMax tasks or Live DataChannel messages.
+
+`models::native` owns the shared executor-dependent port implementation, bounded
+pending output queues, event sequencing, cancellation/deadline guard and terminal
+channel. Its serialized `Confirmation<T>` owns a pending remote barrier and its
+fixed monotonic deadline; protocol adapters own the payload, matching and phases.
+A timeout never settles a command, and new observations never extend the deadline.
+WebSocket and WebRTC drivers keep commands and deadlines runnable while output is
+waiting for capacity. WebRTC has separate event/audio receive queues; closure drains
+already received data through the output scheduler. This is adapter machinery, not
+a second execution/checkpoint state machine, and does not belong in core.
+
+Live separates synchronous protocol transitions (`openai/live/protocol.rs`), media
+interpretation (`audio.rs`) and asynchronous I/O (`session.rs`). Its protocol emits
+explicit effects, as MiniMax's protocol does; only the driver performs them. The
+WebRTC transport receives the channel label and audio codec parameters from Live.
+Control receive processing continues under public event backpressure; bounded native
+staging reserves room for command receipts, and overflow is an explicit capacity
+failure. It cannot turn an already returned receipt into a remote timeout merely
+because the caller has not yet read earlier observations.
+
+`native/media.rs` attaches byte and slot reservations to queued packets. Live output
+retains the same reservation from RTP receipt through native scheduling until public
+consumption. Input has a separate budget. The packet bound is 4096 per direction,
+independent of event limits and maximum chunk size; empty end markers consume slots
+without consuming payload bytes. Datagram exhaustion is uncertain because RTP cannot
+promise remote backpressure. WebSocket decoded output awaits budget before delivery,
+with at most one bounded wire frame's decoded batch staged separately. This distinction
+is transport behavior; it does not introduce a second media or execution contract.
+
+WebRTC transport reports connection state independently of terminal receive errors
+and preserves RTP source, sequence and timestamp identity. Live applies bounded
+`Disconnected` grace to the existing peer and gates new writes during that interval;
+no signaling retry or command replay is implied. RTP ordering and clock extension
+are transport mechanics; correlating a remote output boundary with a kernel epoch
+remains the adapter's responsibility.
+
+No additional public recovery fields are introduced without a verified protocol
+consumer. `RecoveryRef` is an adapter-owned handle, while `after_sequence` is the
+local committed event watermark, not a provider cursor. Provider replay/correlation
+and uncertain-command reconciliation must be established before advertising Resume.
