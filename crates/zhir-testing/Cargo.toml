@@ -19,8 +19,10 @@ tokio = { workspace = true, features = ["net", "io-util"] }
 serde_json.workspace = true
 
 [features]
-openai-live = ["zhir/openai-live"]
-minimax = ["zhir/minimax"]
+webrtc = ["zhir-models/webrtc"]
+websocket = ["zhir-models/websocket"]
+openai-live = ["webrtc", "zhir/openai-live"]
+minimax = ["websocket", "zhir/minimax"]
 default = []
 http = []
 typed-output = ["zhir/typed-output"]

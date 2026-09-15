@@ -25,6 +25,9 @@ jobs:
       - run: cargo check -p zhir-testing --no-default-features --locked
       - run: cargo check -p zhir-testing --no-default-features --features http --locked
       - run: cargo test -p zhir-testing --no-default-features --features openai-responses --test models_replay --locked
+      - run: cargo check -p zhir-models --no-default-features --features websocket --locked
+      - run: cargo check -p zhir-models --no-default-features --features webrtc --locked
+      - run: cargo test -p zhir-testing --no-default-features --features webrtc --test webrtc_driver --locked
       - run: cargo check -p zhir-models --no-default-features --features minimax --locked
       - run: cargo test -p zhir-testing --no-default-features --features minimax --test minimax_tts --locked
       - run: cargo test -p zhir-testing --no-default-features --features openai-live --test gpt_live --locked

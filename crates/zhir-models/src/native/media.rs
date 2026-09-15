@@ -28,7 +28,7 @@ impl<T> Buffered<T> {
         drop(reservation);
         value
     }
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "webrtc")]
     pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Buffered<U> {
         Buffered {
             value: f(self.value),
@@ -71,7 +71,7 @@ impl MediaBudget {
     }
     /// Datagram ingress cannot promise backpressure to the remote sender.
     /// Exhaustion is explicit, and never silently drops an accepted media packet.
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "webrtc")]
     pub fn try_reserve(&self, size: usize) -> Result<Reservation> {
         let size = self.size(size)?;
         let exhausted = |_| Error::Uncertain("native media receive budget exceeded".into());

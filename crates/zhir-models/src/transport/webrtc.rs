@@ -18,7 +18,7 @@ use webrtc::{
     rtp_transceiver::rtp_codec::{RTCRtpCodecParameters, RTPCodecType},
     track::track_local::{TrackLocal, track_local_static_sample::TrackLocalStaticSample},
 };
-use zhir_core::{Result, error::Error};
+use zhir_core::{BoxFuture, Result, error::Error};
 
 pub(crate) struct AudioPacket {
     pub payload: Vec<u8>,
@@ -231,27 +231,36 @@ impl Peer {
         }
         Ok(())
     }
-    pub async fn send(&self, text: &str) -> Result<()> {
-        if text.len() > self.max_event_bytes {
-            return Err(Error::Invalid(
-                "outgoing WebRTC control frame exceeds configured limit".into(),
-            ));
-        }
-        self.channel
-            .send_text(text.to_owned())
-            .await
-            .map_err(error)?;
-        Ok(())
+    pub fn send(&self, text: &str) -> BoxFuture<'static, Result<()>> {
+        let channel = self.channel.clone();
+        let text = text.to_owned();
+        let limit = self.max_event_bytes;
+        Box::pin(async move {
+            if text.len() > limit {
+                return Err(Error::Invalid(
+                    "outgoing WebRTC control frame exceeds configured limit".into(),
+                ));
+            }
+            channel.send_text(text).await.map_err(error)?;
+            Ok(())
+        })
     }
-    pub async fn audio(&self, bytes: Vec<u8>, duration: std::time::Duration) -> Result<()> {
-        self.track
-            .write_sample(&Sample {
-                data: Bytes::from(bytes),
-                duration,
-                ..Default::default()
-            })
-            .await
-            .map_err(error)
+    pub fn audio(
+        &self,
+        bytes: Vec<u8>,
+        duration: std::time::Duration,
+    ) -> BoxFuture<'static, Result<()>> {
+        let track = self.track.clone();
+        Box::pin(async move {
+            track
+                .write_sample(&Sample {
+                    data: Bytes::from(bytes),
+                    duration,
+                    ..Default::default()
+                })
+                .await
+                .map_err(error)
+        })
     }
     pub async fn close(&self) {
         let _ = self.pc.close().await;

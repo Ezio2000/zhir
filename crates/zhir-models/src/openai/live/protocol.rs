@@ -1,6 +1,7 @@
 //! Live session semantics. No sockets, media queues or executor loop live here.
-use super::{LiveModel, codec};
+use super::{adapter::Adapter, codec};
 use crate::native::Confirmation;
+use crate::webrtc::{Action, WebRtcAdapter, WebRtcProtocol};
 use serde_json::{Value, json};
 use zhir_core::{
     Result,
@@ -10,14 +11,6 @@ use zhir_core::{
     operation::DelegationRequest,
 };
 
-pub(super) enum Action {
-    Connect(Value),
-    Send(Value),
-    DrainInput,
-    Event(Box<SessionEventBody>),
-    Disconnect,
-    Fail(Error),
-}
 enum Phase {
     Idle,
     Starting,
@@ -33,7 +26,7 @@ enum Pending {
     Close(String),
 }
 pub(super) struct Protocol {
-    model: LiveModel,
+    adapter: Adapter,
     phase: Phase,
     turn: Option<String>,
     confirmation: Confirmation<Pending>,
@@ -44,9 +37,9 @@ pub(super) struct Protocol {
     max_delegations: usize,
 }
 impl Protocol {
-    pub fn new(model: LiveModel, max_delegations: usize) -> Self {
+    pub fn new(adapter: Adapter, max_delegations: usize) -> Self {
         Self {
-            model,
+            adapter,
             max_delegations,
             phase: Phase::Idle,
             turn: None,
@@ -57,35 +50,79 @@ impl Protocol {
             delegations: Default::default(),
         }
     }
-    pub fn turn(&self) -> Result<&str> {
+    fn require_delegation(&self, id: &str) -> Result<()> {
+        if !self.delegations.contains(id) {
+            return Err(Error::Protocol(
+                "unknown or completed Live delegation".into(),
+            ));
+        }
+        Ok(())
+    }
+    fn close_remote(&mut self) -> Result<Action> {
+        let id = self
+            .close_id
+            .as_ref()
+            .or(self.end_id.as_ref())
+            .cloned()
+            .ok_or_else(|| Error::Protocol("Live close has no command identity".into()))?;
+        self.confirmation.begin(
+            Pending::Close(id),
+            "session.closed",
+            self.adapter.config.command_timeout,
+        )?;
+        Ok(Action::Send(json!({"type":"session.close"}).to_string()))
+    }
+    fn require_output_phase(&self) -> Result<()> {
+        if !matches!(self.phase, Phase::Active | Phase::Draining { .. }) {
+            return Err(Error::Protocol(
+                "Live output outside an active session".into(),
+            ));
+        }
+        Ok(())
+    }
+    fn observation(&self, data: Value) -> Action {
+        emit_event(SessionEventBody::Delta {
+            turn_id: self.turn.clone().unwrap_or_default(),
+            delta: ModelDelta::ProtocolEvent {
+                output_index: 0,
+                data,
+            },
+        })
+    }
+}
+impl WebRtcProtocol for Protocol {
+    fn initial(&mut self) -> Result<Vec<Action>> {
+        Ok(vec![])
+    }
+    fn turn(&self) -> Result<&str> {
         self.turn
             .as_deref()
             .ok_or_else(|| Error::Protocol("Live execution not started".into()))
     }
-    pub fn deadline(&self) -> Option<tokio::time::Instant> {
+    fn deadline(&self) -> Option<tokio::time::Instant> {
         self.confirmation.deadline()
     }
-    pub fn check_deadline(&self) -> Result<()> {
+    fn check_deadline(&self) -> Result<()> {
         self.confirmation.check()
     }
-    pub fn commands_allowed(&self) -> bool {
+    fn commands_allowed(&self) -> bool {
         matches!(self.phase, Phase::Idle | Phase::Active | Phase::Finished)
             && self.confirmation.pending().is_none()
     }
-    pub fn input_allowed(&self) -> bool {
+    fn input_allowed(&self) -> bool {
         matches!(self.phase, Phase::Active) && self.end_id.is_none() && self.close_id.is_none()
     }
-    pub fn draining(&self) -> bool {
+    fn draining(&self) -> bool {
         matches!(self.phase, Phase::Draining { .. })
     }
-    pub fn finished(&self) -> bool {
+    fn finished(&self) -> bool {
         matches!(self.phase, Phase::Finished | Phase::Closed)
     }
-    pub fn closed(&self) -> bool {
+    fn closed(&self) -> bool {
         matches!(self.phase, Phase::Closed)
     }
 
-    pub fn command(&mut self, command: SessionCommand) -> Result<Vec<Action>> {
+    fn command(&mut self, command: SessionCommand) -> Result<Vec<Action>> {
         if command.id.is_empty() || !self.commands_allowed() {
             return Err(Error::Invalid(
                 "invalid Live command identity or order".into(),
@@ -98,8 +135,8 @@ impl Protocol {
                 if turn_id.is_empty() {
                     return Err(Error::Invalid("empty Live turn identity".into()));
                 }
-                self.model.negotiate(&request)?;
-                let config = &self.model.config;
+                self.adapter.negotiate(&request)?;
+                let config = &self.adapter.config;
                 let session = json!({"model":config.model,"instructions":config.instructions,
                     "audio":{"output":{"voice":config.voice}},
                     "delegation":{"type":"client","ack_filler":false},
@@ -111,7 +148,14 @@ impl Protocol {
                 )?;
                 self.turn = Some(turn_id);
                 self.phase = Phase::Starting;
-                Ok(vec![Action::Connect(session)])
+                Ok(vec![Action::Connect {
+                    payload: session,
+                    deadline: self
+                        .confirmation
+                        .deadline()
+                        .ok_or_else(|| Error::Protocol("missing Live startup deadline".into()))?,
+                    timeout: Error::Uncertain("Live session startup timed out".into()),
+                }])
             }
             SessionCommandBody::Input { message } if self.input_allowed() => {
                 let mut actions = append(
@@ -169,10 +213,10 @@ impl Protocol {
                     } else {
                         "input_audio.paused"
                     },
-                    self.model.config.command_timeout,
+                    self.adapter.config.command_timeout,
                 )?;
                 Ok(vec![Action::Send(
-                    json!({"type":if enabled {"input_audio.resume"} else {"input_audio.pause"},"event_id":command.id}),
+                    json!({"type":if enabled {"input_audio.resume"} else {"input_audio.pause"},"event_id":command.id}).to_string(),
                 )])
             }
             SessionCommandBody::EndInput if self.input_allowed() => {
@@ -196,29 +240,7 @@ impl Protocol {
             )),
         }
     }
-    fn require_delegation(&self, id: &str) -> Result<()> {
-        if !self.delegations.contains(id) {
-            return Err(Error::Protocol(
-                "unknown or completed Live delegation".into(),
-            ));
-        }
-        Ok(())
-    }
-    fn close_remote(&mut self) -> Result<Action> {
-        let id = self
-            .close_id
-            .as_ref()
-            .or(self.end_id.as_ref())
-            .cloned()
-            .ok_or_else(|| Error::Protocol("Live close has no command identity".into()))?;
-        self.confirmation.begin(
-            Pending::Close(id),
-            "session.closed",
-            self.model.config.command_timeout,
-        )?;
-        Ok(Action::Send(json!({"type":"session.close"})))
-    }
-    pub fn receive(&mut self, text: &str) -> Result<Vec<Action>> {
+    fn receive(&mut self, text: &str) -> Result<Vec<Action>> {
         self.confirmation.check()?;
         let value: Value = serde_json::from_str(text)
             .map_err(|_| Error::Protocol("invalid Live event JSON".into()))?;
@@ -344,24 +366,7 @@ impl Protocol {
             codec::ServerEvent::Observation => Ok(vec![self.observation(value)]),
         }
     }
-    fn require_output_phase(&self) -> Result<()> {
-        if !matches!(self.phase, Phase::Active | Phase::Draining { .. }) {
-            return Err(Error::Protocol(
-                "Live output outside an active session".into(),
-            ));
-        }
-        Ok(())
-    }
-    fn observation(&self, data: Value) -> Action {
-        emit_event(SessionEventBody::Delta {
-            turn_id: self.turn.clone().unwrap_or_default(),
-            delta: ModelDelta::ProtocolEvent {
-                output_index: 0,
-                data,
-            },
-        })
-    }
-    pub fn finalize(&mut self) -> Result<Vec<Action>> {
+    fn finalize(&mut self) -> Result<Vec<Action>> {
         let next = if self.close_id.is_some() {
             Phase::Closed
         } else {
@@ -381,7 +386,7 @@ impl Protocol {
         }
         actions.push(emit_event(SessionEventBody::TurnFinished {
             turn_id: self.turn()?.into(), disposition: TurnDisposition::Finished, usage: Usage::default(),
-            model_id: Some(self.model.config.model.clone()),
+            model_id: Some(self.adapter.config.model.clone()),
             response_id: self.remote_session.get("id").and_then(Value::as_str).map(str::to_owned),
             finish_reason: Some(reason.clone()),
             provider_data: json!({"session":self.remote_session,"session_usage":usage,"close_reason":reason}),
@@ -391,6 +396,7 @@ impl Protocol {
         Ok(actions)
     }
 }
+
 fn ack(command_id: String) -> Action {
     emit_event(SessionEventBody::Acknowledged {
         command_id,
@@ -408,7 +414,7 @@ fn append(
         .into_iter()
         .map(|mut value| {
             value["channel"] = json!(channel);
-            Action::Send(value)
+            Action::Send(value.to_string())
         })
         .collect()
 }

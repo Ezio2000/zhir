@@ -261,7 +261,8 @@ JsonOutput<T>（`typed-output`）从同一 Schema 构造请求格式并验证最
 ### GPT-Live 原生会话
 
 启用 `openai-live`，使用 `models::openai::live::LiveConfig` 注入宿主的
-`CredentialProvider`，再创建 `LiveModel`。凭据元数据需要
+`CredentialProvider`，再调用 `models::openai::live::model(config)`，返回共享的
+`models::WebRtcModel`。凭据元数据需要
 `header:ChatGPT-Account-Id`；登录、OAuth 刷新和代理配置归宿主。
 `examples/gpt_live.rs` 演示 Runtime、资源存储、输入 Opus 包、输出消费和 EndInput。
 
@@ -283,6 +284,7 @@ Live 输出的 `max_buffered_media_bytes` 按实际负载字节计费，同一�
 4096 块上限，空结束标记只占块数。事件队列容量与最大单块大小不决定音频包数。
 RTP 无法保证向远端施加背压，超出接收预算会以 Uncertain 终止。
 直接使用 ModelSession 时，EndInput 同样关闭媒体输入准入并排空已接收包；
+排水期间继续处理远端事件、取消和固定确认期限，后续远端关闭动作等待排水完成。
 Close 在收到远端确认、排空接收数据后结束事件端口，无需再次发送 Close。
 
 Live 在原 PeerConnection 短暂 Disconnected 后，按 `LiveConfig.reconnect_timeout`

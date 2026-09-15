@@ -85,7 +85,7 @@ async fn subscription_remaining_probe() {
             }
             _ = peer.connection.changed() => {
                 let state = peer.connection.borrow();
-                events.push(json!({"connection":format!("{:?}",state.state),"usable":state.connected(Duration::from_secs(10)).unwrap_or(false),"deadline":state.deadline(Duration::from_secs(10)).is_some(),"ms":began.elapsed().as_millis()}));
+                events.push(json!({"connection":format!("{:?}",state.state),"state_age_ms":state.since.elapsed().as_millis(),"ms":began.elapsed().as_millis()}));
             }
             Some(text) = peer.events.recv() => {
                 let event: Value = serde_json::from_str(&text).unwrap();

@@ -9,6 +9,7 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{mpsc, oneshot};
+#[path = "native/media.rs"]
 mod media;
 pub(crate) use media::{Buffered, MediaBudget, Reservation};
 use zhir_core::{
@@ -229,11 +230,11 @@ impl Outputs {
     pub fn media(&mut self, chunk: MediaChunk) -> Result<()> {
         self.queue_media(chunk, None)
     }
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "webrtc")]
     pub fn media_budget(&self) -> MediaBudget {
         self.media_budget.clone()
     }
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "webrtc")]
     pub fn received_media(&mut self, packet: Buffered<MediaChunk>) -> Result<()> {
         self.queue_media(packet.value, Some(packet.reservation))
     }
@@ -256,7 +257,7 @@ impl Outputs {
             .push_back(PendingMedia { chunk, reservation });
         Ok(())
     }
-    #[cfg(feature = "minimax")]
+    #[cfg(feature = "websocket")]
     pub fn invalidate_before(&mut self, epoch: u64) {
         self.min_epoch.fetch_max(epoch, Ordering::AcqRel);
         self.pending_media
@@ -276,16 +277,16 @@ impl Outputs {
     pub fn pending(&self) -> bool {
         !self.pending_events.is_empty() || !self.pending_media.is_empty()
     }
-    #[cfg(feature = "minimax")]
+    #[cfg(feature = "websocket")]
     pub fn can_receive(&self) -> bool {
         self.pending_media.is_empty() && self.pending_events.is_empty()
     }
-    #[cfg(feature = "openai-live")]
-    pub fn commands_allowed(&self) -> bool {
+    #[cfg(feature = "webrtc")]
+    pub fn commands_allowed(&self, headroom: usize) -> bool {
         // Keep bounded room for receipts and finalization after admitting work.
-        self.pending_events.len() < self.event_limit.saturating_sub(8)
+        self.pending_events.len() < self.event_limit.saturating_sub(headroom)
     }
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "webrtc")]
     pub fn can_receive_media(&self) -> bool {
         self.pending_media.is_empty()
     }
@@ -350,5 +351,6 @@ pub(crate) async fn confirmation_deadline(deadline: Option<tokio::time::Instant>
     }
 }
 
+#[path = "native/confirmation.rs"]
 mod confirmation;
 pub(crate) use confirmation::Confirmation;

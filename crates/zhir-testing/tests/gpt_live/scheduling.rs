@@ -8,7 +8,7 @@ async fn configured(
     let mut config = LiveConfig::new(credentials("test-secret".into(), "test-account".into()));
     config.endpoint = endpoint;
     config.command_timeout = Duration::from_millis(500);
-    let model = LiveModel::new(config).unwrap();
+    let model = live::model(config).unwrap();
     let session = model
         .open_session(SessionOpen {
             session_id: "scheduling".into(),
