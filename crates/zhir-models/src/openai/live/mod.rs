@@ -1,16 +1,13 @@
 //! GPT-Live through the native Codex subscription WebRTC endpoint.
 //! Credentials and account login are supplied by the host. Audio chunks contain
 //! one Opus packet (48 kHz clock, negotiated stereo); devices/codecs are host-owned.
+mod adapter;
 mod audio;
 mod codec;
 mod protocol;
-mod session;
 mod signaling;
 use std::{sync::Arc, time::Duration};
-use zhir_core::{
-    BoxFuture, Result, credential::CredentialProvider, error::Error, model::*,
-    profile::NegotiatedProfile,
-};
+use zhir_core::{Result, credential::CredentialProvider, error::Error};
 
 pub const AUDIO_TYPE: &str = "audio/opus;rate=48000;channels=2";
 #[derive(Clone)]
@@ -40,86 +37,34 @@ impl LiveConfig {
         }
     }
 }
-#[derive(Clone)]
-pub struct LiveModel {
-    config: Arc<LiveConfig>,
-    capabilities: CapabilitySet,
-}
-impl LiveModel {
-    pub fn new(config: LiveConfig) -> Result<Self> {
-        let url = reqwest::Url::parse(&config.endpoint)
-            .map_err(|_| Error::Invalid("invalid Live endpoint".into()))?;
-        if !matches!(url.scheme(), "http" | "https")
-            || !url.username().is_empty()
-            || url.password().is_some()
-            || url.host_str().is_none()
-            || url.fragment().is_some()
-            || std::time::Instant::now()
-                .checked_add(config.connect_timeout)
-                .is_none()
-            || std::time::Instant::now()
-                .checked_add(config.command_timeout)
-                .is_none()
-            || std::time::Instant::now()
-                .checked_add(config.reconnect_timeout)
-                .is_none()
-            || config.model.trim().is_empty()
-            || config.voice.trim().is_empty()
-            || config.connect_timeout.is_zero()
-            || config.command_timeout.is_zero()
-            || config.reconnect_timeout.is_zero()
-            || config.max_event_bytes == 0
-        {
-            return Err(Error::Invalid("invalid Live configuration".into()));
-        }
-        Ok(Self {
-            config: Arc::new(config),
-            capabilities: CapabilitySet {
-                input_modalities: vec!["text".into(), "audio".into()],
-                output_modalities: vec!["text".into(), "audio".into()],
-                features: [
-                    Capability::Streaming,
-                    Capability::Duplex,
-                    Capability::Steering,
-                    Capability::InputAudioControl,
-                    Capability::AsyncResults,
-                    Capability::ConversationItems,
-                    Capability::Delegation,
-                ]
-                .into(),
-                tool_choices: vec!["auto".into(), "none".into()],
-                constraints: Default::default(),
-                extensions: Default::default(),
-            },
-        })
+/// Construct the Live provider adapter over the shared WebRTC session driver.
+pub fn model(config: LiveConfig) -> Result<crate::WebRtcModel> {
+    let url = reqwest::Url::parse(&config.endpoint)
+        .map_err(|_| Error::Invalid("invalid Live endpoint".into()))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.host_str().is_none()
+        || url.fragment().is_some()
+        || std::time::Instant::now()
+            .checked_add(config.connect_timeout)
+            .is_none()
+        || std::time::Instant::now()
+            .checked_add(config.command_timeout)
+            .is_none()
+        || std::time::Instant::now()
+            .checked_add(config.reconnect_timeout)
+            .is_none()
+        || config.model.trim().is_empty()
+        || config.voice.trim().is_empty()
+        || config.connect_timeout.is_zero()
+        || config.command_timeout.is_zero()
+        || config.reconnect_timeout.is_zero()
+        || config.max_event_bytes == 0
+    {
+        return Err(Error::Invalid("invalid Live configuration".into()));
     }
-}
-impl Model for LiveModel {
-    fn capabilities(&self) -> &CapabilitySet {
-        &self.capabilities
-    }
-    fn negotiate(&self, request: &ModelRequest) -> Result<NegotiatedProfile> {
-        if request.profile.generation != GenerationProfile::default()
-            || !request.profile.extensions.is_empty()
-        {
-            return Err(Error::Invalid(
-                "Live configuration uses LiveConfig; generation overrides are unsupported".into(),
-            ));
-        }
-        // Initial history must be text. Native audio goes through the media port.
-        codec::initial_items(request)?;
-        zhir_policies::negotiation::negotiate(request, &self.capabilities)
-    }
-    fn open_session(&self, open: SessionOpen) -> BoxFuture<'_, Result<ModelSession>> {
-        Box::pin(async move {
-            open.limits.validate()?;
-            self.negotiate(&open.request)?;
-            if open.recovery.is_some() || open.after_sequence.is_some() {
-                return Err(Error::Protocol(
-                    "Live adapter has no verified subscription session recovery mechanism".into(),
-                ));
-            }
-            session::open(self.clone(), open)
-        })
-    }
+    Ok(crate::WebRtcModel::new(Arc::new(adapter::Adapter::new(
+        config,
+    ))))
 }

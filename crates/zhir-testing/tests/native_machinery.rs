@@ -2,8 +2,6 @@
 //! implementation helpers in the public SDK or shipping test code in its crates.
 #[path = "../../zhir-models/src/native/confirmation.rs"]
 mod confirmation;
-#[path = "../../zhir-models/src/transport/webrtc/connection.rs"]
-mod connection;
 #[path = "../../zhir-models/src/native/media.rs"]
 mod media;
 #[path = "../../zhir-models/src/transport/rtp.rs"]
@@ -48,28 +46,6 @@ async fn confirmed_slot_rejects_duplicate_confirmation() {
     }
 }
 
-#[tokio::test(start_paused = true)]
-async fn transient_disconnection_has_a_fixed_grace_and_terminal_failure_does_not() {
-    use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState as State;
-    let grace = Duration::from_secs(10);
-    let mut connection = connection::Connection::new(State::Disconnected);
-    assert!(!connection.connected(grace).unwrap());
-    tokio::time::advance(grace).await;
-    assert!(matches!(
-        connection.connected(grace),
-        Err(Error::Uncertain(_))
-    ));
-    connection = connection::Connection::new(State::Connected);
-    assert!(connection.connected(grace).unwrap());
-    assert!(connection.deadline(grace).is_none());
-    for state in [State::Failed, State::Closed] {
-        assert!(matches!(
-            connection::Connection::new(state).connected(grace),
-            Err(Error::Uncertain(_))
-        ));
-    }
-}
-
 #[test]
 fn rtp_wrap_loss_duplicates_and_reordering_preserve_the_timeline() {
     let mut timeline = rtp::RtpTimeline::default();
@@ -103,7 +79,7 @@ async fn media_budget_follows_packets_until_consumption() {
             .await
             .is_err()
     );
-    #[cfg(feature = "openai-live")]
+    #[cfg(feature = "webrtc")]
     let packet = {
         assert!(matches!(budget.try_reserve(1), Err(Error::Uncertain(_))));
         packet.map(|bytes| ("RTP to MediaChunk", bytes))

@@ -84,6 +84,22 @@ fn production_dependencies_follow_sdk_boundaries() {
                 serde_json::json!(["agent", "dep:zhir-kernel"])
             );
         }
+        if name == "zhir-models" {
+            let features = &package["features"];
+            assert_eq!(
+                features["webrtc"],
+                serde_json::json!(["dep:webrtc", "dep:bytes"])
+            );
+            assert_eq!(
+                features["websocket"],
+                serde_json::json!(["dep:tokio-tungstenite", "dep:futures"])
+            );
+            assert_eq!(features["minimax"], serde_json::json!(["websocket"]));
+            assert_eq!(
+                features["openai-live"],
+                serde_json::json!(["webrtc", "dep:reqwest", "dep:futures"])
+            );
+        }
         checked += 1;
     }
     assert_eq!(checked, expected.len());

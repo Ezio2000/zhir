@@ -18,7 +18,12 @@ pub mod capabilities;
 mod codec;
 pub mod credentials;
 pub mod decorators;
-#[cfg(any(feature = "minimax", feature = "openai-live"))]
+#[cfg(any(feature = "websocket", feature = "webrtc"))]
+// Transport-only builds compile the internal contracts without provider factories.
+#[cfg_attr(
+    not(any(feature = "minimax", feature = "openai-live")),
+    allow(dead_code, unused_imports)
+)]
 mod native;
 pub mod resources;
 mod session;
@@ -67,7 +72,14 @@ pub use http::{HttpModel, ModelConfig};
 
 #[cfg(feature = "minimax")]
 pub mod minimax;
-#[cfg(feature = "minimax")]
+#[cfg(feature = "websocket")]
+#[cfg_attr(not(feature = "minimax"), allow(dead_code))]
 mod websocket;
-#[cfg(feature = "minimax")]
+#[cfg(feature = "websocket")]
 pub use websocket::{WebSocketConfig, WebSocketModel};
+
+#[cfg(feature = "webrtc")]
+#[cfg_attr(not(feature = "openai-live"), allow(dead_code))]
+mod webrtc;
+#[cfg(feature = "webrtc")]
+pub use webrtc::WebRtcModel;

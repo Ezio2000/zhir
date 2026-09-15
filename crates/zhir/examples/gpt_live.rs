@@ -5,7 +5,7 @@ use zhir::{
     BoxFuture, Result, RunRequest, Runtime,
     credential::{Credential, CredentialContext, CredentialProvider},
     message::Message,
-    models::openai::live::{AUDIO_TYPE, LiveConfig, LiveModel},
+    models::openai::live::{self, AUDIO_TYPE, LiveConfig},
     resource::{MediaChunk, MediaReceiver},
     run::{RunContext, RunMode},
     stores::{MemoryResourceStore, MemoryRunStore},
@@ -34,7 +34,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     });
     let mut config = LiveConfig::new(Arc::new(login));
     config.instructions = "Say only: voice connection works.".into();
-    let runtime = Runtime::builder(Arc::new(LiveModel::new(config)?))
+    let runtime = Runtime::builder(Arc::new(live::model(config)?))
         .store(Arc::new(MemoryRunStore::new()))
         .resources(Arc::new(MemoryResourceStore::new()))
         .build()?;

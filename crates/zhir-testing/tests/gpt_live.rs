@@ -12,7 +12,7 @@ use zhir_core::{
     model::*,
     resource::{MediaChunk, MediaReceiver},
 };
-use zhir_models::openai::live::{AUDIO_TYPE, LiveConfig, LiveModel};
+use zhir_models::openai::live::{self, AUDIO_TYPE, LiveConfig};
 
 struct Credentials(Credential);
 impl CredentialProvider for Credentials {
@@ -43,7 +43,7 @@ fn request() -> ModelRequest {
         stream: true,
     }
 }
-async fn open(model: &LiveModel) -> ModelSession {
+async fn open(model: &zhir_models::WebRtcModel) -> ModelSession {
     model
         .open_session(SessionOpen {
             session_id: "test-live".into(),
@@ -79,7 +79,7 @@ async fn native_webrtc_preserves_transcripts_delegation_and_audio() {
         let relay = network::Relay::start(reqwest::Client::builder().no_proxy().build().unwrap(), endpoint).await;
         config.endpoint=relay.endpoint.clone();
         config.connect_timeout=Duration::from_secs(5);
-        let model=LiveModel::new(config).unwrap();
+        let model=live::model(config).unwrap();
         assert!(!model.capabilities().supports(Capability::InterruptOutput));
         let mut session=open(&model).await;
         send(&session,"start",SessionCommandBody::StartTurn {turn_id:"execution".into(),request:Box::new(request())}).await;
@@ -134,7 +134,7 @@ async fn native_webrtc_preserves_transcripts_delegation_and_audio() {
 async fn recovery_and_unsupported_profiles_fail_before_signaling() {
     let mut config = LiveConfig::new(credentials("unused".into(), "unused".into()));
     config.endpoint = "http://127.0.0.1:1".into();
-    let model = LiveModel::new(config).unwrap();
+    let model = live::model(config).unwrap();
     let result = model
         .open_session(SessionOpen {
             session_id: "s".into(),
@@ -162,7 +162,7 @@ async fn remote_rejection_preserves_details_without_acknowledging_command() {
         let (endpoint, server) = fixture::serve(fixture::Fault::RejectedAudio).await;
         let mut config = LiveConfig::new(credentials("test-secret".into(), "test-account".into()));
         config.endpoint = endpoint;
-        let model = LiveModel::new(config).unwrap();
+        let model = live::model(config).unwrap();
         let mut session = open(&model).await;
         send(
             &session,
@@ -227,7 +227,7 @@ async fn abnormal_remote_close_cannot_confirm_successful_drain() {
             let mut config =
                 LiveConfig::new(credentials("test-secret".into(), "test-account".into()));
             config.endpoint = endpoint;
-            let model = LiveModel::new(config).unwrap();
+            let model = live::model(config).unwrap();
             let mut session = open(&model).await;
             send(
                 &session,
@@ -264,7 +264,7 @@ async fn expiry_while_end_input_waits_for_delegation_is_uncertain() {
         let (endpoint, server) = fixture::serve(fixture::Fault::ExpiredWithDelegation).await;
         let mut config = LiveConfig::new(credentials("test-secret".into(), "test-account".into()));
         config.endpoint = endpoint;
-        let model = LiveModel::new(config).unwrap();
+        let model = live::model(config).unwrap();
         let mut session = open(&model).await;
         send(&session, "start", SessionCommandBody::StartTurn { turn_id: "t".into(), request: Box::new(request()) }).await;
         loop {
@@ -337,7 +337,7 @@ async fn subscription_session(blackout: bool) {
     };
     let traffic = relay.as_ref().map(|relay| relay.traffic.clone());
     let model = Arc::new(zhir_testing::RecordingModel::new(Arc::new(
-        LiveModel::new(config).unwrap(),
+        live::model(config).unwrap(),
     )));
     let runtime = zhir_kernel::Runtime::builder(model.clone())
         .resources(Arc::new(zhir_storage::MemoryResourceStore::new()))
@@ -556,7 +556,7 @@ async fn credential_resolution_is_cancelled_and_startup_is_bounded() {
     for cancel in [false, true] {
         let mut config = LiveConfig::new(Arc::new(Blocked));
         config.connect_timeout = Duration::from_millis(100);
-        let model = LiveModel::new(config).unwrap();
+        let model = live::model(config).unwrap();
         let cancellation = zhir_core::Cancellation::default();
         let mut session = model
             .open_session(SessionOpen {
@@ -636,7 +636,7 @@ async fn rejected_signaling_has_one_refresh_attempt_and_preserves_remote_error()
     });
     let mut config = LiveConfig::new(credentials("test-secret".into(), "test-account".into()));
     config.endpoint = endpoint;
-    let model = LiveModel::new(config).unwrap();
+    let model = live::model(config).unwrap();
     let mut session = open(&model).await;
     send(
         &session,
@@ -664,7 +664,7 @@ async fn native_controls_progress_while_audio_output_is_full() {
         let mut config=LiveConfig::new(credentials("test-secret".into(),"test-account".into()));
         config.endpoint=endpoint;
         config.command_timeout=Duration::from_millis(500);
-        let model=LiveModel::new(config).unwrap();
+        let model=live::model(config).unwrap();
         let mut limits=zhir_kernel::defaults::limits();
         limits.max_media_chunk_bytes=3;
         limits.max_buffered_media_bytes=12;
@@ -710,7 +710,7 @@ async fn audio_control_needs_a_matching_remote_confirmation() {
             let mut config = LiveConfig::new(credentials("test-secret".into(), "test-account".into()));
             config.endpoint = endpoint;
             config.command_timeout = Duration::from_millis(100);
-            let model = LiveModel::new(config).unwrap();
+            let model = live::model(config).unwrap();
             let mut session = open(&model).await;
             send(&session, "start", SessionCommandBody::StartTurn { turn_id: "execution".into(), request: Box::new(request()) }).await;
             loop {

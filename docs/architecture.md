@@ -61,8 +61,9 @@ session interface over turn exchanges. They reject unsupported duplex, steering,
 resume and asynchronous-result capabilities. Native transports implement the core
 session ports directly. The `minimax` feature provides text-input/audio-output TTS:
 native.rs owns bounded ports, output scheduling, epoch filtering, terminal delivery
-and monotonic confirmation deadlines shared with Live. websocket.rs owns connection
-lifetime; transport/websocket.rs owns
+and monotonic confirmation deadlines shared with Live. websocket.rs owns WebSocket
+connection lifetime; webrtc.rs and webrtc/driver.rs own WebRTC session orchestration
+through internal adapter, protocol, media and connection-policy contracts. transport/websocket.rs owns
 framing and handshake authentication, and codec/streaming retain MiniMax task and
 sentence semantics. Format/voice/subtitle configuration remains in the MiniMax
 adapter; Opus format selection and Codex subscription commands remain in Live,
@@ -250,10 +251,27 @@ waiting for capacity. WebRTC has separate event/audio receive queues; closure dr
 already received data through the output scheduler. This is adapter machinery, not
 a second execution/checkpoint state machine, and does not belong in core.
 
-Live separates synchronous protocol transitions (`openai/live/protocol.rs`), media
-interpretation (`audio.rs`) and asynchronous I/O (`session.rs`). Its protocol emits
-explicit effects, as MiniMax's protocol does; only the driver performs them. The
-WebRTC transport receives the channel label and audio codec parameters from Live.
+Live's factory returns `WebRtcModel`. `openai/live/adapter.rs` supplies synchronous
+protocol transitions (`protocol.rs`), media interpretation (`audio.rs`), signaling
+(`signaling.rs`) and original-peer connection policy (`connection.rs`). The generic
+`webrtc/driver.rs` depends on these contracts, never on Live types. Protocols emit
+initialization effects and command/event effects; only the driver performs I/O.
+A protocol may connect immediately or process commands before requesting a peer.
+The current transport scope is a text DataChannel and an independent RTP audio queue.
+Peer channel labels, codec parameters and input admission come from the adapter;
+queue capacities and shared media reservations come from session Limits. Signaling
+payloads remain opaque to the driver. Public factories select built-in adapters;
+internal traits do not introduce another public extension API.
+
+Input draining closes admission and preserves the ordering of subsequent command
+effects. In-flight writes retain their reservations and are polled alongside remote
+control events, output flushes, cancellation and fixed confirmation deadlines.
+Received control effects may progress while a command's drain/write is pending;
+local transport acknowledgements stay behind their corresponding writes. Finalization
+requires stopped ingress producers and drained accepted queues, then adapter-defined
+media termination and protocol completion. Queue emptiness alone is not completion.
+The `websocket` and `webrtc` features select transport infrastructure; `minimax` and
+`openai-live` enable the corresponding infrastructure and provider implementation.
 Control receive processing continues under public event backpressure; bounded native
 staging reserves room for command receipts, and overflow is an explicit capacity
 failure. It cannot turn an already returned receipt into a remote timeout merely
@@ -269,8 +287,9 @@ with at most one bounded wire frame's decoded batch staged separately. This dist
 is transport behavior; it does not introduce a second media or execution contract.
 
 WebRTC transport reports connection state independently of terminal receive errors
-and preserves RTP source, sequence and timestamp identity. Live applies bounded
-`Disconnected` grace to the existing peer and gates new writes during that interval;
+and preserves RTP source, sequence and timestamp identity. The transport records
+connection state and its monotonic transition time without imposing a grace policy.
+Live applies bounded `Disconnected` grace to the existing peer and gates new writes during that interval;
 no signaling retry or command replay is implied. RTP ordering and clock extension
 are transport mechanics; correlating a remote output boundary with a kernel epoch
 remains the adapter's responsibility.

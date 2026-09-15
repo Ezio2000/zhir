@@ -1,5 +1,6 @@
 //! Live's negotiated Opus format and mapping between RTP and SDK media streams.
 use super::AUDIO_TYPE;
+use crate::webrtc::WebRtcMedia;
 use crate::{
     native::Buffered,
     transport::webrtc::{AudioPacket, RtpTimeline},
@@ -36,7 +37,9 @@ impl Audio {
             limit,
         }
     }
-    pub fn receive(
+}
+impl WebRtcMedia for Audio {
+    fn receive(
         &mut self,
         turn: &str,
         packet: Buffered<AudioPacket>,
@@ -65,7 +68,7 @@ impl Audio {
         packet.value.validate(self.limit)?;
         Ok(Some(packet))
     }
-    pub fn finish(&self, turn: &str) -> Option<MediaChunk> {
+    fn finish(&mut self, turn: &str) -> Option<MediaChunk> {
         (self.sequence > 0).then(|| MediaChunk {
             stream_id: "live-audio".into(),
             turn_id: turn.into(),
@@ -77,7 +80,7 @@ impl Audio {
             end: true,
         })
     }
-    pub fn input(&self, turn: &str, chunk: &MediaChunk) -> Result<Option<std::time::Duration>> {
+    fn input(&mut self, turn: &str, chunk: &MediaChunk) -> Result<Option<std::time::Duration>> {
         chunk.validate(self.limit)?;
         if chunk.media_type != AUDIO_TYPE || chunk.epoch != 0 || turn != chunk.turn_id {
             return Err(Error::Invalid(

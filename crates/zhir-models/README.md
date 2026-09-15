@@ -3,7 +3,8 @@
 Model-session adapters and composition over core/policies. FunctionModel wraps
 turn exchanges; optional `openai-chat`, `openai-responses` and `anthropic` features
 add HTTP/SSE protocols. The optional `minimax` feature adds bidirectional TTS over
-WebSocket, using the same core session ports.
+WebSocket; `openai-live` adds Codex subscription voice sessions over WebRTC.
+Both use the same core session ports and native output scheduling.
 
 Includes TransformModel, ResourceModel, session concurrency, establishment-only
 retry, stable-ID fallback recovery, static/refreshing credential providers and
@@ -89,7 +90,8 @@ zhir-testing. See [the SDK example](../zhir/examples/minimax_tts.rs).
 
 ## GPT-Live
 
-`openai-live` exposes `openai::live::{LiveConfig, LiveModel, AUDIO_TYPE}`. It uses
+`openai-live` exposes `openai::live::{model, LiveConfig, AUDIO_TYPE}`.
+`openai::live::model(config)` returns the shared `WebRtcModel`. It uses
 Codex subscription signaling at
 `https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas`,
 then WebRTC Opus media and the `oai-events` DataChannel. Defaults are
@@ -137,9 +139,17 @@ the timeline handles counter wrap and drops late or duplicate packets. An unexpl
 source change is uncertain rather than silently merged into the current stream.
 
 Live's `protocol.rs` owns remote phases, command ordering, delegation identities and
-confirmation matching. `session.rs` drives I/O; `audio.rs` owns the negotiated Opus
-format and RTP-to-MediaChunk boundaries. Channel labels and codec parameters come
-from Live, while `transport/webrtc.rs` owns the peer and wire mechanics.
+confirmation matching. `webrtc.rs` defines the shared model and internal adapter,
+protocol, media and connection-policy contracts; `webrtc/driver.rs` executes I/O.
+`openai/live/adapter.rs` supplies per-session components and signaling, and
+`openai/live/connection.rs` owns the original-peer grace policy. `audio.rs` owns the
+negotiated Opus format and RTP-to-MediaChunk boundaries. Channel labels and codec
+parameters come from Live, while `transport/webrtc.rs` owns the peer and wire mechanics.
+The driver supports initialization effects and commands before a peer exists. Its
+current scope is one text DataChannel and an independent audio queue, not video or
+multi-track orchestration. `websocket` and `webrtc` select transport infrastructure;
+`minimax` and `openai-live` select their provider adapters. Internal adapter traits
+are crate-private; external implementations use core's `Model` contract.
 Public event backpressure does not stop reading remote confirmations: native staging
 remains bounded, with capacity reserved before admitting more commands. Exhausting
 that staging reports a capacity failure instead of a misleading confirmation timeout.
@@ -156,6 +166,8 @@ audio packets use `Limits.max_media_chunk_bytes`.
 An explicit `Close` drains received media, acknowledges once and ends the event port
 without requiring another Close. `EndInput` also closes direct session media-input
 admission and drains accepted packets before sending the remote close request.
+Drain writes are polled alongside control receives, output delivery, cancellation and
+fixed confirmation deadlines; a stalled packet cannot suspend confirmation expiry.
 
 Session recovery and manual `InterruptOutput` are not implemented. Their required
 remote prerequisites remain unverified or inaccessible on the tested OAuth route;

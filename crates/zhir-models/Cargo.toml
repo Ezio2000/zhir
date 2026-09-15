@@ -26,8 +26,10 @@ webrtc = { version = "0.17.1", optional = true }
 bytes = { version = "1", optional = true }
 
 [features]
-openai-live = ["dep:webrtc", "dep:bytes", "dep:reqwest", "dep:futures"]
-minimax = ["dep:tokio-tungstenite", "dep:futures"]
+webrtc = ["dep:webrtc", "dep:bytes"]
+websocket = ["dep:tokio-tungstenite", "dep:futures"]
+openai-live = ["webrtc", "dep:reqwest", "dep:futures"]
+minimax = ["websocket"]
 default = []
 openai-chat = ["dep:reqwest", "dep:futures"]
 openai-responses = ["dep:reqwest", "dep:futures"]
