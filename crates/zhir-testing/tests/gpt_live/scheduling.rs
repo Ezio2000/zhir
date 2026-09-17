@@ -11,6 +11,10 @@ async fn configured(
     let model = live::model(config).unwrap();
     let session = model
         .open_session(SessionOpen {
+            context_revision: 0,
+            input_position: 0,
+            profile_revision: 0,
+            mode: zhir_core::run::RunMode::Interactive,
             session_id: "scheduling".into(),
             after_sequence: None,
             output_epoch: 0,
@@ -25,15 +29,7 @@ async fn configured(
         })
         .await
         .unwrap();
-    send(
-        &session,
-        "start",
-        SessionCommandBody::StartTurn {
-            turn_id: "execution".into(),
-            request: Box::new(request()),
-        },
-    )
-    .await;
+
     (session, server)
 }
 async fn close(mut session: ModelSession) -> Vec<MediaChunk> {
@@ -50,7 +46,7 @@ async fn close(mut session: ModelSession) -> Vec<MediaChunk> {
     let mut acknowledged = 0;
     while let Some(event) = session.output.receive().await.unwrap() {
         match event.body {
-            SessionEventBody::Closed => closed += 1,
+            SessionEventBody::Closed { .. } => closed += 1,
             SessionEventBody::Acknowledged { command_id, .. } if command_id == "close" => {
                 acknowledged += 1
             }
@@ -71,7 +67,10 @@ async fn confirmed_controls_survive_blocked_event_delivery() {
         let mut limits = zhir_kernel::defaults::limits();
         limits.max_session_events = 8;
         let (mut session, server) = configured(fixture::Fault::EventPressure, limits).await;
-        assert!(matches!(session.output.receive().await.unwrap().unwrap().body, SessionEventBody::Acknowledged { command_id, .. } if command_id == "start"));
+        assert!(matches!(
+            session.output.receive().await.unwrap().unwrap().body,
+            SessionEventBody::Ready { .. }
+        ));
         tokio::time::sleep(Duration::from_millis(300)).await;
         for (id, enabled) in [("pause", false), ("resume", true)] {
             send(&session, id, SessionCommandBody::SetInputAudio { enabled }).await;
@@ -87,8 +86,12 @@ async fn confirmed_controls_survive_blocked_event_delivery() {
             previous_sequence = event.sequence;
             match event.body {
                 SessionEventBody::Acknowledged { command_id, .. } => acknowledged.push(command_id),
-                SessionEventBody::Delta { delta: ModelDelta::ProtocolEvent { data, .. }, .. }
-                    if data["type"] == "fixture.observation" => observations.push(data["i"].as_u64().unwrap()),
+                SessionEventBody::Delta {
+                    delta: ModelDelta::ProtocolEvent { data, .. },
+                    ..
+                } if data["type"] == "fixture.observation" => {
+                    observations.push(data["i"].as_u64().unwrap())
+                }
                 _ => (),
             }
         }
@@ -96,8 +99,20 @@ async fn confirmed_controls_survive_blocked_event_delivery() {
         assert_eq!(observations, (0..10).collect::<Vec<_>>());
         close(session).await;
         let evidence = server.await.unwrap();
-        assert_eq!(evidence.commands.iter().filter(|e| matches!(e["type"].as_str(), Some("input_audio.pause" | "input_audio.resume"))).count(), 2);
-    }).await.expect("confirmed control blocked behind observation delivery");
+        assert_eq!(
+            evidence
+                .commands
+                .iter()
+                .filter(|e| matches!(
+                    e["type"].as_str(),
+                    Some("input_audio.pause" | "input_audio.resume")
+                ))
+                .count(),
+            2
+        );
+    })
+    .await
+    .expect("confirmed control blocked behind observation delivery");
 }
 
 #[tokio::test]
@@ -183,12 +198,12 @@ async fn provider_rejection_settles_while_public_events_are_blocked() {
         let mut limits = zhir_kernel::defaults::limits();
         limits.max_session_events = 8;
         let (mut session, server) = configured(fixture::Fault::RejectedUnderPressure, limits).await;
-        assert!(matches!(session.output.receive().await.unwrap().unwrap().body, SessionEventBody::Acknowledged { command_id, .. } if command_id == "start"));
+        assert!(matches!(session.output.receive().await.unwrap().unwrap().body, SessionEventBody::Ready { .. }));
         tokio::time::sleep(Duration::from_millis(300)).await;
         send(&session, "pause", SessionCommandBody::SetInputAudio { enabled: false }).await;
         server.await.unwrap();
         tokio::time::sleep(Duration::from_millis(600)).await;
-        assert!(session.input.send(SessionCommand { id: "after-failure".into(), body: SessionCommandBody::Input { message: Message::user("late") } }).await.is_err(), "worker must settle without waiting for event consumption");
+        assert!(session.input.send(SessionCommand { id: "after-failure".into(), body: SessionCommandBody::Append { entry: zhir_core::run::HistoryEntry { id:"late".into(), origin:None, message:Message::user("late") }, context_revision:1,input_position:1,source:AppendSource::Submitted } }).await.is_err(), "worker must settle without waiting for event consumption");
         let mut observations = 0;
         let mut rejection = false;
         let error = loop {

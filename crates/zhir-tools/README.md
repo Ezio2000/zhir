@@ -8,4 +8,4 @@ success payloads only. Active final results also pass output validation. Retry a
 circuit-breaking decorators preserve the operation lifecycle. Production
 dependencies are core and policies.
 
-Part of the zhir workspace, version 0.2.0.
+Part of the zhir workspace, version 0.3.0.

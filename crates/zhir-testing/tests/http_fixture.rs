@@ -120,11 +120,11 @@ async fn contextual_factories_and_http_errors_are_explicit_without_command_repla
                 .backoff(zhir_policies::Backoff::fixed(Duration::ZERO)),
         )
         .unwrap();
-        assert!(model.turn(input.clone(), ctx.clone()).await.is_err());
+        assert!(model.generate(input.clone(), ctx.clone()).await.is_err());
         assert_eq!(count.load(Ordering::SeqCst), 1);
-        assert!(model.turn(input.clone(), ctx.clone()).await.is_err());
+        assert!(model.generate(input.clone(), ctx.clone()).await.is_err());
         assert_eq!(count.load(Ordering::SeqCst), 2);
-        model.turn(input, ctx).await.unwrap();
+        model.generate(input, ctx).await.unwrap();
         assert_eq!(count.load(Ordering::SeqCst), 3);
         let sent = fixture.finish().await.unwrap();
         assert_eq!(sent.len(), 2);
@@ -156,12 +156,12 @@ async fn factory_failures_and_pre_cancelled_calls_send_no_requests() {
     let ctx = context();
     ctx.cancellation.cancel();
     assert!(matches!(
-        model.turn(request(false), ctx).await,
+        model.generate(request(false), ctx).await,
         Err(Error::Cancelled)
     ));
     assert_eq!(count.load(Ordering::SeqCst), 0);
     assert!(
-        matches!(model.turn(request(false),context()).await,Err(Error::Invalid(e)) if e=="user registration failed")
+        matches!(model.generate(request(false),context()).await,Err(Error::Invalid(e)) if e=="user registration failed")
     );
     assert_eq!(count.load(Ordering::SeqCst), 1);
     assert!(
@@ -186,7 +186,7 @@ async fn fixture_exercises_unicode_sse_fragmentation_raw_capture_and_disconnects
             "fixture",
         ))
         .unwrap();
-        let result = model.turn(request(true), context()).await.unwrap();
+        let result = model.generate(request(true), context()).await.unwrap();
         assert_eq!(result.output, vec![zhir::message::Output::text("你好")]);
         let sent = fixture.finish().await.unwrap();
         assert_eq!(sent[0].method, "POST");
@@ -216,7 +216,7 @@ async fn fixture_exercises_unicode_sse_fragmentation_raw_capture_and_disconnects
             "fixture",
         ))
         .unwrap();
-        assert!(model.turn(request(sse), context()).await.is_err());
+        assert!(model.generate(request(sse), context()).await.is_err());
         assert_eq!(fixture.finish().await.unwrap().len(), 1);
     }
 }

@@ -107,8 +107,7 @@ impl Engine {
     pub(super) fn input_media(&mut self, packet: Packet) -> Result<()> {
         let chunk = &packet.chunk;
         chunk.validate(self.current.options.limits.max_media_chunk_bytes)?;
-        if chunk.epoch != 0 || self.current.active.session.turn_id.as_ref() != Some(&chunk.turn_id)
-        {
+        if chunk.epoch != 0 || self.current.active.session.id != chunk.session_id {
             return Err(Error::Invalid("foreign media turn or epoch".into()));
         }
         let resources = self
@@ -162,7 +161,7 @@ pub(super) async fn seal_media(
     let resource = writer.finish().await?;
     let node = zhir_core::resource::SealedMedia {
         stream_id: chunk.stream_id.clone(),
-        turn_id: chunk.turn_id.clone(),
+        session_id: chunk.session_id.clone(),
         epoch: chunk.epoch,
         sequence: chunk.sequence,
         timestamp_us: chunk.timestamp_us,

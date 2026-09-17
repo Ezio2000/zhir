@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "name": "declared_model_failure",
   "kind": "runtime",
   "case": {

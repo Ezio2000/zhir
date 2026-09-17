@@ -292,7 +292,7 @@ async fn grep_does_not_evaluate_unneeded_tail_lines() {
 #[tokio::test]
 async fn custom_tools_do_not_require_builtins_at_runtime() {
     let model = Arc::new(zhir_testing::ScriptedModel::responses([
-        zhir_core::model::TurnOutput::text("done"),
+        zhir_core::model::GenerationOutput::text("done"),
     ]));
     let mut invocation = zhir_kernel::Runtime::builder(model)
         .build()

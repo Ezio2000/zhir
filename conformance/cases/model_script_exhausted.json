@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "name": "model_script_exhausted",
   "kind": "runtime",
   "case": {

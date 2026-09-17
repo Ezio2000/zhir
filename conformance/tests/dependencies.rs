@@ -22,6 +22,14 @@ fn production_dependencies_follow_sdk_boundaries() {
         ("zhir-kernel", vec!["zhir-core"]),
         ("zhir-storage", vec!["zhir-core"]),
         ("zhir-models", vec!["zhir-core", "zhir-policies"]),
+        (
+            "zhir-minimax",
+            vec!["zhir-core", "zhir-policies", "zhir-models"],
+        ),
+        (
+            "zhir-openai",
+            vec!["zhir-core", "zhir-policies", "zhir-models"],
+        ),
         ("zhir-tools", vec!["zhir-core", "zhir-policies"]),
         (
             "zhir-builtins",
@@ -29,7 +37,14 @@ fn production_dependencies_follow_sdk_boundaries() {
         ),
         (
             "zhir-testing",
-            vec!["zhir-core", "zhir-kernel", "zhir-models", "zhir-policies"],
+            vec![
+                "zhir-core",
+                "zhir-kernel",
+                "zhir-models",
+                "zhir-policies",
+                "zhir-minimax",
+                "zhir-openai",
+            ],
         ),
         (
             "zhir",
@@ -50,6 +65,11 @@ fn production_dependencies_follow_sdk_boundaries() {
     for package in metadata["packages"].as_array().unwrap() {
         let name = package["name"].as_str().unwrap();
         let Some(allowed) = expected.get(name) else {
+            assert_eq!(
+                package["publish"],
+                serde_json::json!([]),
+                "untracked production package: {name}"
+            );
             continue;
         };
         if name == "zhir-testing" {
@@ -94,11 +114,41 @@ fn production_dependencies_follow_sdk_boundaries() {
                 features["websocket"],
                 serde_json::json!(["dep:tokio-tungstenite", "dep:futures"])
             );
-            assert_eq!(features["minimax"], serde_json::json!(["websocket"]));
+            let names: BTreeSet<_> = features
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
             assert_eq!(
-                features["openai-live"],
-                serde_json::json!(["webrtc", "dep:reqwest", "dep:futures"])
+                names,
+                [
+                    "default",
+                    "openai-chat",
+                    "openai-responses",
+                    "anthropic",
+                    "websocket",
+                    "webrtc"
+                ]
+                .into()
             );
+        }
+        if matches!(name, "zhir-minimax" | "zhir-openai") {
+            let models = package["dependencies"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|dependency| {
+                    dependency["name"] == "zhir-models" && dependency["kind"].is_null()
+                })
+                .unwrap();
+            let transport = if name == "zhir-minimax" {
+                "websocket"
+            } else {
+                "webrtc"
+            };
+            assert_eq!(models["features"], serde_json::json!([transport]));
+            assert_eq!(models["uses_default_features"], false);
         }
         checked += 1;
     }
@@ -114,6 +164,8 @@ fn acceptance_code_is_confined_to_testing_modules() {
         "zhir-kernel",
         "zhir-policies",
         "zhir-models",
+        "zhir-minimax",
+        "zhir-openai",
         "zhir-tools",
         "zhir-storage",
         "zhir-builtins",

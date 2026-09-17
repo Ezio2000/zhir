@@ -1,6 +1,6 @@
 # 研发接入 API
 
-0.2.0 统一使用会话、operation 和资源契约。完整可运行示例位于
+0.3.0 统一使用会话、operation 和资源契约。完整可运行示例位于
 [custom_tool.rs](../crates/zhir/examples/custom_tool.rs)、
 [resume.rs](../crates/zhir/examples/resume.rs) 和
 [chat.rs](../crates/zhir/examples/chat.rs)。仓库验收用模型、记录器与消费者测试统一位于不发布的 `zhir-testing`；发布的 SDK 不依赖它。
@@ -29,7 +29,7 @@ let completion = invocation.result().await?;
 丢弃 Invocation 或未读完的 EventStream 会取消运行；单纯读取结果无需消费观察事件。
 
 `RunMode::Task` 在当前轮结束且操作已完成时结算；`Interactive` 等待追加输入，
-调用 `end_input` 后才允许正常完成。运行中的控制接口包括：
+调用 `seal_user_input` 后才允许正常完成。运行中的控制接口包括：
 
 | 方法 | 含义 |
 | --- | --- |
@@ -41,7 +41,7 @@ let completion = invocation.result().await?;
 | `interrupt_output()` | 原生输出打断；output_epoch 与命令在同一提交中更新，输入不失效 |
 | `flush_input()` | 需 FlushInput 能力；请求合成已缓冲输入，保持会话和输入端口开放 |
 | `set_input_audio_enabled(enabled)` | 需 InputAudioControl 能力；持久化并设置远端音频输入处理模式，媒体端口保持开放 |
-| `end_input()` | 关闭输入并排空已接收媒体，再通知模型 |
+| `seal_user_input()` | 关闭输入并排空已接收媒体，再通知模型 |
 | `cancel()` | 绕过控制队列发出整个运行的取消信号 |
 
 除 cancel 外，ControlReceipt 中的 revision 表示内核已提交控制意图，不代表外部服务
@@ -51,15 +51,17 @@ let completion = invocation.result().await?;
 
 实现 core 的 Model：`capabilities()`、`negotiate(&ModelRequest)`、
 `open_session(SessionOpen)`。SessionOpen 包含稳定 session ID、本地已提交事件序号 after_sequence、output_epoch、
-限制、初始请求、RecoveryRef 和运行上下文。打开会话只建立通道；推理由 StartTurn 发起。
+限制、初始上下文与配置、上下文/输入/profile 版本、运行模式、RecoveryRef 和运行上下文。
+Ready 表示建立完成。声明 ExplicitGeneration 的模型由 Generate 发起推理；Live 打开后
+直接接收原生事件，不伪造生成请求或生成结束。
 
 ModelSession 的输入/输出端口分别实现 SessionSender/SessionReceiver。输入端口必须
-报告绑定模型的能力和协商结果。会话事件使用单调 sequence；完整 Output 具有 turn、
-item、caller 标识。Operation 事件指向原始 CallRef。提供可恢复服务的适配器应尽早
+报告绑定模型的能力和协商结果。会话事件使用单调 sequence；完整 Output 具有独立
+item、caller 和可选 generation 标识。Operation 事件指向原始 item 的 CallRef。提供可恢复服务的适配器应尽早
 发送 Recovery 或带 recovery 的 Acknowledged，并在重连时确认已经接收的命令。
 
 普通请求型服务可使用 FunctionModel：回调接收 ModelRequest/ModelContext，返回
-TurnOutput。`context.deltas` 可增量发送观察数据，最终输出仍由 TurnOutput 给出。
+GenerationOutput。`context.deltas` 可增量发送观察数据，最终输出仍由 GenerationOutput 给出。
 FunctionModel 和 HTTP 适配器不支持原生双向、运行中 steering、异步结果或服务端恢复；
 不能通过修改 CapabilitySet 把这些协议声明成支持。
 
@@ -73,11 +75,12 @@ CapabilitySet 只描述协议默认能力，实际端点能力应显式提供。
 
 ## MiniMax 双向 TTS
 
-启用 `minimax` feature，使用独立的 TtsConfig；不需要启用 HTTP 协议 feature。
+直接依赖 `zhir-minimax`，使用 `zhir_minimax::tts::TtsConfig`；不需要启用 HTTP 协议 feature。
 
 ```rust
 use std::sync::Arc;
-use zhir::models::{credentials::StaticCredential, minimax::tts::{self, TtsConfig}};
+use zhir_models::credentials::StaticCredential;
+use zhir_minimax::tts::{self, TtsConfig};
 
 let credentials = Arc::new(StaticCredential::new("Bearer", api_key));
 let mut config = TtsConfig::new("speech-2.8-hd", "male-qn-qingse", credentials);
@@ -93,11 +96,11 @@ Token Plan Key，这个限制不属于 SDK。
 
 返回的 WebSocketModel 直接交给 Runtime::builder。需要配置 ResourceStore 来封存音频。
 使用 Interactive 模式，同时消费 media_output 和驱动 result；通过 control.input 追加
-用户文字，通过 flush_input 合成已缓冲文字并继续输入，通过 end_input 收完尾音并结束，
+用户文字，通过 flush_input 合成已缓冲文字并继续输入，通过 seal_user_input 收完尾音并结束，
 通过 interrupt_output 打断后继续输入。空格和换行片段按原文保留。
-[完整示例](../crates/zhir/examples/minimax_tts.rs) 演示这些端口的组合。
+[完整示例](../crates/zhir-minimax/examples/minimax_tts.rs) 演示这些端口的组合。
 
-StartTurn 只合成请求中最后一条 User 文本，不把整个历史读出来。AudioSettings.format
+Generate 只合成请求中最后一条 User 文本，不把整个历史读出来。AudioSettings.format
 可选择 MP3、PCM、FLAC、WAV、原始/WAV μ-law，默认 MP3。μ-law 需要 8 kHz。
 文档中的 Ogg/Opus 在当前 Token Plan 实测返回缺少音频或截尾的容器，因此没有加入生产配置。
 
@@ -160,7 +163,7 @@ let tool = TypedTool::<EchoArgs, String>::new(
 ## 恢复与子 Agent
 
 RunCompletion 可提取不可变 checkpoint。`wire::encode_checkpoint/decode_checkpoint`
-使用 v3。持久化运行可生成 SuspensionTicket，通过
+使用 v4。持久化运行可生成 SuspensionTicket，通过
 `ResumeRequest::from_ticket` 校验 run、revision、checkpoint 与 suspension。
 
 用 `ResumeRequest::resolve` 为未完成操作提供明确处置：
@@ -206,7 +209,11 @@ Preferred 只允许使用调用方列出的替代值，未满足项记录原因�
 RetryingModel 仅重试尚未发送命令的会话建立。FallbackModel 接收
 `FallbackCandidate::new(stable_id, model)` 列表，各候选独立协商；恢复绑定原 ID，
 顺序变化不会把任务迁移到另一服务。ConcurrencyLimitedModel 的共享许可覆盖会话寿命。
-TransformModel 可变换打开请求、StartTurn、命令与事件；异步变换需要遵守取消和预算。
+TransformModel 的 prepare 处理打开上下文和 ReplaceContext；命令与事件可以单独变换。
+Generate 仅引用已确认的上下文/profile 版本和输入位置，不再携带全量历史。
+Append 用 Submitted/Accepted 区分宿主输入与内核确认的输出投影，后者不能回显给原生服务。
+ResponseFinished 的 input_position 只覆盖真实处理过的输入；结束 A 不能吞掉后来提交的 B。
+一个会话最多一项活动生成，工具、输入和媒体仍可并发。异步变换需要遵守取消和预算。
 
 ## 资源与媒体流
 
@@ -218,14 +225,14 @@ ResourceStore::open 返回 reader，每次 read 指定最大字节数。MemoryRe
 可用；FilesystemResourceStore 需要 `resources-filesystem`。同 key 相同数据幂等，
 不同数据明确冲突。
 
-`ResourceModel::new(model, store, max_input_bytes)` 在打开请求、StartTurn、实时 Input
-和 ToolResult 中解析资源。一个请求/命令内按实际物化字节消耗总预算；原生回放中同一
+`ResourceModel::new(model, store, max_input_bytes)` 在打开上下文、ReplaceContext 和
+Append（包括工具结果及确认输出）中解析资源。一个请求/命令内按实际物化字节消耗总预算；原生回放中同一
 数据有多份表示时分别计入。超限应改用媒体流。输出资源先封存，再进入 kernel 历史；
 原生 JSON 中的媒体位置需显式绑定，防止内联副本继续进入回放数据。
 
 原生双向模型提供可选 MediaSender/MediaReceiver。宿主通过 Invocation 的 media_input
 和 media_output 使用独立媒体通道，同时驱动 result/control。每个 MediaChunk 显式带
-stream_id、turn_id、epoch、sequence、timestamp_us、media_type、bytes、end。
+session_id、stream_id、epoch、sequence、timestamp_us、media_type、bytes、end。
 媒体序号在同一流内递增。输入 epoch 固定为 0；输出打断后使用新的 output_epoch，过期输出不会交付给宿主。结束的流从活动表移出，通过 media_archive 保留资源引用。
 
 媒体在存储完成和 cursor 提交后才交付，输出消费者变慢会向上游施加背压。
@@ -260,11 +267,11 @@ JsonOutput<T>（`typed-output`）从同一 Schema 构造请求格式并验证最
 
 ### GPT-Live 原生会话
 
-启用 `openai-live`，使用 `models::openai::live::LiveConfig` 注入宿主的
-`CredentialProvider`，再调用 `models::openai::live::model(config)`，返回共享的
-`models::WebRtcModel`。凭据元数据需要
+直接依赖 `zhir-openai`，使用 `zhir_openai::live::LiveConfig` 注入宿主的
+`CredentialProvider`，再调用 `zhir_openai::live::model(config)`，返回共享的
+`zhir_models::WebRtcModel`。凭据元数据需要
 `header:ChatGPT-Account-Id`；登录、OAuth 刷新和代理配置归宿主。
-`examples/gpt_live.rs` 演示 Runtime、资源存储、输入 Opus 包、输出消费和 EndInput。
+`zhir-openai/examples/gpt_live.rs` 演示 Runtime、资源存储、输入 Opus 包、输出消费和 SealUserInput。
 
 完整发言通过 `ConversationItem` 写入历史；服务端识别的用户发言不会再发回模型。
 `RuntimeBuilder::delegation(Arc<dyn DelegationHandler>)` 注入后台任务执行器。
@@ -283,7 +290,7 @@ Live 输出的 `max_buffered_media_bytes` 按实际负载字节计费，同一�
 接收、待投递输出和媒体端口，消费后释放；输入使用另一份预算。每个方向另有
 4096 块上限，空结束标记只占块数。事件队列容量与最大单块大小不决定音频包数。
 RTP 无法保证向远端施加背压，超出接收预算会以 Uncertain 终止。
-直接使用 ModelSession 时，EndInput 同样关闭媒体输入准入并排空已接收包；
+直接使用 ModelSession 时，SealUserInput 同样关闭媒体输入准入并排空已接收包；
 排水期间继续处理远端事件、取消和固定确认期限，后续远端关闭动作等待排水完成。
 Close 在收到远端确认、排空接收数据后结束事件端口，无需再次发送 Close。
 
@@ -293,8 +300,8 @@ Live 在原 PeerConnection 短暂 Disconnected 后，按 `LiveConfig.reconnect_t
 不能宣称网络故障下始终恢复成功。程序 InterruptOutput 和连接销毁/进程重启后的会话恢复
 尚未实现；已实测的控制命令被拒绝，侧带重连没有恢复主媒体通道，fork 被账号访问控制拒绝。公开 Live 的 fork 派生新会话，
 不能直接代替原连接和未确认命令的恢复。当前订阅入口拒绝公开 API 的 store 参数；
-这不等于 GPT-Live 服务端没有存储或恢复能力。详见模型 crate 的
-[已实现能力与限制](../crates/zhir-models/README.md#gpt-live)。
+这不等于 GPT-Live 服务端没有存储或恢复能力。详见独立接入包的
+[已实现能力与限制](../crates/zhir-openai/README.md)。
 
 这两种适配器的职责与剩余边界如下；不能通过扩充核心枚举来补出远端没有确认过的行为。
 

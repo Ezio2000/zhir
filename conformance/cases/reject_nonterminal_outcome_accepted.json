@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "name": "reject_nonterminal_outcome_accepted",
   "kind": "value",
   "schema": "operation-outcome",

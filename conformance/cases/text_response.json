@@ -1,0 +1,42 @@
+{
+  "version": 4,
+  "name": "text_response",
+  "kind": "runtime",
+  "case": {
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "kind": "text",
+            "text": "go"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "output": {
+          "output": [
+            {
+              "kind": "content",
+              "content": {
+                "kind": "text",
+                "text": "done"
+              }
+            }
+          ],
+          "model_id": null,
+          "response_id": null,
+          "finish_reason": null,
+          "status": "completed"
+        }
+      }
+    ],
+    "tools": [],
+    "expected": {
+      "state": "completed",
+      "text": "done"
+    }
+  }
+}

@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::{sync::Arc, time::Duration};
 use zhir_core::{
     BoxFuture, Result,
-    model::{CapabilitySet, Model, ModelContext, ModelRequest, TurnOutput},
+    model::{CapabilitySet, GenerationOutput, Model, ModelContext, ModelRequest},
 };
 
 #[derive(Clone)]
@@ -56,7 +56,14 @@ impl HttpModel {
                 "model and base URL are required".into(),
             ));
         }
-        let capabilities = protocol.adapter().capabilities();
+        let mut capabilities = protocol.adapter().capabilities();
+        capabilities.features.extend([
+            zhir_core::model::Capability::ExplicitGeneration,
+            zhir_core::model::Capability::ResponseEvents,
+            zhir_core::model::Capability::LocalProjection,
+            zhir_core::model::Capability::ReplaceContext,
+            zhir_core::model::Capability::ProfileUpdates,
+        ]);
         Ok(Self {
             config,
             protocol,
@@ -86,7 +93,14 @@ impl HttpModel {
         self.mappings.push(mapping);
         Ok(self)
     }
-    pub fn with_capabilities(mut self, capabilities: CapabilitySet) -> Self {
+    pub fn with_capabilities(mut self, mut capabilities: CapabilitySet) -> Self {
+        capabilities.features.extend([
+            zhir_core::model::Capability::ExplicitGeneration,
+            zhir_core::model::Capability::ResponseEvents,
+            zhir_core::model::Capability::LocalProjection,
+            zhir_core::model::Capability::ReplaceContext,
+            zhir_core::model::Capability::ProfileUpdates,
+        ]);
         self.capabilities = capabilities;
         self
     }
@@ -142,7 +156,7 @@ impl HttpModel {
         &self,
         request: ModelRequest,
         context: ModelContext,
-    ) -> BoxFuture<'_, Result<TurnOutput>> {
+    ) -> BoxFuture<'_, Result<GenerationOutput>> {
         Box::pin(async move {
             let PreparedExchange {
                 request,

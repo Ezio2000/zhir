@@ -4,7 +4,7 @@ use zhir_core::{
     Result,
     error::Error,
     message::{Output, ProviderToolCall},
-    model::{ModelDelta, ModelRequest, ProviderToolSpec, TurnOutput},
+    model::{GenerationOutput, ModelDelta, ModelRequest, ProviderToolSpec},
 };
 
 /// Read-only context for creating one invocation-local extension session.
@@ -80,8 +80,8 @@ pub trait ProtocolExtension: Send {
         &mut self,
         _protocol: Protocol,
         _raw: &Value,
-        decoded: Result<TurnOutput>,
-    ) -> Result<TurnOutput> {
+        decoded: Result<GenerationOutput>,
+    ) -> Result<GenerationOutput> {
         decoded
     }
 }
@@ -179,8 +179,8 @@ impl ProtocolExtension for ExtensionChain {
         &mut self,
         protocol: Protocol,
         raw: &Value,
-        mut decoded: Result<TurnOutput>,
-    ) -> Result<TurnOutput> {
+        mut decoded: Result<GenerationOutput>,
+    ) -> Result<GenerationOutput> {
         for extension in &mut self.extensions {
             decoded = extension.decode_response(protocol, raw, decoded);
         }

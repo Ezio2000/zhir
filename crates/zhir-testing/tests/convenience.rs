@@ -18,7 +18,7 @@ use zhir::{
     Result, Runtime,
     error::Error,
     message::{Message, Output},
-    model::{CapabilitySet, ModelContext, ModelRequest, TurnOutput},
+    model::{CapabilitySet, GenerationOutput, ModelContext, ModelRequest},
     models::{ConcurrencyLimitedModel, FunctionModel},
     output::JsonOutput,
     policies::history::HistoryWindow,
@@ -54,7 +54,8 @@ fn checkpoint(messages: Vec<Message>) -> Arc<Checkpoint> {
             let origin = match &message {
                 Message::RuntimeTool { call_id, .. } => Some(zhir_core::operation::CallRef {
                     session_id: "s".into(),
-                    turn_id: "t".into(),
+                    item_id: call_id.clone(),
+                    generation_id: Some("t".into()),
                     caller_id: "model".into(),
                     call_id: call_id.clone(),
                 }),
@@ -65,7 +66,8 @@ fn checkpoint(messages: Vec<Message>) -> Arc<Checkpoint> {
                 {
                     Some(zhir_core::operation::CallRef {
                         session_id: "s".into(),
-                        turn_id: "t".into(),
+                        item_id: "call".into(),
+                        generation_id: Some("t".into()),
                         caller_id: "model".into(),
                         call_id: "call".into(),
                     })
@@ -81,7 +83,7 @@ fn checkpoint(messages: Vec<Message>) -> Arc<Checkpoint> {
         .collect();
     let mut checkpoint =
         zhir_testing::checkpoint_with_history(History::from_entries(entries).unwrap());
-    checkpoint.active.session.disposition = Some(zhir_core::model::TurnDisposition::Finished);
+    checkpoint.active.session.response_status = Some(zhir_core::model::ResponseStatus::Completed);
     Arc::new(checkpoint)
 }
 #[derive(Debug, PartialEq, Deserialize, Serialize, JsonSchema)]
@@ -104,7 +106,7 @@ async fn output_contract_uses_one_schema_and_reports_validation_stage() {
             assert!(
                 matches!(request.response_format, Some(zhir::model::ResponseFormat::Schema {schema, ..}) if schema["properties"]["count"]["maximum"] == 10)
             );
-            Ok(TurnOutput::text(r#"{"count":3}"#))
+            Ok(GenerationOutput::text(r#"{"count":3}"#))
         },
     ));
     let runtime = Runtime::builder(model)
@@ -222,8 +224,8 @@ async fn history_windows_keep_runtime_results_external_replies_and_dependencies(
             .is_err()
     );
     let mut pending = (*original).clone();
-    pending.active.session.disposition = None;
-    pending.active.session.turn_id = Some("active".into());
+    pending.active.session.response_status = None;
+    pending.active.session.generation_id = Some("active".into());
     assert!(window.reduce(Arc::new(pending)).await.unwrap().is_none());
     assert!(HistoryWindow::last_turns(0).is_err());
 }
@@ -249,7 +251,7 @@ async fn shared_limiter_bounds_128_calls_and_releases_failed_calls() {
     }));
     let limited = Arc::new(ConcurrencyLimitedModel::new(model, 4).unwrap());
     let results =
-        futures::future::join_all((0..128).map(|_| limited.turn(request(), context()))).await;
+        futures::future::join_all((0..128).map(|_| limited.generate(request(), context()))).await;
     assert!(results.iter().all(Result::is_err));
     assert!((1..=4).contains(&peak.load(Ordering::SeqCst)));
     assert_eq!(active.load(Ordering::SeqCst), 0);
@@ -269,14 +271,14 @@ async fn queued_cancellation_deadline_and_dropped_future_release_permits() {
                 entered.fetch_add(1, Ordering::SeqCst);
                 let permit = gate.acquire().await.unwrap();
                 permit.forget();
-                Ok(TurnOutput::text("done"))
+                Ok(GenerationOutput::text("done"))
             }
         }
     }));
     let limited = Arc::new(ConcurrencyLimitedModel::new(model, 1).unwrap());
     let first = tokio::spawn({
         let limited = limited.clone();
-        async move { limited.turn(request(), context()).await }
+        async move { limited.generate(request(), context()).await }
     });
     while entered.load(Ordering::SeqCst) == 0 {
         tokio::task::yield_now().await;
@@ -285,7 +287,7 @@ async fn queued_cancellation_deadline_and_dropped_future_release_permits() {
     let token = cancelled.cancellation.clone();
     let waiting = tokio::spawn({
         let limited = limited.clone();
-        async move { limited.turn(request(), cancelled).await }
+        async move { limited.generate(request(), cancelled).await }
     });
     token.cancel();
     assert!(matches!(
@@ -298,7 +300,7 @@ async fn queued_cancellation_deadline_and_dropped_future_release_permits() {
     let mut expired = context();
     expired.run.deadline_at_ms = Some(zhir::kernel::defaults::context().started_at_ms + 15);
     assert!(matches!(
-        limited.turn(request(), expired).await,
+        limited.generate(request(), expired).await,
         Err(Error::Deadline)
     ));
     assert_eq!(entered.load(Ordering::SeqCst), 1);
@@ -306,10 +308,13 @@ async fn queued_cancellation_deadline_and_dropped_future_release_permits() {
     let _ = first.await;
     gate.add_permits(1);
     assert!(
-        tokio::time::timeout(Duration::from_secs(1), limited.turn(request(), context()))
-            .await
-            .unwrap()
-            .is_ok()
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            limited.generate(request(), context())
+        )
+        .await
+        .unwrap()
+        .is_ok()
     );
     assert_eq!(entered.load(Ordering::SeqCst), 2);
 }
@@ -347,7 +352,7 @@ async fn selected_catalog_is_frozen_for_the_entire_run() {
             }
             async move {
                 if turn == 0 {
-                    let mut response = TurnOutput::text("");
+                    let mut response = GenerationOutput::text("");
                     response.output = vec![Output::RuntimeToolCall {
                         call: RuntimeToolCall {
                             id: "call".into(),
@@ -360,7 +365,7 @@ async fn selected_catalog_is_frozen_for_the_entire_run() {
                     assert!(
                         matches!(request.messages.last(), Some(Message::RuntimeTool {outcome, ..}) if outcome.structured().unwrap()["count"] == 3)
                     );
-                    Ok(TurnOutput::text("done"))
+                    Ok(GenerationOutput::text("done"))
                 }
             }
         }
@@ -403,7 +408,7 @@ async fn streamed_sink_completion_is_inside_the_concurrency_permit() {
                         text: "piece".into(),
                     })
                     .await?;
-                Ok(TurnOutput::text("done"))
+                Ok(GenerationOutput::text("done"))
             }
         }
     }));
@@ -426,7 +431,7 @@ async fn streamed_sink_completion_is_inside_the_concurrency_permit() {
             context.deltas = Some(sink);
             let mut request = request();
             request.stream = true;
-            limited.turn(request, context).await
+            limited.generate(request, context).await
         })
     };
     let first = start();

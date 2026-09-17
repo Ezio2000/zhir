@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio_tungstenite::{accept_async, tungstenite::Message as Frame};
 use zhir_core::{error::Error, model::*};
-use zhir_models::minimax::tts::{
+use zhir_minimax::tts::{
     self, AudioFormat, Emotion, SubtitleGranularity, TimbreWeight, VoiceEffects,
 };
 
@@ -113,9 +113,8 @@ async fn provider_settings_and_metadata_keep_their_wire_meaning() {
             let model = tts::model(settings).unwrap();
             let opening = open();
             let cancellation = opening.context.cancellation.clone();
-            let request = opening.request.clone();
             let mut session = model.open_session(opening).await.unwrap();
-            session.input.send(SessionCommand {id:"start".into(),body:SessionCommandBody::StartTurn {turn_id:"turn".into(),request:Box::new(request)}}).await.unwrap();
+            session.input.send(SessionCommand {id:"start".into(),body:SessionCommandBody::Generate {generation_id:"turn".into(),context_revision:0,input_position:0,profile_revision:0}}).await.unwrap();
             assert!(matches!(next_event(&mut session.output).await.unwrap().unwrap().body, SessionEventBody::Acknowledged { .. }));
             if mismatch {
                 assert!(matches!(next_event(&mut session.output).await,Err(Error::Protocol(message)) if message.contains("audio_format")));

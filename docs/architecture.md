@@ -2,7 +2,7 @@
 
 zhir is a Rust SDK with one execution state machine. Public contracts describe
 sessions, operations and resources independently of an endpoint, executor or product.
-The 0.2.0 API and v3 wire/storage formats are the only supported contracts.
+The 0.3.0 API and v4 wire/storage formats are the only supported contracts.
 
 ## Ownership
 
@@ -13,6 +13,8 @@ zhir       -> core, kernel, [policies, models, tools, builtins, storage]
 policies   -> core
 kernel     -> core
 models     -> core, policies
+minimax    -> core, policies, models
+openai     -> core, policies, models
 tools      -> core, policies
 builtins   -> core, tools, [kernel: agent-runtime only]
 storage    -> core
@@ -27,17 +29,26 @@ core       -> no other zhir crate
 - **Kernel** owns the only run state machine and checkpoint commit path. It receives
   model sessions, tool bindings, policies and stores through core ports. It does not
   decode provider wire formats, refresh credentials or own provider model catalogs.
-- **Models** implements turn-protocol, native WebSocket and WebRTC sessions, transformations, concurrency,
+- **Models** implements incremental exchange, native WebSocket and WebRTC sessions, transformations, concurrency,
   establishment retry/fallback, credential providers and resource normalization.
-  **Tools** owns immutable catalog snapshots, binding, schema validation and tool
-  decorators. Neither depends on storage or the other adapter crate.
+  Transport-dependent adapter contracts live here; queues and reservations remain private.
+- **Integrations** (`zhir-minimax`, `zhir-openai`) own service configuration, endpoints,
+  handshake formats, protocol phases and media interpretation. They depend on core,
+  policies and models, never kernel/tools/storage or one another. Adding an integration
+  does not add a provider dependency or feature to models or the SDK facade.
+  Packages are scoped to a service provider; capabilities live in modules such as
+  `zhir_minimax::tts` and `zhir_openai::live`. Reusable Chat/Responses protocols stay
+  in models even when an integration uses them for a provider's endpoint.
+- **Tools** owns immutable catalog snapshots, binding, schema validation and tool
+  decorators. Models and tools depend on neither storage nor each other.
 - **Storage** implements atomic commits and immutable resources. It does not execute
   models/tools or decide how a run advances.
 - **Builtins** supplies concrete tools. `agent` exposes `AgentBackend` and `agent_run`;
   `agent-runtime` additionally drives ordinary child kernel invocations with bounded
   admission. It has no second child execution state machine or independent job store.
-- **The facade** selects components through features and adds composition helpers.
-- **Testing** may depend on core, kernel, models and policies. It is a development
+- **The facade** selects SDK components through features and adds composition helpers.
+  Applications depend directly on independent service packages and pass their Model to Runtime.
+- **Testing** may depend on core, kernel, models, policies and integration packages. It is a development
   dependency only. All acceptance runners, recordings, synthetic providers, fault
   injection, trace validation and benchmarks live in the unpublished `zhir-testing` or
   `conformance` packages. Production packages contain no acceptance sources or dependencies; release archives use an explicit allowlist.
@@ -49,28 +60,37 @@ contains `SessionSender`, `SessionReceiver` and optional media input/output port
 A session sender exposes the capabilities of the bound model, so a fallback's
 aggregate advertisement cannot authorize an unsupported command after selection.
 
-Commands carry identities. StartTurn freezes the history prefix, tool declarations
-and profile used for that turn. Input, ToolResult, UpdateProfile, InterruptOutput,
-EndInput and Close are explicit commands. Events acknowledge commands and report
-incremental deltas, complete output items, operation updates, turn completion,
-recovery references and closure. Complete output items are committed as they arrive;
-tools can start before TurnFinished when the session permits it.
+Opening seeds the context and configuration, and emits Ready after establishment.
+Append carries one identified history entry and a context revision. Submitted entries
+are host inputs/results; Accepted entries synchronize the kernel's canonical, transformed
+and resource-sealed outputs without echoing them back to a native provider. Generate
+carries only a generation identity, context revision, input position and profile revision;
+it never carries another full history. ReplaceContext requires an explicit capability,
+an idle session and acknowledgement before generation. Unsupported reducers fail before
+remote work; the kernel never closes and reopens to simulate context replacement.
+
+One generation may be active, independently of concurrent inputs, tools and media.
+ResponseStarted/ResponseFinished describe actual protocol boundaries, not a session's
+lifetime. Completion reports the verified input position it covers: response A cannot
+complete a run after unprocessed input B. Acknowledgements explicitly distinguish local
+projection, transport acceptance and provider confirmation. SealUserInput stops user
+and media admission but permits host operation results. Close is graceful; only Closed
+and drained media permit run completion. EOF, silence and empty queues are not success.
 
 FunctionModel and the HTTP Chat/Responses/Messages adapters implement the same
-session interface over turn exchanges. They reject unsupported duplex, steering,
+session interface over individual exchanges and maintain an incremental context projection.
+They accept updates while an exchange runs without changing its frozen request. They reject unsupported duplex, steering,
 resume and asynchronous-result capabilities. Native transports implement the core
-session ports directly. The `minimax` feature provides text-input/audio-output TTS:
-native.rs owns bounded ports, output scheduling, epoch filtering, terminal delivery
-and monotonic confirmation deadlines shared with Live. websocket.rs owns WebSocket
-connection lifetime; webrtc.rs and webrtc/driver.rs own WebRTC session orchestration
-through internal adapter, protocol, media and connection-policy contracts. transport/websocket.rs owns
-framing and handshake authentication, and codec/streaming retain MiniMax task and
-sentence semantics. Format/voice/subtitle configuration remains in the MiniMax
-adapter; Opus format selection and Codex subscription commands remain in Live,
-while RTP wire mechanics stay in transport. Core owns public
-commands and capabilities, kernel owns durable command intent and output epochs,
-and policies own runtime-independent strategy. Provider protocol phases do not
-advance runs or commit storage. Session IDs and sideband attachments alone do not
+session ports directly. Independent integration packages implement provider-specific
+protocols over models' public WebSocket/WebRTC adapter contracts. MiniMax's TTS
+configuration, task protocol and sentence decoder live in `zhir-minimax/src/tts`;
+Live's signaling, protocol, media mapping and connection policy live in `zhir-openai/src/live`.
+The models crate owns bounded ports, output scheduling, epoch filtering, terminal
+delivery and monotonic confirmation deadlines. Its transport layer owns socket,
+PeerConnection and RTP mechanics. Core owns provider-neutral commands and capabilities;
+kernel owns durable command intent and output epochs; policies owns runtime-independent
+strategy. Provider protocol phases do not advance runs or commit storage.
+Session IDs and sideband attachments alone do not
 satisfy recovery: an adapter must also restore media and reconcile pending commands.
 HTTP-only codec/streaming helpers remain feature-isolated. No second `invoke` or stream runtime is retained.
 
@@ -96,11 +116,19 @@ recovery or explicit operation Attach/Complete/Abandon resolutions.
 Only final Success/Failure/Cancelled outcomes produce runtime-tool history results.
 The result, operation state and result-delivery command share one commit. Adapter
 sequence/update pairs detect conflicting duplicates. Provider operations retain the
-original call identity across continuation turns and stay outside local tool
-scheduling. Model history groups causal assistant output by session/turn, replacing
+original call identity across continuation responses and stay outside local tool
+scheduling. Model history groups causal assistant output by session/generation, replacing
 intermediate provider results; raw history retains arrival order and stable IDs.
-Final content comes from outputs produced since the current turn started, including
-completion of an operation initiated in an earlier turn.
+CallRef identifies the original item; its generation identity is optional. Live does
+not manufacture a generation for its session or delegations. Media is keyed by session,
+stream, epoch and sequence. HTTP Task output comes from the final response; Interactive
+output includes assistant content from the run. Both retain full committed history.
+
+The establishment state and all decisions about context, input coverage and generation
+are persisted. An uncertain open or send cannot be retried as a fresh remote session.
+Local projection reconstruction requires the bound LocalProjection capability and a safe boundary; otherwise recovery
+must prove attachment. `max_generation_requests` counts explicit host requests;
+`observed_responses` is unknown until real response events are received.
 
 History uses immutable chunks and incremental digests. Storage persists a compact
 CheckpointCore plus a history delta. Rewrites are allowed only without active
@@ -125,16 +153,16 @@ endpoint mappings cannot silently replace controlled request fields.
 
 ResourceRef supports inline bytes, URLs, stored keys and provider-owned references.
 ResourceReader/Writer use bounded chunks. ResourceModel resolves stored inputs for
-opening turns and live Input/ToolResult commands, and seals normalized output before
+opening context, ReplaceContext and Append commands, and seals normalized output before
 kernel history. Native replay positions are explicit adapter bindings; unbound
 copies of sealed media data are rejected.
 
-MediaChunk carries stream, turn, epoch, sequence, timestamp and end metadata. Separate
+MediaChunk carries session, stream, epoch, sequence, timestamp and end metadata. Separate
 byte-bounded channels apply backpressure. Payload and linked stream-manifest nodes
 are sealed before committing cursors and before external input/output delivery.
 InterruptOutput advances the output epoch in the same commit as its outbox command;
 the command carries that exact epoch to the adapter. Providers do not allocate a
-second independent epoch. Late rejected media cannot mutate the current manifest chain. EndInput
+second independent epoch. Late rejected media cannot mutate the current manifest chain. SealUserInput
 closes admission and drains accepted input before sending the endpoint command.
 Older output epochs cannot advance a stream; input epoch is zero. Checkpoints keep the latest sealed reference,
 not an ever-growing media transcript. Resource retention/collection belongs to the
@@ -162,9 +190,9 @@ The explicit MiniMax live test separately checks TTS drain, flush/continue and i
 it does not establish video support, audio input, transport recovery or load guarantees.
 
 A language binding wraps core values and the SDK invocation/control interfaces. It
-must use v3 DTOs and preserve identities, revisions, cancellation and backpressure.
+must use v4 DTOs and preserve identities, revisions, cancellation and backpressure.
 There is no Python wire compatibility layer, alternate scheduler or migration reader.
-SQL stores require format 3 in a new database; Redis requires a new format-3 namespace.
+SQL stores require format 4 in a new database; Redis requires a new format-4 namespace.
 Filesystem resources use their current format in a new directory. Older layouts are
 rejected rather than translated.
 
@@ -177,7 +205,7 @@ configured tool concurrency with one 50 ms cleanup budget for all external handl
 handles still pending when the budget expires are dropped before local tasks are aborted.
 Suspension detaches without cancelling external operation handles.
 
-Conversation projection indexes each turn's provider calls by `(provider, call_id)`;
+Conversation projection indexes each response's provider calls by `(provider, call_id)`;
 updates retain their first output position and do not scan accumulated output. Provider
 operation settlement metadata lives in `ProviderToolCall.outcome`, separately from
 adapter-owned `data`. Success content is stored once in `output`; settlement preserves
@@ -194,12 +222,12 @@ owns construction and recognition of built-in negotiation dimension names.
 
 ## Independent conversation items and delegated work
 
-Execution turns are scheduling units. `ConversationItem` carries a complete message
-and provider item identity independently of a turn: the kernel deduplicates identical
+Generations are optional protocol events. `ConversationItem` carries a complete message
+and provider item identity independently of a generation: the kernel deduplicates identical
 items, rejects identity conflicts, and appends user and assistant messages without
-sending them back as `Input`. These entries have their own history IDs and no call
+sending them back as submitted Append. These entries have their own history IDs and no call
 origin, so conversation projection preserves each speaker boundary. Incremental
-execution outputs continue to use causal turn grouping.
+generation outputs continue to use real causal response grouping.
 
 `Output::Delegation` and `Message::DelegationResult` describe host-owned delegated
 work. Core owns `DelegationHandler`, `DelegationRequest`, `DelegationContext` and the
@@ -218,12 +246,12 @@ stream identity in that epoch. Thus `max_media_streams` bounds simultaneous acti
 streams. Checkpoints retain constant-size archive references; enumerating archived
 streams (including checking a new identity) reads their linked resource nodes.
 
-`openai-live` supplies subscription WebRTC signaling, DataChannel events and Opus
-ports through these native contracts. It has no public-Realtime, HTTP/SSE or WebSocket
+`zhir_openai::live` supplies subscription WebRTC signaling, DataChannel events and Opus
+ports through these native contracts. It has no public-Live, HTTP/SSE or WebSocket
 fallback and advertises no session resume or manual output-interruption guarantee.
 Verified sideband attachment belongs to Live's control transport; it neither restores
 a destroyed media peer nor establishes command replay or deduplication. It is not a
-generic recovery capability. See the model crate README for credential, audio and
+generic recovery capability. See the integration crate README for credential, audio and
 protocol limits.
 
 The shared native output scheduler transfers remaining bounded control events and
@@ -239,11 +267,11 @@ explicit capability. Kernel commits their outbox intents; the latter also record
 while a session acknowledgement establishes the adapter’s documented remote boundary.
 Flush leaves input admission open. Audio input gating leaves the media port open and
 does not advance output epochs. Provider event names and confirmation matching stay
-in models; neither core nor kernel knows MiniMax tasks or Live DataChannel messages.
+in the integration packages; neither core nor kernel knows MiniMax tasks or Live DataChannel messages.
 
-`models::native` owns the shared executor-dependent port implementation, bounded
+Models' private native machinery owns the shared executor-dependent port implementation, bounded
 pending output queues, event sequencing, cancellation/deadline guard and terminal
-channel. Its serialized `Confirmation<T>` owns a pending remote barrier and its
+channel. The public `Confirmation<T>` owns a pending remote barrier and its
 fixed monotonic deadline; protocol adapters own the payload, matching and phases.
 A timeout never settles a command, and new observations never extend the deadline.
 WebSocket and WebRTC drivers keep commands and deadlines runnable while output is
@@ -251,7 +279,7 @@ waiting for capacity. WebRTC has separate event/audio receive queues; closure dr
 already received data through the output scheduler. This is adapter machinery, not
 a second execution/checkpoint state machine, and does not belong in core.
 
-Live's factory returns `WebRtcModel`. `openai/live/adapter.rs` supplies synchronous
+Live's factory returns `WebRtcModel`. `zhir-openai/src/live/adapter.rs` supplies synchronous
 protocol transitions (`protocol.rs`), media interpretation (`audio.rs`), signaling
 (`signaling.rs`) and original-peer connection policy (`connection.rs`). The generic
 `webrtc/driver.rs` depends on these contracts, never on Live types. Protocols emit
@@ -260,8 +288,10 @@ A protocol may connect immediately or process commands before requesting a peer.
 The current transport scope is a text DataChannel and an independent RTP audio queue.
 Peer channel labels, codec parameters and input admission come from the adapter;
 queue capacities and shared media reservations come from session Limits. Signaling
-payloads remain opaque to the driver. Public factories select built-in adapters;
-internal traits do not introduce another public extension API.
+payloads remain opaque to the driver. Independent service factories select adapters through models' transport-specific
+contracts. They return core Models; kernel sees no transport-specific types.
+Media adapters map raw AudioPacket values into MediaChunk values without expanding
+the payload. The driver alone retains and releases the private ingress reservation.
 
 Input draining closes admission and preserves the ordering of subsequent command
 effects. In-flight writes retain their reservations and are polled alongside remote
@@ -270,8 +300,9 @@ Received control effects may progress while a command's drain/write is pending;
 local transport acknowledgements stay behind their corresponding writes. Finalization
 requires stopped ingress producers and drained accepted queues, then adapter-defined
 media termination and protocol completion. Queue emptiness alone is not completion.
-The `websocket` and `webrtc` features select transport infrastructure; `minimax` and
-`openai-live` enable the corresponding infrastructure and provider implementation.
+The models `websocket` and `webrtc` features select transport infrastructure.
+MiniMax TTS selects WebSocket; OpenAI Live selects WebRTC. Neither transport feature
+selects a service implementation, model, endpoint or credentials.
 Control receive processing continues under public event backpressure; bounded native
 staging reserves room for command receipts, and overflow is an explicit capacity
 failure. It cannot turn an already returned receipt into a remote timeout merely

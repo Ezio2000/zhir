@@ -15,6 +15,10 @@ pub struct SessionOpen {
     pub session_id: String,
     pub after_sequence: Option<u64>,
     pub output_epoch: u64,
+    pub context_revision: u64,
+    pub input_position: u64,
+    pub profile_revision: u64,
+    pub mode: crate::run::RunMode,
     pub limits: crate::run::Limits,
     pub request: ModelRequest,
     pub recovery: Option<RecoveryRef>,
@@ -38,29 +42,28 @@ pub enum SessionCommandBody {
         origin: CallRef,
         content: Vec<crate::message::Content>,
     },
-    DelegationResult {
-        operation_id: String,
-        origin: CallRef,
-        outcome: crate::operation::OperationOutcome,
+    Generate {
+        generation_id: String,
+        context_revision: u64,
+        input_position: u64,
+        profile_revision: u64,
     },
-    StartTurn {
-        turn_id: String,
-        request: Box<ModelRequest>,
+    Append {
+        entry: crate::run::HistoryEntry,
+        context_revision: u64,
+        input_position: u64,
+        source: AppendSource,
     },
-    Input {
-        message: Message,
-    },
-    ToolResult {
-        operation_id: String,
-        origin: CallRef,
-        outcome: crate::operation::OperationOutcome,
+    ReplaceContext {
+        entries: Vec<crate::run::HistoryEntry>,
+        context_revision: u64,
     },
     UpdateProfile {
         revision: u64,
         profile: RequestProfile,
     },
     InterruptOutput {
-        turn_id: String,
+        generation_id: String,
         output_epoch: u64,
     },
     /// Materialize buffered input without ending the session. Acknowledgement
@@ -70,23 +73,50 @@ pub enum SessionCommandBody {
     SetInputAudio {
         enabled: bool,
     },
-    EndInput,
+    SealUserInput,
     Close,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TurnDisposition {
-    Finished,
-    AwaitingTools,
-    Continue,
+pub enum ResponseStatus {
+    Completed,
+    RequiresResults,
+    Continuation,
+    Failed,
+    Cancelled,
+    Incomplete,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppendSource {
+    Submitted,
+    Accepted,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Acknowledgement {
+    Projection,
+    Transport,
+    Provider,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SessionEventBody {
+    Ready {
+        context_revision: u64,
+    },
+    ResponseStarted {
+        generation_id: String,
+        input_position: u64,
+    },
     /// A complete conversation message with its own identity, independent of execution turns.
     ConversationItem {
         item_id: String,
@@ -95,13 +125,14 @@ pub enum SessionEventBody {
     Acknowledged {
         command_id: String,
         recovery: Option<RecoveryRef>,
+        level: Acknowledgement,
     },
     Delta {
-        turn_id: String,
+        generation_id: Option<String>,
         delta: ModelDelta,
     },
     Output {
-        turn_id: String,
+        generation_id: Option<String>,
         item_id: String,
         caller_id: String,
         output: Output,
@@ -110,9 +141,10 @@ pub enum SessionEventBody {
         origin: CallRef,
         event: OperationEvent,
     },
-    TurnFinished {
-        turn_id: String,
-        disposition: TurnDisposition,
+    ResponseFinished {
+        generation_id: String,
+        input_position: u64,
+        response_status: ResponseStatus,
         usage: Usage,
         model_id: Option<String>,
         response_id: Option<String>,
@@ -123,7 +155,10 @@ pub enum SessionEventBody {
     Recovery {
         reference: RecoveryRef,
     },
-    Closed,
+    Closed {
+        reason: String,
+        provider_data: Value,
+    },
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

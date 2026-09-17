@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "name": "serial_operations",
   "kind": "runtime",
   "case": {
@@ -43,7 +43,8 @@
           ],
           "model_id": null,
           "response_id": null,
-          "finish_reason": null
+          "finish_reason": null,
+          "status": "completed"
         }
       },
       {
@@ -59,7 +60,8 @@
           ],
           "model_id": null,
           "response_id": null,
-          "finish_reason": null
+          "finish_reason": null,
+          "status": "completed"
         }
       }
     ],

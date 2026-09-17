@@ -15,7 +15,8 @@ use zhir::{
     error::Error,
     message::{Content, Message, visible_content},
     model::{
-        DeltaSink, ModelContext, ModelDelta, ModelRequest, ResponseFormat, ToolChoice, TurnOutput,
+        DeltaSink, GenerationOutput, ModelContext, ModelDelta, ModelRequest, ResponseFormat,
+        ToolChoice,
     },
     models::{HttpModel, ModelConfig, Protocol, anthropic, openai},
     run::{EventData, Limits, State},
@@ -143,7 +144,7 @@ fn delta_name(delta: &ModelDelta) -> &'static str {
         ModelDelta::ProviderToolProgress { .. } => "provider_tool_progress",
     }
 }
-fn summary(response: &TurnOutput) -> Value {
+fn summary(response: &GenerationOutput) -> Value {
     json!({"model_id":response.model_id,"response_id":response.response_id,"finish_reason":response.finish_reason,"usage":response.usage})
 }
 async fn text_case(
@@ -156,7 +157,7 @@ async fn text_case(
     let model = model(protocol, key, model_id)?;
     let deltas = Arc::new(Observations::default());
     let response = model
-        .turn(
+        .generate(
             ModelRequest {
                 messages: vec![Message::user(if json_output {
                     "Return only the JSON object {\"answer\":42}."
@@ -273,7 +274,7 @@ async fn tool_case(
         .defaults(|run| run.stream(true))
         .defaults(|run| {
             run.limits(Limits {
-                max_model_turns: 3,
+                max_generation_requests: 3,
                 max_runtime_tool_calls: 2,
                 elapsed_ms: Some(90_000),
                 ..zhir::kernel::defaults::limits()
@@ -320,7 +321,7 @@ async fn tool_case(
     require(
         calls.load(Ordering::SeqCst) == 1
             && checkpoint.metrics.runtime_tool_calls == 1
-            && checkpoint.metrics.model_turns == 2,
+            && checkpoint.metrics.generation_requests == 2,
         "tool loop did not execute exactly once",
     )?;
     require(
@@ -334,7 +335,7 @@ async fn tool_case(
         )?;
     }
     Ok(
-        json!({"text":text,"metrics":checkpoint.metrics,"revision":checkpoint.revision,"events":counts,"responses":model.records().iter().flat_map(|record| record.completed_turns()).map(|response| summary(&response)).collect::<Vec<_>>()}),
+        json!({"text":text,"metrics":checkpoint.metrics,"revision":checkpoint.revision,"events":counts,"responses":model.records().iter().flat_map(|record| record.completed_responses()).map(|response| summary(&response)).collect::<Vec<_>>()}),
     )
 }
 #[tokio::test]

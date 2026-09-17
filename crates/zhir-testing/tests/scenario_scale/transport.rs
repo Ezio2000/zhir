@@ -10,7 +10,7 @@ use zhir::{
     Result, Runtime,
     error::{Error, Failure},
     message::{Content, Message, Output},
-    model::{DeltaSink, Model, ModelDelta, ModelRequest, TurnOutput},
+    model::{DeltaSink, GenerationOutput, Model, ModelDelta, ModelRequest},
     models::{
         Protocol, ProtocolExtension,
         decorators::{FallbackModel, ObservedModel, RetryingModel},
@@ -225,8 +225,8 @@ impl ProtocolExtension for FeatureSession {
         &mut self,
         _: Protocol,
         _: &Value,
-        decoded: Result<TurnOutput>,
-    ) -> Result<TurnOutput> {
+        decoded: Result<GenerationOutput>,
+    ) -> Result<GenerationOutput> {
         let mut response = decoded?;
         response.output.push(Output::Content {
             content: Content::Opaque {
@@ -422,7 +422,7 @@ async fn wire_case(
     let mut detail = json!({});
     if matches!(family, "no_replay_429" | "no_switch_503" | "permanent_400") {
         let result = model
-            .turn(
+            .generate(
                 empty_request(false),
                 zhir::model::ModelContext {
                     run: zhir::kernel::defaults::context(),
@@ -451,7 +451,7 @@ async fn wire_case(
             .defaults(|run| run.stream(true))
             .defaults(|run| {
                 run.limits(Limits {
-                    max_model_turns: 2,
+                    max_generation_requests: 2,
                     max_runtime_tool_calls: 0,
                     max_observer_events: if slow { 16 } else { 16384 },
                     elapsed_ms: Some(10_000),
@@ -781,7 +781,7 @@ async fn messages_groups_tool_results_without_extensions() {
             cancellation: Default::default(),
             deltas: None,
         };
-        plain.turn(request, context()).await.unwrap();
+        plain.generate(request, context()).await.unwrap();
         let sent = server.requests.lock().unwrap();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0]["messages"].as_array().unwrap().len(), 3);
@@ -843,7 +843,7 @@ impl Model for RpcModel {
                 })
                 .await?;
             }
-            let mut response = TurnOutput::text(value["text"].as_str().unwrap_or_default());
+            let mut response = GenerationOutput::text(value["text"].as_str().unwrap_or_default());
             if let Some(action) = value.get("action") {
                 response.output = vec![Output::RuntimeToolCall {
                     call: zhir::tool::RuntimeToolCall {

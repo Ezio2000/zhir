@@ -10,14 +10,14 @@ use zhir::{
     ResumeRequest, RunRequest, Runtime,
     core::operation::RecoveryResolution,
     message::{Message, Output},
-    model::TurnOutput,
+    model::GenerationOutput,
     run::State,
 };
 use zhir_testing::{RecordingStore, ScriptedModel};
-fn response(output: Vec<Output>) -> TurnOutput {
-    TurnOutput {
+fn response(output: Vec<Output>) -> GenerationOutput {
+    GenerationOutput {
         output,
-        ..TurnOutput::text("")
+        ..GenerationOutput::text("")
     }
 }
 fn call(id: &str, name: &str, args: serde_json::Value) -> Output {
@@ -44,7 +44,7 @@ async fn result(runtime: &Runtime) -> Arc<zhir::run::Checkpoint> {
 }
 #[tokio::test]
 async fn text_session_commits_and_settles() {
-    let model = Arc::new(ScriptedModel::responses([TurnOutput::text("done")]));
+    let model = Arc::new(ScriptedModel::responses([GenerationOutput::text("done")]));
     let store = Arc::new(RecordingStore::new(Arc::new(
         zhir::stores::MemoryRunStore::new(),
     )));
@@ -60,6 +60,179 @@ async fn text_session_commits_and_settles() {
     model.verify().unwrap();
     store.verify_traces().unwrap();
 }
+
+#[tokio::test]
+async fn late_input_requires_a_new_generation_after_the_first_response() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let model = zhir::models::FunctionModel::new(zhir_testing::model_capabilities(), {
+        let started = started.clone();
+        let release = release.clone();
+        let calls = calls.clone();
+        move |request, _| {
+            let started = started.clone();
+            let release = release.clone();
+            let index = calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if index == 0 {
+                    assert_eq!(request.messages, vec![Message::user("A")]);
+                    started.notify_one();
+                    release.notified().await;
+                    Ok(GenerationOutput::text("answer A"))
+                } else {
+                    assert_eq!(index, 1, "no duplicate Generate");
+                    assert!(request.messages.contains(&Message::user("B")));
+                    assert!(request.messages.iter().any(|m| matches!(m, Message::Assistant { output, .. } if output.contains(&Output::text("answer A")))));
+                    Ok(GenerationOutput::text("answer B"))
+                }
+            }
+        }
+    });
+    let runtime = Runtime::builder(Arc::new(model)).build().unwrap();
+    let mut invocation = runtime
+        .start(RunRequest::new([Message::user("A")]).mode(zhir::run::RunMode::Interactive))
+        .unwrap();
+    invocation.start();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        started.notified().await;
+        invocation
+            .control()
+            .input(Message::user("B"), "test")
+            .await
+            .unwrap();
+        invocation.control().seal_user_input().await.unwrap();
+        assert!(
+            invocation
+                .control()
+                .input(Message::user("C"), "test")
+                .await
+                .is_err()
+        );
+        release.notify_one();
+        let checkpoint = invocation.result().await.unwrap().into_checkpoint();
+        assert!(
+            matches!(checkpoint.state, State::Completed { .. }),
+            "{:?}",
+            checkpoint.state
+        );
+        assert_eq!(checkpoint.metrics.generation_requests, 2);
+        assert_eq!(checkpoint.metrics.observed_responses, Some(2));
+        assert_eq!(checkpoint.active.session.generated_input_position, 1);
+        assert!(checkpoint.active.session.closure.is_some());
+        assert_eq!(
+            checkpoint.active.session.context_revision,
+            checkpoint.active.session.acknowledged_context_revision
+        );
+    })
+    .await
+    .expect("late input stalled");
+}
+
+#[tokio::test]
+async fn context_replacement_is_acknowledged_before_generation_and_never_reopens() {
+    struct Rewrite;
+    impl zhir::run::HistoryReducer for Rewrite {
+        fn reduce(
+            &self,
+            _: Arc<zhir::run::Checkpoint>,
+        ) -> zhir::core::BoxFuture<'_, zhir::core::Result<Option<zhir::run::HistoryRewrite>>>
+        {
+            Box::pin(async {
+                Ok(Some(zhir::run::HistoryRewrite {
+                    entries: vec![zhir::run::HistoryEntry {
+                        id: "reduced".into(),
+                        origin: None,
+                        message: Message::user("replacement"),
+                    }],
+                    reason: "test replacement".into(),
+                }))
+            })
+        }
+    }
+    let model = Arc::new(zhir_testing::RecordingModel::new(Arc::new(
+        zhir::models::FunctionModel::new(
+            zhir_testing::model_capabilities(),
+            |request, _| async move {
+                assert_eq!(request.messages, vec![Message::user("replacement")]);
+                Ok(GenerationOutput::text("done"))
+            },
+        ),
+    )));
+    let runtime = Runtime::builder(model.clone())
+        .history_reducer(Arc::new(Rewrite))
+        .build()
+        .unwrap();
+    let checkpoint = result(&runtime).await;
+    assert!(
+        matches!(checkpoint.state, State::Completed { .. }),
+        "{:?}",
+        checkpoint.state
+    );
+    let records = model.records();
+    assert_eq!(
+        records.len(),
+        1,
+        "context replacement cannot reopen a session"
+    );
+    assert!(matches!(
+        records[0].commands[0].body,
+        zhir::model::SessionCommandBody::ReplaceContext {
+            context_revision: 1,
+            ..
+        }
+    ));
+    assert!(matches!(
+        records[0].commands[1].body,
+        zhir::model::SessionCommandBody::Generate {
+            context_revision: 1,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn unsupported_history_reduction_fails_before_session_establishment() {
+    let model = zhir_testing::SessionModel::new(zhir_testing::model_capabilities(), |_, _| async {
+        panic!("unsupported context replacement must fail before opening");
+    });
+    let runtime = Runtime::builder(Arc::new(model))
+        .history_reducer(Arc::new(
+            zhir::policies::history::HistoryWindow::last_turns(1).unwrap(),
+        ))
+        .build()
+        .unwrap();
+    assert!(matches!(result(&runtime).await.state, State::Failed { .. }));
+}
+
+#[tokio::test]
+async fn response_completion_without_session_closure_is_not_success() {
+    let model = zhir_testing::SessionModel::new(
+        zhir_testing::model_capabilities(),
+        |_, mut peer| async move {
+            let command = peer.command().await?.unwrap();
+            let zhir::model::SessionCommandBody::Generate { generation_id, .. } = &command.body
+            else {
+                panic!("Generate expected")
+            };
+            peer.acknowledge(&command, None).await?;
+            peer.finished(
+                generation_id.clone(),
+                zhir::model::ResponseStatus::Completed,
+            )
+            .await
+        },
+    );
+    let runtime = Runtime::builder(Arc::new(model)).build().unwrap();
+    let checkpoint = result(&runtime).await;
+    assert!(
+        matches!(checkpoint.state, State::Suspended { .. }),
+        "{:?}",
+        checkpoint.state
+    );
+    assert!(checkpoint.active.session.closure.is_none());
+}
 #[tokio::test]
 async fn waiting_operation_recovers_without_repeating_start() {
     let model = Arc::new(ScriptedModel::responses([
@@ -68,7 +241,7 @@ async fn waiting_operation_recovers_without_repeating_start() {
             "ask_question",
             json!({"questions":[{"id":"choice","title":"Choose","options":["a","b"]}]}),
         )]),
-        TurnOutput::text("answered"),
+        GenerationOutput::text("answered"),
     ]));
     let store = Arc::new(RecordingStore::new(Arc::new(
         zhir::stores::MemoryRunStore::new(),
@@ -123,34 +296,43 @@ async fn waiting_operation_recovers_without_repeating_start() {
 #[tokio::test]
 async fn native_session_runs_tools_before_turn_end_and_tracks_provider_jobs() {
     use zhir::core::operation::{CallRef, OperationEvent, OperationUpdate};
-    use zhir::model::{Capability, SessionCommandBody, SessionEventBody, TurnDisposition};
+    use zhir::model::{Capability, ResponseStatus, SessionCommandBody, SessionEventBody};
     let mut caps = zhir_testing::model_capabilities();
     caps.features
         .extend([Capability::AsyncResults, Capability::ProviderTools]);
     let model = Arc::new(zhir_testing::SessionModel::new(
         caps,
         |open, mut peer| async move {
-            let command = peer.commands.recv().await.unwrap();
-            let SessionCommandBody::StartTurn { turn_id, .. } = &command.body else {
+            let command = peer.command().await?.unwrap();
+            let SessionCommandBody::Generate { generation_id, .. } = &command.body else {
                 panic!("first command")
             };
-            let turn_id = turn_id.clone();
+            let generation_id = generation_id.clone();
             peer.acknowledge(&command, None).await?;
             peer.event(SessionEventBody::Output {
-                turn_id: turn_id.clone(),
+                generation_id: Some(generation_id.clone()),
                 item_id: "local".into(),
                 caller_id: "planner".into(),
                 output: call("shared-id", "echo", json!({})),
             })
             .await?;
-            let command = peer.commands.recv().await.unwrap();
-            let SessionCommandBody::ToolResult { origin, .. } = &command.body else {
+            let command = peer.command().await?.unwrap();
+            let SessionCommandBody::Append {
+                entry:
+                    zhir::run::HistoryEntry {
+                        origin: Some(origin),
+                        message: Message::RuntimeTool { .. },
+                        ..
+                    },
+                ..
+            } = &command.body
+            else {
                 panic!("result expected before turn end")
             };
             assert_eq!(origin.caller_id, "planner");
             peer.acknowledge(&command, None).await?;
             peer.event(SessionEventBody::Output {
-                turn_id: turn_id.clone(),
+                generation_id: Some(generation_id.clone()),
                 item_id: "video-job".into(),
                 caller_id: "provider".into(),
                 output: Output::ProviderToolCall {
@@ -169,7 +351,8 @@ async fn native_session_runs_tools_before_turn_end_and_tracks_provider_jobs() {
             peer.event(SessionEventBody::Operation {
                 origin: CallRef {
                     session_id: open.session_id,
-                    turn_id: turn_id.clone(),
+                    item_id: "video-job".into(),
+                    generation_id: Some(generation_id.clone()),
                     caller_id: "provider".into(),
                     call_id: "video-job".into(),
                 },
@@ -185,13 +368,15 @@ async fn native_session_runs_tools_before_turn_end_and_tracks_provider_jobs() {
             })
             .await?;
             peer.event(SessionEventBody::Output {
-                turn_id: turn_id.clone(),
+                generation_id: Some(generation_id.clone()),
                 item_id: "answer".into(),
                 caller_id: "planner".into(),
                 output: Output::text("complete"),
             })
             .await?;
-            peer.finished(turn_id, TurnDisposition::Finished).await
+            peer.finished(generation_id, ResponseStatus::Completed)
+                .await?;
+            peer.close().await
         },
     ));
     let spec = zhir::tool::RuntimeToolSpec {
@@ -233,23 +418,23 @@ async fn native_session_runs_tools_before_turn_end_and_tracks_provider_jobs() {
 #[tokio::test]
 async fn native_voice_video_stream_is_lossless_and_sealed_before_delivery() {
     use zhir::core::resource::{MediaChunk, MediaReceiver, ResourceStore, SealedMedia};
-    use zhir::model::{Capability, SessionCommandBody, TurnDisposition};
+    use zhir::model::{Capability, ResponseStatus, SessionCommandBody};
     let mut caps = zhir_testing::model_capabilities();
     caps.features.insert(Capability::Duplex);
     let model = Arc::new(zhir_testing::SessionModel::new(
         caps,
-        |_, mut peer| async move {
-            let command = peer.commands.recv().await.unwrap();
-            let SessionCommandBody::StartTurn { turn_id, .. } = &command.body else {
+        |open, mut peer| async move {
+            let command = peer.command().await?.unwrap();
+            let SessionCommandBody::Generate { generation_id, .. } = &command.body else {
                 panic!("start")
             };
-            let turn_id = turn_id.clone();
+            let generation_id = generation_id.clone();
             peer.acknowledge(&command, None).await?;
             for sequence in 0..8 {
                 peer.media_output
                     .send(MediaChunk {
                         stream_id: "voice".into(),
-                        turn_id: turn_id.clone(),
+                        session_id: open.session_id.clone(),
                         epoch: 0,
                         sequence,
                         timestamp_us: sequence * 1000,
@@ -259,11 +444,16 @@ async fn native_voice_video_stream_is_lossless_and_sealed_before_delivery() {
                     })
                     .await?;
             }
-            peer.finished(turn_id, TurnDisposition::Finished).await?;
-            while let Some(command) = peer.commands.recv().await {
+            peer.finished(generation_id, ResponseStatus::Completed)
+                .await?;
+            while let Some(command) = peer.command().await? {
                 peer.acknowledge(&command, None).await?;
                 if matches!(command.body, SessionCommandBody::Close) {
-                    peer.event(zhir::model::SessionEventBody::Closed).await?;
+                    peer.event(zhir::model::SessionEventBody::Closed {
+                        reason: "host_request".into(),
+                        provider_data: serde_json::Value::Null,
+                    })
+                    .await?;
                     break;
                 }
             }

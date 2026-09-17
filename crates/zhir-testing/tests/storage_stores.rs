@@ -126,7 +126,7 @@ async fn exercise(store: Arc<dyn RunStore>) {
 async fn pending_recovery(store: Arc<dyn RunStore>) {
     use zhir_core::{
         message::Output,
-        model::TurnOutput,
+        model::GenerationOutput,
         operation::RecoveryResolution,
         tool::{RuntimeToolCall, RuntimeToolInput},
     };
@@ -142,11 +142,11 @@ async fn pending_recovery(store: Arc<dyn RunStore>) {
         })
         .collect();
     let model = Arc::new(zhir_testing::ScriptedModel::responses([
-        TurnOutput {
+        GenerationOutput {
             output: calls,
-            ..TurnOutput::text("")
+            ..GenerationOutput::text("")
         },
-        TurnOutput::text("done"),
+        GenerationOutput::text("done"),
     ]));
     let tools = zhir_tools::RuntimeToolRegistry::from_tools([
         zhir_builtins::interaction::ask_question().unwrap(),
@@ -281,7 +281,7 @@ async fn redis() {
 
 #[tokio::test]
 async fn sqlite_refuses_unversioned_and_other_version_layouts() {
-    for version in [None, Some(1), Some(2), Some(4)] {
+    for version in [None, Some(1), Some(2), Some(3), Some(5)] {
         let directory = tempfile::tempdir().unwrap();
         let url = format!(
             "sqlite://{}?mode=rwc",

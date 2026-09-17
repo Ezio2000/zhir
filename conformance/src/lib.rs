@@ -22,7 +22,7 @@ struct RuntimeCase {
     #[serde(default)]
     tools: Vec<fixtures::Tool>,
     #[serde(default)]
-    max_model_turns: Option<u64>,
+    max_generation_requests: Option<u64>,
     #[serde(default)]
     max_tool_calls: Option<u64>,
     #[serde(default)]
@@ -43,8 +43,8 @@ struct Expected {
     unused_steps: usize,
 }
 pub async fn run_case(case: &Value) -> Result<()> {
-    if case["version"] != 3 {
-        return Err(Error::Invalid("case requires version 3".into()));
+    if case["version"] != 4 {
+        return Err(Error::Invalid("case requires version 4".into()));
     }
     match case["kind"].as_str() {
         Some("value") => validation::run(case),
@@ -64,8 +64,8 @@ pub async fn run_case(case: &Value) -> Result<()> {
                 .store(store.clone())
                 .runtime_tools(Arc::new(registry))
                 .defaults(|mut options| {
-                    if let Some(limit) = case.max_model_turns {
-                        options.limits.max_model_turns = limit;
+                    if let Some(limit) = case.max_generation_requests {
+                        options.limits.max_generation_requests = limit;
                     }
                     if let Some(limit) = case.max_tool_calls {
                         options.limits.max_runtime_tool_calls = limit;

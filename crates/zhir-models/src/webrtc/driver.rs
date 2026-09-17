@@ -99,8 +99,8 @@ impl Driver {
     }
 
     fn send_audio(&mut self, packet: Buffered<MediaChunk>) -> Result<()> {
-        let turn = self.session.protocol.turn()?;
-        if let Some(duration) = self.session.media.input(turn, &packet.value)? {
+        let session_id = &self.open.session_id;
+        if let Some(duration) = self.session.media.input(session_id, &packet.value)? {
             let peer = self.peer.as_ref().ok_or(Error::Cancelled)?;
             let packet = packet.map(|chunk| peer.audio(chunk.bytes, duration));
             let timeout = self.session.write_timeout;
@@ -231,7 +231,7 @@ impl Driver {
                     .as_ref()
                     .is_none_or(|peer| peer.audio.is_empty() && peer.events.is_empty())
                 {
-                    if let Some(end) = self.session.media.finish(self.session.protocol.turn()?) {
+                    if let Some(end) = self.session.media.finish(&self.open.session_id) {
                         self.outputs.media(end)?;
                     }
                     self.outputs.end_media();
@@ -302,12 +302,18 @@ impl Driver {
                     self.observations = self.session.protocol.receive(&text)?.into()
                 }
                 Next::Audio(Some(packet)) => {
-                    if let Some(packet) = self
-                        .session
-                        .media
-                        .receive(self.session.protocol.turn()?, packet)?
-                    {
-                        self.outputs.received_media(packet)?;
+                    let Buffered { value, reservation } = packet;
+                    let payload_len = value.payload.len();
+                    if let Some(chunk) = self.session.media.receive(&self.open.session_id, value)? {
+                        if chunk.bytes.len() > payload_len {
+                            return Err(Error::Invalid(
+                                "media mapping grew the reserved payload".into(),
+                            ));
+                        }
+                        self.outputs.received_media(Buffered {
+                            value: chunk,
+                            reservation,
+                        })?;
                     }
                 }
                 Next::Input(Some(packet)) => self.send_audio(packet)?,

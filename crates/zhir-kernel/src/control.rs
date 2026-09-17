@@ -17,7 +17,7 @@ pub(crate) enum ControlBody {
     InterruptOutput,
     FlushInput,
     SetInputAudio(bool),
-    EndInput,
+    SealUserInput,
 }
 pub(crate) struct Control {
     pub body: ControlBody,
@@ -75,8 +75,8 @@ impl ControlHandle {
     pub async fn interrupt_output(&self) -> Result<ControlReceipt> {
         self.send(ControlBody::InterruptOutput).await
     }
-    pub async fn end_input(&self) -> Result<ControlReceipt> {
-        self.send(ControlBody::EndInput).await
+    pub async fn seal_user_input(&self) -> Result<ControlReceipt> {
+        self.send(ControlBody::SealUserInput).await
     }
     /// Flush accepted input while keeping the session open.
     pub async fn flush_input(&self) -> Result<ControlReceipt> {

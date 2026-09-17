@@ -1,0 +1,24 @@
+{
+  "version": 4,
+  "name": "zero_generation_budget",
+  "kind": "runtime",
+  "case": {
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "kind": "text",
+            "text": "go"
+          }
+        ]
+      }
+    ],
+    "steps": [],
+    "tools": [],
+    "expected": {
+      "state": "limited"
+    },
+    "max_generation_requests": 0
+  }
+}

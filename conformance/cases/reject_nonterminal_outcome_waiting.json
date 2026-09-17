@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "name": "reject_nonterminal_outcome_waiting",
   "kind": "value",
   "schema": "operation-outcome",

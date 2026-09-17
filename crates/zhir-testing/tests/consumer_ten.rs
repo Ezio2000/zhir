@@ -20,7 +20,7 @@ use zhir::{
         CatalogError, ContextError, Error, Failure, ResourceError, ResumeError, ValidationError,
     },
     message::{Message, Output},
-    model::{CapabilitySet, Model, ModelContext, ModelRequest, TurnOutput},
+    model::{CapabilitySet, GenerationOutput, Model, ModelContext, ModelRequest},
     models::{FunctionModel, TransformModel, decorators::RetryingModel},
     policies::{Backoff, RetryPolicy},
     run::{ContextKey, Limits, State},
@@ -72,8 +72,8 @@ fn call(name: &str, n: u64) -> RuntimeToolCall {
         input: RuntimeToolInput::Structured(json!({"n": n})),
     }
 }
-fn tool_response(name: &str, n: u64) -> TurnOutput {
-    let mut r = TurnOutput::text("");
+fn tool_response(name: &str, n: u64) -> GenerationOutput {
+    let mut r = GenerationOutput::text("");
     r.output = vec![Output::RuntimeToolCall {
         call: call(name, n),
     }];
@@ -148,7 +148,7 @@ async fn scoped_composite_tools_typed_context_and_matching_scripts_across_64_run
                 })
                 .steps([
                     ScriptStep::response(tool_response(name, index)),
-                    ScriptStep::response(TurnOutput::text(index.to_string())),
+                    ScriptStep::response(GenerationOutput::text(index.to_string())),
                 ])
         }))
         .unwrap(),
@@ -159,12 +159,12 @@ async fn scoped_composite_tools_typed_context_and_matching_scripts_across_64_run
         move |mut event, context| {
             if matches!(
                 event.body,
-                zhir::model::SessionEventBody::TurnFinished { .. }
+                zhir::model::SessionEventBody::ResponseFinished { .. }
             ) {
                 count.fetch_add(1, Ordering::SeqCst);
             }
             async move {
-                if let zhir::model::SessionEventBody::TurnFinished { provider_data, .. } =
+                if let zhir::model::SessionEventBody::ResponseFinished { provider_data, .. } =
                     &mut event.body
                 {
                     *provider_data = json!({"job":context.run.require(JOB)?.index});
@@ -293,7 +293,7 @@ async fn selection_and_context_survive_ticket_resume_with_different_defaults() {
     let store = Arc::new(MemoryRunStore::new());
     let script = Arc::new(ScriptedModel::responses([
         tool_response("wait", 1),
-        TurnOutput::text("done"),
+        GenerationOutput::text("done"),
     ]));
     let runtime = Runtime::builder(script.clone())
         .runtime_tools(registry.clone())
@@ -377,7 +377,7 @@ async fn selection_and_context_survive_ticket_resume_with_different_defaults() {
     assert!(matches!(failed.outcome(),RunOutcome::Failed(f) if f.code=="busy"));
     let limited = no_store
         .start(RunRequest::new([Message::user("run")]).limits(Limits {
-            max_model_turns: 0,
+            max_generation_requests: 0,
             ..zhir::kernel::defaults::limits()
         }))
         .unwrap()
@@ -449,10 +449,10 @@ async fn function_approval_preserves_order_and_batch_errors() {
 
 #[tokio::test]
 async fn response_maps_run_in_order_and_do_not_recover_inner_failures() {
-    let script = Arc::new(ScriptedModel::responses([TurnOutput::text("ok")]));
+    let script = Arc::new(ScriptedModel::responses([GenerationOutput::text("ok")]));
     let model = TransformModel::new(script, |r, _| async { Ok(r) })
         .map_event(|mut event, _| async move {
-            if let zhir::model::SessionEventBody::TurnFinished { provider_data, .. } =
+            if let zhir::model::SessionEventBody::ResponseFinished { provider_data, .. } =
                 &mut event.body
             {
                 *provider_data = json!([1]);
@@ -460,7 +460,7 @@ async fn response_maps_run_in_order_and_do_not_recover_inner_failures() {
             Ok(event)
         })
         .map_event(|mut event, _| async move {
-            if let zhir::model::SessionEventBody::TurnFinished { provider_data, .. } =
+            if let zhir::model::SessionEventBody::ResponseFinished { provider_data, .. } =
                 &mut event.body
             {
                 provider_data.as_array_mut().unwrap().push(json!(2));
@@ -469,7 +469,7 @@ async fn response_maps_run_in_order_and_do_not_recover_inner_failures() {
         });
     assert_eq!(
         model
-            .turn(request(), context())
+            .generate(request(), context())
             .await
             .unwrap()
             .provider_data,
@@ -484,21 +484,21 @@ async fn response_maps_run_in_order_and_do_not_recover_inner_failures() {
     .map_event(move |event, _| {
         if matches!(
             event.body,
-            zhir::model::SessionEventBody::TurnFinished { .. }
+            zhir::model::SessionEventBody::ResponseFinished { .. }
         ) {
             counted.fetch_add(1, Ordering::SeqCst);
         }
         async { Ok(event) }
     });
-    assert!(model.turn(request(), context()).await.is_err());
+    assert!(model.generate(request(), context()).await.is_err());
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     let model = TransformModel::new(
-        Arc::new(ScriptedModel::responses([TurnOutput::text("ok")])),
+        Arc::new(ScriptedModel::responses([GenerationOutput::text("ok")])),
         |r, _| async { Ok(r) },
     )
     .map_event(|_, _| async { Err(Error::Protocol("consumer map failed".into())) });
     assert!(
-        matches!(model.turn(request(),context()).await,Err(Error::Protocol(s)) if s=="consumer map failed")
+        matches!(model.generate(request(),context()).await,Err(Error::Protocol(s)) if s=="consumer map failed")
     );
 }
 
@@ -548,7 +548,7 @@ async fn model_and_tool_backoff_are_cancelled_and_deadline_bounded() {
             ctx.run.deadline_at_ms = Some(zhir::kernel::defaults::context().started_at_ms + 40);
         }
         let cancel = ctx.cancellation.clone();
-        let task = tokio::spawn(async move { model.turn(request(), ctx).await });
+        let task = tokio::spawn(async move { model.generate(request(), ctx).await });
         entered.acquire().await.unwrap().forget();
         if !deadline {
             cancel.cancel();
@@ -624,7 +624,7 @@ async fn matching_retry_cases_have_independent_attempts_and_strict_verification(
                 .when(move |i| i.run.run_id == format!("run-{n}"))
                 .steps([
                     ScriptStep::failure(temporary()),
-                    ScriptStep::response(TurnOutput::text(n.to_string())),
+                    ScriptStep::response(GenerationOutput::text(n.to_string())),
                 ])
         }))
         .unwrap(),
@@ -636,8 +636,8 @@ async fn matching_retry_cases_have_independent_attempts_and_strict_verification(
         tasks.push(tokio::spawn(async move {
             let mut ctx = context();
             ctx.run.run_id = format!("run-{n}");
-            assert!(model.turn(request(), ctx.clone()).await.is_err());
-            model.turn(request(), ctx).await.unwrap();
+            assert!(model.generate(request(), ctx.clone()).await.is_err());
+            model.generate(request(), ctx).await.unwrap();
         }));
     }
     for task in tasks {
@@ -645,24 +645,24 @@ async fn matching_retry_cases_have_independent_attempts_and_strict_verification(
     }
     script.verify().unwrap();
     assert_eq!(script.requests().len(), 64);
-    assert!(script.turn(request(), context()).await.is_err());
+    assert!(script.generate(request(), context()).await.is_err());
     assert!(script.verify().is_err());
     let ambiguous = ScriptedModel::matching(["a", "b"].into_iter().map(|n| {
         ModelCase::new(n)
             .when(|_| true)
-            .steps([ScriptStep::response(TurnOutput::text("ok"))])
+            .steps([ScriptStep::response(GenerationOutput::text("ok"))])
     }))
     .unwrap();
-    assert!(ambiguous.turn(request(), context()).await.is_err());
+    assert!(ambiguous.generate(request(), context()).await.is_err());
     assert_eq!(ambiguous.remaining(), 2);
     assert!(ambiguous.verify().is_err());
     let extra = ScriptedModel::matching([ModelCase::new("one")
         .when(|_| true)
-        .steps([ScriptStep::response(TurnOutput::text("ok"))])])
+        .steps([ScriptStep::response(GenerationOutput::text("ok"))])])
     .unwrap();
-    extra.turn(request(), context()).await.unwrap();
+    extra.generate(request(), context()).await.unwrap();
     extra.verify().unwrap();
-    assert!(extra.turn(request(), context()).await.is_err());
+    assert!(extra.generate(request(), context()).await.is_err());
     assert!(extra.verify().is_err());
 }
 
@@ -775,11 +775,11 @@ async fn filesystem_resource_model_commits_references_and_rehydrates_history() {
         },
         metadata: Default::default(),
     });
-    let response = TurnOutput {
+    let response = GenerationOutput {
         output: vec![Output::Content {
             content: inline.clone(),
         }],
-        ..TurnOutput::text("")
+        ..GenerationOutput::text("")
     };
     let capabilities = CapabilitySet {
         input_modalities: vec!["text".into(), "file".into()],
@@ -815,7 +815,7 @@ async fn filesystem_resource_model_commits_references_and_rehydrates_history() {
         let inline = inline.clone();
         async move {
             assert!(request.messages.iter().any(|m|matches!(m,Message::Assistant { output,..} if output.iter().any(|o|matches!(o,Output::Content {content} if content==&inline)))));
-            Ok(TurnOutput::text("hello"))
+            Ok(GenerationOutput::text("hello"))
         }
     });
     let model = ResourceModel::new(

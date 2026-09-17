@@ -6,7 +6,7 @@ use zhir_core::{
     Result,
     error::Error,
     message::{Content, Message, Output, ProviderToolCall, ProviderToolStatus},
-    model::{ModelRequest, ResponseFormat, ToolChoice, TurnOutput, Usage},
+    model::{GenerationOutput, ModelRequest, ResponseFormat, ToolChoice, Usage},
     tool::{InputSpec, RuntimeToolCall, RuntimeToolInput},
 };
 fn protocol_error(s: impl Into<String>) -> Error {
@@ -226,7 +226,7 @@ pub(crate) fn decode(
     protocol: Protocol,
     value: &Value,
     extension: &mut Option<Box<dyn ProtocolExtension>>,
-) -> Result<TurnOutput> {
+) -> Result<GenerationOutput> {
     if let Some(error) = value.get("error").filter(|e| !e.is_null()) {
         return Err(protocol_error(error.to_string()));
     }
@@ -239,10 +239,23 @@ pub(crate) fn decode(
             ),
             _ => false,
         });
-    Ok(TurnOutput {
+    let status = match protocol
+        .adapter()
+        .finish_reason(value)
+        .and_then(Value::as_str)
+    {
+        Some("failed") => zhir_core::model::ResponseStatus::Failed,
+        Some("cancelled") => zhir_core::model::ResponseStatus::Cancelled,
+        Some("incomplete" | "length" | "max_tokens" | "content_filter") => {
+            zhir_core::model::ResponseStatus::Incomplete
+        }
+        _ if pending => zhir_core::model::ResponseStatus::Continuation,
+        _ => zhir_core::model::ResponseStatus::Completed,
+    };
+    Ok(GenerationOutput {
         output: decoded.output,
         usage: usage(protocol, &value["usage"]),
-        provider_turn_pending: pending,
+        status,
         provider_data: json!({"protocol":protocol.key(),"response":decoded.replay}),
         model_id: value
             .get("model")

@@ -78,8 +78,6 @@ struct Engine {
     pending_replies: BTreeSet<String>,
     pending_starts: BTreeSet<String>,
     session_sequence: Option<u64>,
-    needs_turn: bool,
-    model_closed: bool,
 }
 
 mod admission;

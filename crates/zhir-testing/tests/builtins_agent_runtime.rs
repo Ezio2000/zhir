@@ -10,7 +10,7 @@ use tokio::sync::Semaphore;
 use zhir_builtins::agent::{AgentBackend, runtime_backend::RuntimeAgentBackend};
 use zhir_core::operation::OperationOutcome;
 use zhir_core::{
-    error::Error, model::TurnOutput, operation::*, run::RunContext, tool::RuntimeToolContext,
+    error::Error, model::GenerationOutput, operation::*, run::RunContext, tool::RuntimeToolContext,
 };
 fn context(id: &str) -> RuntimeToolContext {
     RuntimeToolContext {
@@ -54,7 +54,7 @@ async fn child_admission_is_bounded_and_slots_return_after_cancel_and_completion
                 async move {
                     started.add_permits(1);
                     finish.acquire().await.unwrap().forget();
-                    Ok(TurnOutput::text("done"))
+                    Ok(GenerationOutput::text("done"))
                 }
             }
         },
@@ -113,7 +113,7 @@ async fn child_recovery_reads_kernel_checkpoint_without_reexecuting_the_model() 
             let calls = calls.clone();
             move |_, _| {
                 calls.fetch_add(1, Ordering::SeqCst);
-                async { Ok(TurnOutput::text("child done")) }
+                async { Ok(GenerationOutput::text("child done")) }
             }
         },
     ));
@@ -135,7 +135,8 @@ async fn child_recovery_reads_kernel_checkpoint_without_reexecuting_the_model() 
         id: "child".into(),
         origin: CallRef {
             session_id: "session".into(),
-            turn_id: "turn".into(),
+            item_id: "call".into(),
+            generation_id: Some("turn".into()),
             caller_id: "parent".into(),
             call_id: "call".into(),
         },
@@ -191,7 +192,8 @@ async fn parent_detach_suspends_child_and_cancelling_recovered_wait_is_durable()
         id: "detach".into(),
         origin: CallRef {
             session_id: "s".into(),
-            turn_id: "t".into(),
+            item_id: "call".into(),
+            generation_id: Some("t".into()),
             caller_id: "model".into(),
             call_id: "call".into(),
         },

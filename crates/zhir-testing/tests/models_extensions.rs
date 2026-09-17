@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use zhir_core::{
     Result,
     error::Error,
-    model::{ModelDelta, ModelRequest, TurnOutput},
+    model::{GenerationOutput, ModelDelta, ModelRequest},
 };
 use zhir_models::{ExtensionChain, Protocol, ProtocolExtension, transport::SseEvent};
 struct Stage {
@@ -36,8 +36,8 @@ impl ProtocolExtension for Stage {
         &mut self,
         _: Protocol,
         _: &Value,
-        decoded: Result<TurnOutput>,
-    ) -> Result<TurnOutput> {
+        decoded: Result<GenerationOutput>,
+    ) -> Result<GenerationOutput> {
         self.calls.lock().unwrap().push(self.id);
         let mut response = decoded?;
         response.provider_data["trace"]
@@ -97,7 +97,7 @@ fn chain_preserves_order_for_each_hook_and_stops_request_event_failures() {
             assert!(matches!(&deltas[2],ModelDelta::Text {text,..} if text=="123"));
         }
         calls.lock().unwrap().clear();
-        let mut response = TurnOutput::text("ok");
+        let mut response = GenerationOutput::text("ok");
         response.provider_data = json!({"trace":[]});
         let result = chain.decode_response(Protocol::Chat, &Value::Null, Ok(response));
         assert_eq!(result.is_err(), fail);
@@ -115,11 +115,11 @@ impl ProtocolExtension for Recover {
         &mut self,
         _: Protocol,
         raw: &Value,
-        decoded: Result<TurnOutput>,
-    ) -> Result<TurnOutput> {
+        decoded: Result<GenerationOutput>,
+    ) -> Result<GenerationOutput> {
         match decoded {
             Err(Error::Protocol(_)) if raw["future_answer"].is_string() => {
-                let mut result = TurnOutput::text(raw["future_answer"].as_str().unwrap());
+                let mut result = GenerationOutput::text(raw["future_answer"].as_str().unwrap());
                 result.provider_data = json!({"trace":[]});
                 Ok(result)
             }

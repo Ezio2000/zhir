@@ -2,7 +2,9 @@
 use std::future::Future;
 use zhir_core::{
     BoxFuture, Result,
-    model::{CapabilitySet, DeltaSink, Model, ModelContext, ModelDelta, ModelRequest, TurnOutput},
+    model::{
+        CapabilitySet, DeltaSink, GenerationOutput, Model, ModelContext, ModelDelta, ModelRequest,
+    },
 };
 
 pub struct FunctionModel {
@@ -10,11 +12,18 @@ pub struct FunctionModel {
     exchange: std::sync::Arc<crate::session::Exchange>,
 }
 impl FunctionModel {
-    pub fn new<F, Fut>(capabilities: CapabilitySet, callback: F) -> Self
+    pub fn new<F, Fut>(mut capabilities: CapabilitySet, callback: F) -> Self
     where
         F: Fn(ModelRequest, ModelContext) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<TurnOutput>> + Send + 'static,
+        Fut: Future<Output = Result<GenerationOutput>> + Send + 'static,
     {
+        capabilities.features.extend([
+            zhir_core::model::Capability::ExplicitGeneration,
+            zhir_core::model::Capability::ResponseEvents,
+            zhir_core::model::Capability::LocalProjection,
+            zhir_core::model::Capability::ReplaceContext,
+            zhir_core::model::Capability::ProfileUpdates,
+        ]);
         Self {
             capabilities,
             exchange: std::sync::Arc::new(move |r, c| Box::pin(callback(r, c))),

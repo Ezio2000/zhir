@@ -8,7 +8,7 @@ use zhir_core::operation::OperationOutcome;
 use zhir_core::{
     error::Error,
     message::{Content, Message, Output, ProviderToolCall, ProviderToolStatus},
-    model::{Capability, SessionCommand, SessionCommandBody, SessionEventBody, TurnDisposition},
+    model::{Capability, ResponseStatus, SessionCommand, SessionCommandBody, SessionEventBody},
     operation::{CallRef, OperationEvent, OperationUpdate, RecoveryRef},
     run::{Checkpoint, State},
 };
@@ -40,14 +40,14 @@ async fn provider_continuation_reuses_operation_and_includes_its_final_output() 
         zhir_testing::model_capabilities(),
         |_, mut peer| async move {
             for index in 0..2 {
-                let command = peer.commands.recv().await.unwrap();
-                let SessionCommandBody::StartTurn { turn_id, .. } = &command.body else {
+                let command = peer.command().await?.unwrap();
+                let SessionCommandBody::Generate { generation_id, .. } = &command.body else {
                     panic!("expected turn");
                 };
-                let turn_id = turn_id.clone();
+                let generation_id = generation_id.clone();
                 peer.acknowledge(&command, None).await?;
                 peer.event(SessionEventBody::Output {
-                    turn_id: turn_id.clone(),
+                    generation_id: Some(generation_id.clone()),
                     item_id: "same-provider-item".into(),
                     caller_id: "model".into(),
                     output: if index == 0 {
@@ -58,16 +58,16 @@ async fn provider_continuation_reuses_operation_and_includes_its_final_output() 
                 })
                 .await?;
                 peer.finished(
-                    turn_id,
+                    generation_id,
                     if index == 0 {
-                        TurnDisposition::Continue
+                        ResponseStatus::Continuation
                     } else {
-                        TurnDisposition::Finished
+                        ResponseStatus::Completed
                     },
                 )
                 .await?;
             }
-            Ok(())
+            peer.close().await
         },
     ));
     let store = Arc::new(RecordingStore::new(Arc::new(
@@ -123,7 +123,7 @@ async fn uncertain_outbox_is_attached_without_resending_and_only_cas_winner_open
             async move {
                 opens.fetch_add(1, Ordering::SeqCst);
                 if open.recovery.is_none() {
-                    let command = peer.commands.recv().await.unwrap();
+                    let command = peer.command().await?.unwrap();
                     *sent.lock().unwrap() = Some(command);
                     peer.event(SessionEventBody::Recovery {
                         reference: RecoveryRef {
@@ -136,7 +136,7 @@ async fn uncertain_outbox_is_attached_without_resending_and_only_cas_winner_open
                         "connection lost before command acknowledgement".into(),
                     ));
                 }
-                assert_eq!(open.after_sequence, Some(0));
+                assert_eq!(open.after_sequence, Some(1));
                 let command = sent.lock().unwrap().clone().unwrap();
                 // Give a broken implementation time to redispatch before delivering its recovered ack.
                 assert!(
@@ -145,20 +145,20 @@ async fn uncertain_outbox_is_attached_without_resending_and_only_cas_winner_open
                         .is_err(),
                     "sent command was replayed"
                 );
-                let SessionCommandBody::StartTurn { turn_id, .. } = &command.body else {
+                let SessionCommandBody::Generate { generation_id, .. } = &command.body else {
                     unreachable!()
                 };
                 peer.acknowledge(&command, open.recovery).await?;
                 peer.event(SessionEventBody::Output {
-                    turn_id: turn_id.clone(),
+                    generation_id: Some(generation_id.clone()),
                     item_id: "answer".into(),
                     caller_id: "model".into(),
                     output: Output::text("recovered"),
                 })
                 .await?;
-                peer.finished(turn_id.clone(), TurnDisposition::Finished)
+                peer.finished(generation_id.clone(), ResponseStatus::Completed)
                     .await?;
-                Ok(())
+                peer.close().await
             }
         }
     }));
@@ -201,14 +201,14 @@ async fn duplicate_provider_completion_is_idempotent_and_conflicts_fail() {
         let mut caps = zhir_testing::model_capabilities();
         caps.features.insert(Capability::AsyncResults);
         let model = Arc::new(SessionModel::new(caps, move |open, mut peer| async move {
-            let command = peer.commands.recv().await.unwrap();
-            let SessionCommandBody::StartTurn { turn_id, .. } = &command.body else {
+            let command = peer.command().await?.unwrap();
+            let SessionCommandBody::Generate { generation_id, .. } = &command.body else {
                 unreachable!()
             };
-            let turn_id = turn_id.clone();
+            let generation_id = generation_id.clone();
             peer.acknowledge(&command, None).await?;
             peer.event(SessionEventBody::Output {
-                turn_id: turn_id.clone(),
+                generation_id: Some(generation_id.clone()),
                 item_id: "job".into(),
                 caller_id: "model".into(),
                 output: provider(ProviderToolStatus::Running, None),
@@ -218,7 +218,8 @@ async fn duplicate_provider_completion_is_idempotent_and_conflicts_fail() {
                 peer.event(SessionEventBody::Operation {
                     origin: CallRef {
                         session_id: open.session_id.clone(),
-                        turn_id: turn_id.clone(),
+                        item_id: "job".into(),
+                        generation_id: Some(generation_id.clone()),
                         caller_id: "model".into(),
                         call_id: "job".into(),
                     },
@@ -238,8 +239,9 @@ async fn duplicate_provider_completion_is_idempotent_and_conflicts_fail() {
                 })
                 .await?;
             }
-            peer.finished(turn_id, TurnDisposition::Finished).await?;
-            Ok(())
+            peer.finished(generation_id, ResponseStatus::Completed)
+                .await?;
+            peer.close().await
         }));
         let runtime = Runtime::builder(model).build().unwrap();
         let checkpoint = settle(
@@ -272,7 +274,7 @@ async fn duplicate_provider_completion_is_idempotent_and_conflicts_fail() {
 }
 
 #[tokio::test]
-async fn duplex_end_input_drains_buffered_media_and_interrupt_commits_with_its_intent() {
+async fn duplex_seal_user_input_drains_buffered_media_and_interrupt_commits_with_its_intent() {
     use zhir_core::{
         model::*,
         profile::*,
@@ -289,23 +291,23 @@ async fn duplex_end_input_drains_buffered_media_and_interrupt_commits_with_its_i
     ]);
     caps.constraints
         .insert("serving".into(), vec![json!("low_latency")]);
-    let model = Arc::new(SessionModel::new(caps, move |_, mut peer| {
+    let model = Arc::new(SessionModel::new(caps, move |open, mut peer| {
         let ready = ready.clone();
         async move {
-            let command = peer.commands.recv().await.unwrap();
-            let SessionCommandBody::StartTurn { turn_id, .. } = &command.body else {
+            let command = peer.command().await?.unwrap();
+            let SessionCommandBody::Generate { generation_id, .. } = &command.body else {
                 unreachable!()
             };
-            let turn_id = turn_id.clone();
+            let generation_id = generation_id.clone();
             peer.acknowledge(&command, None).await?;
-            ready.send(turn_id.clone()).await.unwrap();
-            let update = peer.commands.recv().await.unwrap();
+            ready.send(open.session_id.clone()).await.unwrap();
+            let update = peer.command().await?.unwrap();
             assert!(matches!(
                 update.body,
                 SessionCommandBody::UpdateProfile { revision: 1, .. }
             ));
             peer.acknowledge(&update, None).await?;
-            let interrupt = peer.commands.recv().await.unwrap();
+            let interrupt = peer.command().await?.unwrap();
             assert!(matches!(
                 interrupt.body,
                 SessionCommandBody::InterruptOutput { .. }
@@ -317,21 +319,26 @@ async fn duplex_end_input_drains_buffered_media_and_interrupt_commits_with_its_i
                 assert_eq!(chunk.sequence, sequence);
                 assert_eq!(chunk.bytes, vec![sequence as u8; 4]);
             }
-            let end = peer.commands.recv().await.unwrap();
-            assert!(matches!(end.body, SessionCommandBody::EndInput));
+            let end = peer.command().await?.unwrap();
+            assert!(matches!(end.body, SessionCommandBody::SealUserInput));
             peer.acknowledge(&end, None).await?;
             peer.event(SessionEventBody::Output {
-                turn_id: turn_id.clone(),
+                generation_id: Some(generation_id.clone()),
                 item_id: "done".into(),
                 caller_id: "model".into(),
                 output: Output::text("audio received"),
             })
             .await?;
-            peer.finished(turn_id, TurnDisposition::Finished).await?;
-            if let Some(close) = peer.commands.recv().await {
+            peer.finished(generation_id, ResponseStatus::Completed)
+                .await?;
+            if let Some(close) = peer.command().await? {
                 assert!(matches!(close.body, SessionCommandBody::Close));
                 peer.acknowledge(&close, None).await?;
-                peer.event(SessionEventBody::Closed).await?;
+                peer.event(SessionEventBody::Closed {
+                    reason: "host_request".into(),
+                    provider_data: serde_json::Value::Null,
+                })
+                .await?;
             }
             Ok(())
         }
@@ -356,7 +363,7 @@ async fn duplex_end_input_drains_buffered_media_and_interrupt_commits_with_its_i
         )
         .unwrap();
     invocation.start();
-    let turn_id = turn_rx.recv().await.unwrap();
+    let generation_id = turn_rx.recv().await.unwrap();
     let control = invocation.control();
     control
         .update_profile(RequestProfile {
@@ -371,7 +378,7 @@ async fn duplex_end_input_drains_buffered_media_and_interrupt_commits_with_its_i
         input
             .send(MediaChunk {
                 stream_id: "voice".into(),
-                turn_id: turn_id.clone(),
+                session_id: generation_id.clone(),
                 epoch: 0,
                 sequence,
                 timestamp_us: sequence * 1000,
@@ -382,7 +389,7 @@ async fn duplex_end_input_drains_buffered_media_and_interrupt_commits_with_its_i
             .await
             .unwrap();
     }
-    control.end_input().await.unwrap();
+    control.seal_user_input().await.unwrap();
     let completion = settle(invocation).await;
     assert!(
         matches!(completion.state, State::Completed { .. }),
@@ -421,7 +428,7 @@ async fn duplex_end_input_drains_buffered_media_and_interrupt_commits_with_its_i
             .active
             .commands
             .iter()
-            .any(|c| matches!(c.intent, CommandIntent::EndInput))
+            .any(|c| matches!(c.intent, CommandIntent::SealUserInput))
     );
     assert!(completion.active.media.is_empty());
     assert!(completion.active.session.media_archive.is_some());

@@ -182,7 +182,7 @@ async fn workflow(
             .defaults(|run| run.stream(case.stream))
             .defaults(|run| {
                 run.limits(Limits {
-                    max_model_turns: 2,
+                    max_generation_requests: 2,
                     elapsed_ms: Some(60_000),
                     ..zhir::kernel::defaults::limits()
                 })
@@ -402,7 +402,7 @@ async fn workflow(
             .defaults(|run| run.stream(case.stream))
             .defaults(|run| {
                 run.limits(Limits {
-                    max_model_turns: 8,
+                    max_generation_requests: 8,
                     max_runtime_tool_calls: 12,
                     max_operation_concurrency: 3,
                     max_observer_events: 4096,

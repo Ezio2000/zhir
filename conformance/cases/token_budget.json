@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "name": "token_budget",
   "kind": "runtime",
   "case": {
@@ -36,7 +36,8 @@
             "reasoning_tokens": null,
             "cache_read_tokens": null,
             "cache_write_tokens": null
-          }
+          },
+          "status": "completed"
         }
       }
     ],

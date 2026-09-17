@@ -13,6 +13,7 @@ import tomllib
 PACKAGES = (
     "zhir-core", "zhir-policies", "zhir-kernel", "zhir-tools",
     "zhir-builtins", "zhir-models", "zhir-storage", "zhir",
+    "zhir-minimax", "zhir-openai",
 )
 EXCLUDED = {"zhir-testing", "zhir-conformance"}
 ROOT = Path(__file__).resolve().parent.parent

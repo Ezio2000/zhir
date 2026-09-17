@@ -6,7 +6,7 @@ pub fn context() -> zhir_core::run::RunContext {
 /// Default execution budgets for a new run.
 pub fn limits() -> zhir_core::run::Limits {
     zhir_core::run::Limits {
-        max_model_turns: 100,
+        max_generation_requests: 100,
         max_runtime_tool_calls: 1000,
         max_inflight_operations: 64,
         max_control_commands: 256,

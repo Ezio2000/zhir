@@ -9,12 +9,10 @@ mod native;
 mod transport {
     pub(crate) use crate::fixture as webrtc;
 }
-#[path = "../../zhir-models/src/openai/live/connection.rs"]
-mod live_connection;
 #[path = "../../zhir-models/src/webrtc.rs"]
 mod webrtc;
 use crate::webrtc::*;
-use native::{Buffered, Confirmation};
+use native::Confirmation;
 use std::{
     sync::{
         Arc,
@@ -32,6 +30,7 @@ struct Adapter {
     eager: bool,
     audio: bool,
     signals: Arc<AtomicUsize>,
+    grow_media: bool,
 }
 impl WebRtcAdapter for Adapter {
     fn capabilities(&self) -> CapabilitySet {
@@ -58,6 +57,7 @@ impl WebRtcAdapter for Adapter {
             media: Box::new(Media {
                 timeline: Default::default(),
                 sequence: 0,
+                grow: self.grow_media,
             }),
             connection: Box::new(Connected),
             peer: PeerSettings {
@@ -106,6 +106,7 @@ impl WebRtcConnectionPolicy for Connected {
         if matches!(connection.state, State::Failed | State::Closed) && !queued_events {
             return Err(Error::Uncertain("fixture connection failed".into()));
         }
+        assert!(connection.since <= Instant::now());
         let connected = connection.state == State::Connected;
         Ok(ConnectionStatus {
             commands_allowed: connected,
@@ -122,6 +123,7 @@ struct Protocol {
 }
 fn ack(id: &str) -> Action {
     Action::Event(Box::new(SessionEventBody::Acknowledged {
+        level: zhir_core::model::Acknowledgement::Provider,
         command_id: id.into(),
         recovery: None,
     }))
@@ -136,9 +138,6 @@ fn connect() -> Action {
 impl WebRtcProtocol for Protocol {
     fn initial(&mut self) -> Result<Vec<Action>> {
         Ok(if self.eager { vec![connect()] } else { vec![] })
-    }
-    fn turn(&self) -> Result<&str> {
-        Ok("fixture-turn")
     }
     fn commands_allowed(&self) -> bool {
         self.pending.pending().is_none() && !self.closed
@@ -163,14 +162,14 @@ impl WebRtcProtocol for Protocol {
     }
     fn command(&mut self, command: SessionCommand) -> Result<Vec<Action>> {
         match command.body {
-            SessionCommandBody::StartTurn { .. } => Ok(vec![ack(&command.id)]),
-            SessionCommandBody::Input { .. } => Ok(vec![connect()]),
+            SessionCommandBody::Generate { .. } => Ok(vec![ack(&command.id)]),
+            SessionCommandBody::Append { .. } => Ok(vec![connect()]),
             SessionCommandBody::SetInputAudio { .. } => Ok(vec![
                 Action::Send("first".into()),
                 Action::Send("second".into()),
                 ack(&command.id),
             ]),
-            SessionCommandBody::EndInput => {
+            SessionCommandBody::SealUserInput => {
                 self.pending
                     .begin(command.id, "fixture drain", Duration::from_secs(1))?;
                 Ok(vec![Action::DrainInput, Action::Send("finish".into())])
@@ -202,51 +201,53 @@ impl WebRtcProtocol for Protocol {
         self.closed = true;
         Ok(vec![
             ack("end"),
-            Action::Event(Box::new(SessionEventBody::Closed)),
+            Action::Event(Box::new(SessionEventBody::Closed {
+                reason: "host_request".into(),
+                provider_data: serde_json::Value::Null,
+            })),
         ])
     }
 }
 struct Media {
-    timeline: fixture::RtpTimeline,
+    timeline: RtpTimeline,
     sequence: u64,
+    grow: bool,
 }
 impl WebRtcMedia for Media {
     fn input(&mut self, turn: &str, chunk: &MediaChunk) -> Result<Option<Duration>> {
-        assert_eq!(turn, chunk.turn_id);
+        assert_eq!(turn, chunk.session_id);
         assert_eq!(chunk.media_type, "audio/PCMU");
         assert_eq!(chunk.epoch, 0);
         Ok(Some(Duration::from_millis(20)))
     }
-    fn receive(
-        &mut self,
-        turn: &str,
-        packet: Buffered<fixture::AudioPacket>,
-    ) -> Result<Option<Buffered<MediaChunk>>> {
-        let Some(ticks) = self.timeline.accept(
-            packet.value.ssrc,
-            packet.value.sequence,
-            packet.value.timestamp,
-        )?
+    fn receive(&mut self, turn: &str, packet: fixture::AudioPacket) -> Result<Option<MediaChunk>> {
+        let Some(ticks) = self
+            .timeline
+            .accept(packet.ssrc, packet.sequence, packet.timestamp)?
         else {
             return Ok(None);
         };
         let sequence = self.sequence;
         self.sequence += 1;
-        Ok(Some(packet.map(|packet| MediaChunk {
+        let mut payload = packet.payload;
+        if self.grow {
+            payload.push(0);
+        }
+        Ok(Some(MediaChunk {
             stream_id: "fixture-stream".into(),
-            turn_id: turn.into(),
+            session_id: turn.into(),
             epoch: 3,
             sequence,
             timestamp_us: ticks * 1_000_000 / 8000,
             media_type: "audio/PCMU".into(),
-            bytes: packet.payload,
+            bytes: payload,
             end: false,
-        })))
+        }))
     }
     fn finish(&mut self, turn: &str) -> Option<MediaChunk> {
         (self.sequence > 0).then(|| MediaChunk {
             stream_id: "fixture-stream".into(),
-            turn_id: turn.into(),
+            session_id: turn.into(),
             epoch: 3,
             sequence: self.sequence,
             timestamp_us: self.timeline.ticks() * 1_000_000 / 8000,
@@ -272,6 +273,14 @@ async fn setup(
     eager: bool,
     audio: bool,
 ) -> (ModelSession, fixture::Harness, Arc<AtomicUsize>) {
+    setup_mapping(label, eager, audio, false).await
+}
+async fn setup_mapping(
+    label: &'static str,
+    eager: bool,
+    audio: bool,
+    grow_media: bool,
+) -> (ModelSession, fixture::Harness, Arc<AtomicUsize>) {
     let harness = fixture::Harness::new(label);
     let signals = Arc::new(AtomicUsize::new(0));
     let model = WebRtcModel::new(Arc::new(Adapter {
@@ -279,12 +288,17 @@ async fn setup(
         eager,
         audio,
         signals: signals.clone(),
+        grow_media,
     }));
     let mut limits = zhir_kernel::defaults::limits();
     limits.max_media_chunk_bytes = 3;
     limits.max_buffered_media_bytes = 3;
     let session = model
         .open_session(SessionOpen {
+            context_revision: 0,
+            input_position: 0,
+            profile_revision: 0,
+            mode: zhir_core::run::RunMode::Interactive,
             session_id: "fixture".into(),
             output_epoch: 3,
             after_sequence: None,
@@ -319,7 +333,7 @@ async fn receipt(session: &mut ModelSession, expected: &str) {
 fn chunk(sequence: u64) -> MediaChunk {
     MediaChunk {
         stream_id: "mic".into(),
-        turn_id: "fixture-turn".into(),
+        session_id: "fixture".into(),
         epoch: 0,
         sequence,
         timestamp_us: sequence * 20_000,
@@ -346,9 +360,11 @@ async fn commands_before_connect_do_not_require_a_peer() {
     command(
         &session,
         "start",
-        SessionCommandBody::StartTurn {
-            turn_id: "fixture-turn".into(),
-            request: Box::new(request()),
+        SessionCommandBody::Generate {
+            generation_id: "fixture-turn".into(),
+            context_revision: 0,
+            input_position: 0,
+            profile_revision: 0,
         },
     )
     .await;
@@ -357,8 +373,15 @@ async fn commands_before_connect_do_not_require_a_peer() {
     command(
         &session,
         "connect",
-        SessionCommandBody::Input {
-            message: zhir_core::message::Message::user("connect"),
+        SessionCommandBody::Append {
+            entry: zhir_core::run::HistoryEntry {
+                id: "connect".into(),
+                origin: None,
+                message: zhir_core::message::Message::user("connect"),
+            },
+            context_revision: 1,
+            input_position: 1,
+            source: AppendSource::Submitted,
         },
     )
     .await;
@@ -382,7 +405,7 @@ async fn draining_keeps_receipts_runnable_and_preserves_write_and_media_order() 
                 .await
                 .unwrap();
         }
-        command(&session, "end", SessionCommandBody::EndInput).await;
+        command(&session, "end", SessionCommandBody::SealUserInput).await;
         let fixture::Write::Audio(bytes, duration, accept) = harness.writes.recv().await.unwrap()
         else {
             panic!("close overtook audio");
@@ -423,7 +446,7 @@ async fn draining_keeps_receipts_runnable_and_preserves_write_and_media_order() 
         receipt(&mut session, "end").await;
         assert!(matches!(
             session.output.receive().await.unwrap().unwrap().body,
-            SessionEventBody::Closed
+            SessionEventBody::Closed { .. }
         ));
         assert!(session.output.receive().await.unwrap().is_none());
         let budget = harness
@@ -471,7 +494,7 @@ async fn input_drain_cannot_hide_confirmation_expiry_behind_a_stalled_write() {
             .await
             .unwrap();
     }
-    command(&session, "end", SessionCommandBody::EndInput).await;
+    command(&session, "end", SessionCommandBody::SealUserInput).await;
     let fixture::Write::Audio(_, _, accept) = harness.writes.recv().await.unwrap() else {
         panic!("missing audio");
     };
@@ -500,7 +523,7 @@ async fn rejection_preserves_diagnostic_and_cancels_pending_write() {
         .send(chunk(0))
         .await
         .unwrap();
-    command(&session, "end", SessionCommandBody::EndInput).await;
+    command(&session, "end", SessionCommandBody::SealUserInput).await;
     let fixture::Write::Audio(_, _, accept) = harness.writes.recv().await.unwrap() else {
         panic!("missing audio");
     };
@@ -511,49 +534,6 @@ async fn rejection_preserves_diagnostic_and_cancels_pending_write() {
     );
     assert!(accept.is_closed());
     assert!(session.output.receive().await.unwrap().is_none());
-}
-#[tokio::test(start_paused = true)]
-async fn live_connection_policy_has_fixed_grace_and_drains_queued_confirmations() {
-    use ::webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState as State;
-    let policy = live_connection::LiveConnection {
-        grace: Duration::from_secs(10),
-    };
-    let connection = fixture::Connection::new(State::Disconnected);
-    let first = policy.evaluate(connection, false).unwrap();
-    assert!(!first.commands_allowed && !first.input_allowed);
-    tokio::time::advance(Duration::from_secs(5)).await;
-    assert_eq!(
-        policy.evaluate(connection, true).unwrap().deadline,
-        first.deadline
-    );
-    tokio::time::advance(Duration::from_secs(5)).await;
-    assert!(matches!(
-        policy.evaluate(connection, false),
-        Err(Error::Uncertain(_))
-    ));
-    assert!(
-        policy
-            .evaluate(connection, true)
-            .unwrap()
-            .deadline
-            .is_none()
-    );
-    for state in [State::Failed, State::Closed] {
-        assert!(matches!(
-            policy.evaluate(fixture::Connection::new(state), false),
-            Err(Error::Uncertain(_))
-        ));
-        assert!(
-            !policy
-                .evaluate(fixture::Connection::new(state), true)
-                .unwrap()
-                .commands_allowed
-        );
-    }
-    let ready = policy
-        .evaluate(fixture::Connection::new(State::Connected), false)
-        .unwrap();
-    assert!(ready.commands_allowed && ready.input_allowed && ready.deadline.is_none());
 }
 
 #[tokio::test(start_paused = true)]
@@ -602,4 +582,41 @@ async fn connection_policy_gates_queued_writes_without_blocking_observations() {
     assert!(
         matches!(session.output.receive().await, Err(Error::Uncertain(message)) if message == "fixture rejection")
     );
+}
+
+#[tokio::test]
+async fn media_mapping_cannot_exceed_its_ingress_reservation() {
+    let (mut session, harness, _) = setup_mapping("growing-media", true, false, true).await;
+    receipt(&mut session, "ready").await;
+    let budget = harness
+        .state
+        .config
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .media_budget
+        .clone();
+    harness.audio(0);
+    let error = tokio::time::timeout(Duration::from_secs(2), session.output.receive())
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(
+        matches!(error, Error::Invalid(message) if message == "media mapping grew the reserved payload")
+    );
+    assert!(
+        session
+            .media_output
+            .as_mut()
+            .unwrap()
+            .receive()
+            .await
+            .unwrap()
+            .is_none()
+    );
+    budget
+        .try_reserve(3)
+        .expect("rejected mapping must release its reservation");
+    assert!(harness.state.closed.load(Ordering::SeqCst));
 }

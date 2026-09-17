@@ -61,7 +61,7 @@ async fn read_resource(store: &dyn ResourceStore, reference: ResourceRef) -> Vec
 }
 
 async fn exercise(
-    config: zhir_models::minimax::tts::TtsConfig,
+    config: zhir_minimax::tts::TtsConfig,
     interrupt: bool,
     flush: bool,
     chunk_limit: usize,
@@ -152,7 +152,7 @@ async fn exercise(
             control.interrupt_output().await.unwrap();
             wait_stats(&mut stats, |s| s.cancellations == 1).await;
         }
-        // Two pieces without terminal punctuation: EndInput must flush their tail.
+        // Two pieces without terminal punctuation: SealUserInput must flush their tail.
         control.input(Message::user("继续"), "test").await.unwrap();
         control
             .input(Message::user("测试完成"), "test")
@@ -177,7 +177,7 @@ async fn exercise(
                 .await
                 .unwrap();
         }
-        control.end_input().await.unwrap();
+        control.seal_user_input().await.unwrap();
     };
     let (completion, (), (chunks, first_audio_ms)) =
         tokio::time::timeout(Duration::from_secs(60), async {
@@ -346,7 +346,8 @@ async fn websocket_tts_disconnect_is_uncertain_and_bad_audio_is_not_committed() 
         fixture::Fault::OversizedAudio,
     ] {
         let (endpoint, server) = fixture::serve(fault).await;
-        let (model, _) = TtsModel::new(TtsModel::config(endpoint, String::new(), "fixture".into()));
+        let (model, stats) =
+            TtsModel::new(TtsModel::config(endpoint, String::new(), "fixture".into()));
         let runtime = Runtime::builder(Arc::new(model))
             .resources(Arc::new(MemoryResourceStore::new()))
             .build()
@@ -366,12 +367,20 @@ async fn websocket_tts_disconnect_is_uncertain_and_bad_audio_is_not_committed() 
             fixture::Fault::BadAudio
             | fixture::Fault::OddAudio
             | fixture::Fault::OversizedAudio => {
-                assert!(matches!(checkpoint.state, State::Failed { .. }));
+                assert!(
+                    matches!(checkpoint.state, State::Failed { .. }),
+                    "{fault:?}: {:?}; adapter failure: {:?}",
+                    checkpoint.state,
+                    stats.borrow().failure
+                );
                 assert!(checkpoint.active.media.is_empty());
             }
             fixture::Fault::None | fixture::Fault::Burst => unreachable!(),
         }
-        server.await.unwrap();
+        let commands = server.await.unwrap();
+        if !matches!(fault, fixture::Fault::Disconnect) {
+            assert_eq!(commands, ["task_start", "task_continue", "task_finish"]);
+        }
     }
 }
 
@@ -388,7 +397,7 @@ async fn live_minimax_tts_session() {
     // Pace distinct test sessions against subscription RPM limits. A failed
     // synthesis is never retried or replayed by the production adapter.
     let mut next_case = tokio::time::Instant::now();
-    use zhir_models::minimax::tts::{
+    use zhir_minimax::tts::{
         AudioFormat, Emotion, SoundEffect, SubtitleGranularity, TimbreWeight, VoiceEffects,
     };
     for (format, extension, rate, mime) in [

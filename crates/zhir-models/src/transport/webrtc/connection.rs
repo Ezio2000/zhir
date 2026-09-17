@@ -1,7 +1,7 @@
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 
 #[derive(Clone, Copy)]
-pub(crate) struct Connection {
+pub struct Connection {
     pub state: RTCPeerConnectionState,
     pub since: tokio::time::Instant,
 }

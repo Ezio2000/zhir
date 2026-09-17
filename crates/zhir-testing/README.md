@@ -6,12 +6,12 @@ production SDK dependency. Depends on core, kernel, models and policies. Enable
 `http` for the local HTTP fixture. The history and trace benchmarks live here.
 
 SessionModel enables synthetic native protocol and fault tests. RecordingModel
-records opening requests, commands and events; completed_turns projects completed
+records opening requests, commands and events; completed_responses projects completed
 exchanges for assertions. RecordingStore verifies committed histories through
 verify_trace. None of these fixtures establish an external provider's live
 capabilities, entitlement, authentication or media quality.
 
-Part of the zhir workspace, version 0.2.0.
+Part of the zhir workspace, version 0.3.0.
 
 This workspace-only package is not published. Consumer acceptance tests live in tests/;
 SDK feature names forward to zhir for feature-specific tests. Release verification uses
@@ -19,7 +19,7 @@ SDK feature names forward to zhir for feature-specific tests. Release verificati
 
 ## MiniMax TTS integration tests
 
-`tests/minimax_tts.rs` exercises the production `models::minimax::tts` adapter through
+`tests/minimax_tts.rs` exercises the production `zhir_minimax::tts` adapter through
 the public SDK facade. The kernel owns execution, interrupt epochs, media
 backpressure, resource sealing and checkpoint commits. Only text Input and audio
 output are exposed; microphone input, model tools, profile updates and transport
@@ -33,7 +33,7 @@ cargo test -p zhir-testing --no-default-features --features minimax --locked --t
 ```
 
 They check fragment `is_final` versus session completion, flushing trailing text on
-EndInput and explicit FlushInput, preserved whitespace fragments, protocol receipt
+SealUserInput and explicit FlushInput, preserved whitespace fragments, protocol receipt
 deadlines, interruption without another remote start, old-epoch frames arriving
 before cancellation acknowledgement, uncertain disconnects and invalid audio. A
 slow consumer drains a 76-byte burst through an 8-byte kernel media budget.

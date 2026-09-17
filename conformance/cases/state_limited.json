@@ -1,11 +1,11 @@
 {
-  "version": 3,
+  "version": 4,
   "name": "state_limited",
   "kind": "value",
   "schema": "state",
   "value": {
     "kind": "limited",
-    "reason": "model_turns"
+    "reason": "generation_requests"
   },
   "valid": true
 }

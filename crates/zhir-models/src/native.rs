@@ -353,4 +353,4 @@ pub(crate) async fn confirmation_deadline(deadline: Option<tokio::time::Instant>
 
 #[path = "native/confirmation.rs"]
 mod confirmation;
-pub(crate) use confirmation::Confirmation;
+pub use confirmation::Confirmation;

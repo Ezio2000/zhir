@@ -128,7 +128,7 @@ async fn oauth_style_refresh_and_account_headers_are_injected_without_kernel_aut
     }));
     let model =
         openai::responses::model(ModelConfig::new(server.url(), provider, "fixture")).unwrap();
-    model.turn(request(), context()).await.unwrap();
+    model.generate(request(), context()).await.unwrap();
     let requests = server.finish().await.unwrap();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].headers["authorization"], "Bearer oauth-1");

@@ -1,12 +1,14 @@
-//! Bounded session machinery for protocols whose exchange boundary is one model turn.
+//! Incremental context projection and bounded, single-generation exchange driver.
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
 use tokio::sync::mpsc;
+use zhir_core::run::History;
 use zhir_core::{BoxFuture, Result, error::Error, model::*};
-pub(crate) type Exchange =
-    dyn Fn(ModelRequest, ModelContext) -> BoxFuture<'static, Result<TurnOutput>> + Send + Sync;
+pub(crate) type Exchange = dyn Fn(ModelRequest, ModelContext) -> BoxFuture<'static, Result<GenerationOutput>>
+    + Send
+    + Sync;
 pub(crate) type Negotiate =
     dyn Fn(&ModelRequest) -> Result<zhir_core::profile::NegotiatedProfile> + Send + Sync;
 struct Sender(mpsc::Sender<SessionCommand>, CapabilitySet, Arc<Negotiate>);
@@ -43,7 +45,7 @@ impl Events {
 }
 struct Deltas {
     events: Events,
-    turn_id: String,
+    generation_id: String,
     downstream: Option<Arc<dyn DeltaSink>>,
 }
 impl DeltaSink for Deltas {
@@ -54,7 +56,7 @@ impl DeltaSink for Deltas {
             }
             self.events
                 .send(SessionEventBody::Delta {
-                    turn_id: self.turn_id.clone(),
+                    generation_id: Some(self.generation_id.clone()),
                     delta,
                 })
                 .await
@@ -64,17 +66,24 @@ impl DeltaSink for Deltas {
 pub(crate) fn open(
     open: SessionOpen,
     exchange: Arc<Exchange>,
-    capabilities: CapabilitySet,
+    mut capabilities: CapabilitySet,
     negotiate: Arc<Negotiate>,
 ) -> Result<ModelSession> {
     validate_capabilities(&capabilities)?;
     open.limits.validate()?;
     open.context.cancellation.check()?;
     negotiate(&open.request)?;
+    capabilities.features.extend([
+        Capability::ExplicitGeneration,
+        Capability::ResponseEvents,
+        Capability::LocalProjection,
+        Capability::ReplaceContext,
+        Capability::ProfileUpdates,
+    ]);
     let deadline = zhir_policies::timing::deadline(&open.context.run)?;
     if open.recovery.is_some() {
         return Err(Error::Protocol(
-            "turn protocol has no persistent session resume".into(),
+            "exchange session has no persistent session resume".into(),
         ));
     }
     let (tx, mut rx) = mpsc::channel::<SessionCommand>(open.limits.max_control_commands);
@@ -83,23 +92,46 @@ pub(crate) fn open(
         tx: event_tx,
         sequence: Arc::new(AtomicU64::new(0)),
     };
-    let task = SessionTask {
+    let mut task = SessionTask {
         events,
         exchange,
         negotiate: negotiate.clone(),
         context: open.context,
         deadline,
+        seed: open.request.messages.clone(),
+        request: open.request,
+        history: History::from_entries(vec![])?,
+        context_revision: open.context_revision,
+        input_position: open.input_position,
+        profile_revision: open.profile_revision,
+        sealed: false,
+        active: None,
     };
     tokio::spawn(async move {
-        while let Some(command) = rx.recv().await {
-            match task.command(command).await {
-                Ok(true) => (),
-                Ok(false) => break,
-                Err(error) => {
-                    let _ = task.events.tx.send(Err(error)).await;
-                    break;
+        let result: Result<()> = async {
+            task.events.send(SessionEventBody::Ready { context_revision: task.context_revision }).await?;
+            loop {
+                tokio::select! {
+                    command = rx.recv() => {
+                        let Some(command) = command else { break };
+                        if !task.command(command).await? { break; }
+                    }
+                    result = async { task.active.as_mut().expect("active generation").2.as_mut().await }, if task.active.is_some() => {
+                        let (id, input_position, _) = task.active.take().expect("active generation");
+                        let response = result?;
+                        zhir_policies::timing::check(&task.context.cancellation, task.deadline)?;
+                        response.validate()?;
+                        task.finish(id, input_position, response).await?;
+                    }
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {
+                        zhir_policies::timing::check(&task.context.cancellation, task.deadline)?;
+                    }
                 }
             }
+            Ok(())
+        }.await;
+        if let Err(error) = result {
+            let _ = task.events.tx.send(Err(error)).await;
         }
     });
     Ok(ModelSession {
@@ -119,7 +151,6 @@ pub(crate) fn validate_capabilities(capabilities: &CapabilitySet) -> Result<()> 
         Capability::FlushInput,
         Capability::InputAudioControl,
         Capability::Steering,
-        Capability::ProfileUpdates,
         Capability::AsyncResults,
         Capability::Resume,
     ]
@@ -127,7 +158,7 @@ pub(crate) fn validate_capabilities(capabilities: &CapabilitySet) -> Result<()> 
     .any(|capability| capabilities.supports(*capability))
     {
         return Err(Error::Invalid(
-            "turn protocol advertises unsupported session capabilities".into(),
+            "exchange session advertises unsupported session capabilities".into(),
         ));
     }
     Ok(())
@@ -139,85 +170,157 @@ struct SessionTask {
     negotiate: Arc<Negotiate>,
     context: ModelContext,
     deadline: Option<std::time::Instant>,
+    request: ModelRequest,
+    seed: Vec<zhir_core::message::Message>,
+    history: History,
+    context_revision: u64,
+    input_position: u64,
+    profile_revision: u64,
+    sealed: bool,
+    active: Option<(String, u64, BoxFuture<'static, Result<GenerationOutput>>)>,
 }
 impl SessionTask {
-    async fn command(&self, command: SessionCommand) -> Result<bool> {
+    async fn command(&mut self, command: SessionCommand) -> Result<bool> {
         self.context.cancellation.check()?;
         match command.body {
-            SessionCommandBody::StartTurn { turn_id, request } => {
-                self.turn(command.id, turn_id, *request).await
+            SessionCommandBody::Generate {
+                generation_id,
+                context_revision,
+                input_position,
+                profile_revision,
+            } => {
+                if self.active.is_some()
+                    || generation_id.is_empty()
+                    || context_revision != self.context_revision
+                    || input_position != self.input_position
+                    || profile_revision != self.profile_revision
+                {
+                    return Err(Error::Protocol("generation does not match the acknowledged projection or another generation is active".into()));
+                }
+                self.request.messages = self.seed.clone();
+                self.request
+                    .messages
+                    .extend(conversation(self.history.entries()));
+                (self.negotiate)(&self.request)?;
+                self.acknowledge(command.id).await?;
+                self.events
+                    .send(SessionEventBody::ResponseStarted {
+                        generation_id: generation_id.clone(),
+                        input_position,
+                    })
+                    .await?;
+                let mut context = self.context.clone();
+                context.deltas = Some(Arc::new(Deltas {
+                    events: self.events.clone(),
+                    generation_id: generation_id.clone(),
+                    downstream: context.deltas.clone(),
+                }));
+                self.active = Some((
+                    generation_id,
+                    input_position,
+                    (self.exchange)(self.request.clone(), context),
+                ));
+                Ok(true)
             }
-            SessionCommandBody::UpdateProfile { .. } => Err(Error::Invalid(
-                "turn protocol cannot update an active profile".into(),
-            )),
+            SessionCommandBody::Append {
+                entry,
+                context_revision,
+                input_position,
+                source,
+            } => {
+                if source == AppendSource::Submitted
+                    && self.sealed
+                    && matches!(entry.message, zhir_core::message::Message::User { .. })
+                {
+                    return Err(Error::Invalid("user input is sealed".into()));
+                }
+                if context_revision != self.context_revision + 1
+                    || input_position < self.input_position
+                {
+                    return Err(Error::Protocol("non-contiguous context revision".into()));
+                }
+                entry.validate()?;
+                self.history = self.history.append(vec![entry])?;
+                self.context_revision = context_revision;
+                self.input_position = input_position;
+                self.acknowledge(command.id).await?;
+                Ok(true)
+            }
+            SessionCommandBody::ReplaceContext {
+                entries,
+                context_revision,
+            } => {
+                if self.active.is_some() || context_revision != self.context_revision + 1 {
+                    return Err(Error::Protocol(
+                        "context replacement crosses a generation or revision".into(),
+                    ));
+                }
+                self.seed = conversation(History::from_entries(entries)?.entries());
+                self.history = History::from_entries(vec![])?;
+                self.context_revision = context_revision;
+                self.acknowledge(command.id).await?;
+                Ok(true)
+            }
+            SessionCommandBody::UpdateProfile { revision, profile } => {
+                if revision != self.profile_revision + 1 {
+                    return Err(Error::Protocol("non-contiguous profile revision".into()));
+                }
+                self.request.profile = profile;
+                (self.negotiate)(&self.request)?;
+                self.profile_revision = revision;
+                self.acknowledge(command.id).await?;
+                Ok(true)
+            }
             SessionCommandBody::InterruptOutput { .. } => Err(Error::Invalid(
-                "turn protocol cannot interrupt natively".into(),
+                "exchange session cannot interrupt natively".into(),
             )),
             SessionCommandBody::FlushInput | SessionCommandBody::SetInputAudio { .. } => Err(
-                Error::Invalid("turn protocol cannot flush an active input".into()),
+                Error::Invalid("exchange session cannot flush an active input".into()),
             ),
-            SessionCommandBody::DelegationContext { .. }
-            | SessionCommandBody::DelegationResult { .. } => Err(Error::Invalid(
-                "turn protocol cannot accept native delegation".into(),
+            SessionCommandBody::DelegationContext { .. } => Err(Error::Invalid(
+                "exchange session cannot accept native delegation".into(),
             )),
             SessionCommandBody::Close => {
+                if self.active.is_some() {
+                    return Err(Error::Protocol("cannot close an active generation".into()));
+                }
                 self.acknowledge(command.id).await?;
-                self.events.send(SessionEventBody::Closed).await?;
+                self.events
+                    .send(SessionEventBody::Closed {
+                        reason: "host_request".into(),
+                        provider_data: serde_json::Value::Null,
+                    })
+                    .await?;
                 Ok(false)
             }
-            _ => {
+            SessionCommandBody::SealUserInput => {
+                self.sealed = true;
                 self.acknowledge(command.id).await?;
                 Ok(true)
             }
         }
     }
-    async fn acknowledge(&self, command_id: String) -> Result<()> {
+    async fn acknowledge(&mut self, command_id: String) -> Result<()> {
         self.events
             .send(SessionEventBody::Acknowledged {
                 command_id,
                 recovery: None,
+                level: Acknowledgement::Projection,
             })
             .await
     }
-    async fn turn(
-        &self,
-        command_id: String,
-        turn_id: String,
-        request: ModelRequest,
-    ) -> Result<bool> {
-        if command_id.is_empty() || turn_id.is_empty() {
-            return Err(Error::Invalid("empty command or turn identity".into()));
-        }
-        (self.negotiate)(&request)?;
-        zhir_policies::timing::check(&self.context.cancellation, self.deadline)?;
-        self.acknowledge(command_id).await?;
-        let mut context = self.context.clone();
-        context.deltas = Some(Arc::new(Deltas {
-            events: self.events.clone(),
-            turn_id: turn_id.clone(),
-            downstream: context.deltas.clone(),
-        }));
-        let exchanging = (self.exchange)(request, context);
-        tokio::pin!(exchanging);
-        let response = loop {
-            tokio::select! {
-                result = &mut exchanging => break result?,
-                _ = self.events.tx.closed() => return Ok(false),
-                _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => zhir_policies::timing::check(&self.context.cancellation, self.deadline)?,
-            }
-        };
-        zhir_policies::timing::check(&self.context.cancellation, self.deadline)?;
-        response.validate()?;
-        self.finish(turn_id, response).await?;
-        Ok(true)
-    }
-    async fn finish(&self, turn_id: String, response: TurnOutput) -> Result<()> {
-        let disposition = disposition(&response);
+    async fn finish(
+        &mut self,
+        generation_id: String,
+        input_position: u64,
+        response: GenerationOutput,
+    ) -> Result<()> {
+        let response_status = response_status(&response);
         for (index, output) in response.output.into_iter().enumerate() {
             self.events
                 .send(SessionEventBody::Output {
-                    turn_id: turn_id.clone(),
-                    item_id: format!("{turn_id}:{index}"),
+                    generation_id: Some(generation_id.clone()),
+                    item_id: format!("{generation_id}:{index}"),
                     caller_id: "model".into(),
                     output,
                 })
@@ -232,9 +335,10 @@ impl SessionTask {
             .map_err(|e| Error::Protocol(format!("effective profile: {e}")))?
             .unwrap_or_default();
         self.events
-            .send(SessionEventBody::TurnFinished {
-                turn_id,
-                disposition,
+            .send(SessionEventBody::ResponseFinished {
+                generation_id,
+                input_position,
+                response_status,
                 usage: response.usage,
                 model_id: response.model_id,
                 response_id: response.response_id,
@@ -245,16 +349,16 @@ impl SessionTask {
             .await
     }
 }
-fn disposition(response: &TurnOutput) -> TurnDisposition {
-    if response.provider_turn_pending {
-        return TurnDisposition::Continue;
+fn response_status(response: &GenerationOutput) -> ResponseStatus {
+    if response.status != ResponseStatus::Completed {
+        return response.status.clone();
     }
     if response
         .output
         .iter()
         .any(|item| matches!(item, zhir_core::message::Output::RuntimeToolCall { .. }))
     {
-        return TurnDisposition::AwaitingTools;
+        return ResponseStatus::RequiresResults;
     }
-    TurnDisposition::Finished
+    ResponseStatus::Completed
 }

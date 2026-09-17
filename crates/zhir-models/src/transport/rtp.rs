@@ -4,7 +4,7 @@ use zhir_core::{Result, error::Error};
 /// discarded instead of turning a backwards timestamp into a multi-hour jump.
 /// Changing sources requires the adapter to establish a new media stream.
 #[derive(Default)]
-pub(crate) struct RtpTimeline {
+pub struct RtpTimeline {
     last: Option<(u32, u16, u32)>,
     ticks: u64,
 }

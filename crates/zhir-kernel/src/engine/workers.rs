@@ -9,8 +9,7 @@ impl Engine {
         match work {
             Work::Model(Ok(Some(event))) => self.model_event(event).await,
             Work::Model(Ok(None)) => {
-                self.model_closed = true;
-                if self.current.active.session.disposition.is_none() {
+                if self.current.active.session.closure.is_none() {
                     self.suspend(WaitReason::Recovery).await
                 } else {
                     Ok(())
@@ -59,7 +58,7 @@ impl Engine {
             Work::Admitted(bindings, decisions) => self.admitted(bindings, decisions).await,
             Work::MediaReady(chunk, reference, reply) => {
                 let valid = chunk.epoch == self.current.active.session.output_epoch
-                    && self.current.active.session.turn_id.as_ref() == Some(&chunk.turn_id);
+                    && self.current.active.session.id == chunk.session_id;
                 if valid {
                     self.seal_cursor("output", &chunk, reference).await?;
                 }
@@ -67,8 +66,7 @@ impl Engine {
                 Ok(())
             }
             Work::InputReady(chunk, reference, reply) => {
-                let valid = chunk.epoch == 0
-                    && self.current.active.session.turn_id.as_ref() == Some(&chunk.turn_id);
+                let valid = chunk.epoch == 0 && self.current.active.session.id == chunk.session_id;
                 if valid {
                     self.seal_cursor("input", &chunk, reference).await?;
                 }

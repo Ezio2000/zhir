@@ -4,7 +4,7 @@ use zhir_core::{Result, error::Error};
 /// One serialized remote barrier. The adapter owns the expected protocol event
 /// and its payload; this slot owns admission and the monotonic acknowledgement
 /// deadline. Observations and media never extend that deadline.
-pub(crate) struct Confirmation<T> {
+pub struct Confirmation<T> {
     pending: Option<(T, tokio::time::Instant, &'static str)>,
 }
 impl<T> Default for Confirmation<T> {

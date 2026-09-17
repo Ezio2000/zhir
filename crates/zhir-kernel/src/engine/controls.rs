@@ -43,6 +43,11 @@ impl Engine {
         }
     }
     pub(super) async fn insert(&mut self, message: Message, source: String) -> Result<String> {
+        if (self.current.active.session.input_closed && matches!(message, Message::User { .. }))
+            || self.current.active.session.closing
+        {
+            return Err(Error::Invalid("user input is sealed".into()));
+        }
         message.validate()?;
         let id = new_id();
         let entry = HistoryEntry {
@@ -53,25 +58,15 @@ impl Engine {
         let mut next = self.current.as_ref().clone();
         let index = next.history.len();
         next.history = next.history.append(vec![entry.clone()])?;
-        next.active.commands.push(PendingCommand {
-            id: id.clone(),
-            intent: CommandIntent::Input { entry: index },
-            sent: false,
-        });
+        next.active.session.input_position += 1;
+        next.active.session.needs_generation = true;
+        Self::append_command(&mut next, index, AppendSource::Submitted, None);
         self.commit(
             next,
             Fact::ConversationInsert { source },
             HistoryDelta::Append(vec![entry]),
         )
         .await?;
-        self.needs_turn |= self.current.active.session.disposition.is_some()
-            || !self
-                .current
-                .active
-                .session
-                .capabilities
-                .as_ref()
-                .is_some_and(|c| c.supports(Capability::Steering));
         Ok(id)
     }
     pub(super) async fn control(&mut self, control: Control) -> Result<()> {
@@ -101,13 +96,13 @@ impl Engine {
                             "model does not support native interruption".into(),
                         ));
                     }
-                    let turn_id = self
+                    let generation_id = self
                         .current
                         .active
                         .session
-                        .turn_id
+                        .generation_id
                         .clone()
-                        .ok_or_else(|| Error::Invalid("no turn to interrupt".into()))?;
+                        .ok_or_else(|| Error::Invalid("no generation to interrupt".into()))?;
                     let output_epoch = self
                         .current
                         .active
@@ -116,7 +111,7 @@ impl Engine {
                         .checked_add(1)
                         .ok_or_else(|| Error::Invalid("output epoch overflow".into()))?;
                     self.prepare_command(CommandIntent::InterruptOutput {
-                        turn_id,
+                        generation_id,
                         output_epoch,
                     })
                     .await
@@ -147,7 +142,9 @@ impl Engine {
                     self.prepare_command(CommandIntent::SetInputAudio { enabled })
                         .await
                 }
-                ControlBody::EndInput => self.prepare_command(CommandIntent::EndInput).await,
+                ControlBody::SealUserInput => {
+                    self.prepare_command(CommandIntent::SealUserInput).await
+                }
                 ControlBody::CancelOperation(id) => self.cancel_operation(id).await,
                 ControlBody::ReplyOperation(id, value) => self.reply_operation(id, value).await,
             }
@@ -193,9 +190,9 @@ impl Engine {
             {
                 return self.suspend(WaitReason::Recovery).await;
             }
-            let in_turn = self.current.active.session.turn_id.is_some()
-                && self.current.active.session.disposition.is_none();
-            if (in_turn || self.current.active.commands.iter().any(|c| c.sent))
+            let in_generation = self.current.active.session.generation_id.is_some()
+                && self.current.active.session.response_status.is_none();
+            if (in_generation || self.current.active.commands.iter().any(|c| c.sent))
                 && self.current.active.session.recovery.is_none()
             {
                 return self.suspend(WaitReason::Recovery).await;
@@ -205,7 +202,19 @@ impl Engine {
             {
                 return self.suspend(WaitReason::Recovery).await;
             }
-            self.needs_turn = !in_turn;
+            if self.current.active.session.establishment == SessionEstablishment::Opening
+                && self.current.active.session.recovery.is_none()
+            {
+                return self.suspend(WaitReason::Recovery).await;
+            }
+            if self.current.active.session.establishment == SessionEstablishment::Established
+                && self.current.active.session.recovery.is_none()
+                && !self
+                    .session_capabilities()
+                    .supports(Capability::LocalProjection)
+            {
+                return self.suspend(WaitReason::Recovery).await;
+            }
         }
         Ok(())
     }
@@ -216,12 +225,9 @@ impl Engine {
         &mut self,
         profile: zhir_core::profile::RequestProfile,
     ) -> Result<String> {
-        let busy = self.current.active.session.disposition.is_none()
-            && self.current.active.session.turn_id.is_some();
-        if busy
-            && !self
-                .session_capabilities()
-                .supports(Capability::ProfileUpdates)
+        if !self
+            .session_capabilities()
+            .supports(Capability::ProfileUpdates)
         {
             return Err(Error::Invalid(
                 "model does not support running profile updates".into(),
@@ -229,31 +235,7 @@ impl Engine {
         }
         let mut request = self.model_request(self.current.history.len());
         request.profile = profile.clone();
-        let negotiated = self.negotiate(&request)?;
-        if !self
-            .session_capabilities()
-            .supports(Capability::ProfileUpdates)
-        {
-            let id = new_id();
-            let mut next = self.current.as_ref().clone();
-            next.active.session.profile_revision += 1;
-            next.active.session.profile = profile;
-            next.active.session.effective.values = negotiated
-                .selected
-                .keys()
-                .map(|key| (key.clone(), zhir_core::profile::Confirmation::Unknown))
-                .collect();
-            next.active.session.negotiated = negotiated;
-            self.commit(
-                next,
-                Fact::Command {
-                    command_id: id.clone(),
-                },
-                HistoryDelta::Unchanged,
-            )
-            .await?;
-            return Ok(id);
-        }
+        self.negotiate(&request)?;
         self.prepare_command(CommandIntent::UpdateProfile {
             revision: self
                 .current

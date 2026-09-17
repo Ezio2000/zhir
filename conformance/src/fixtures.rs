@@ -22,7 +22,7 @@ pub struct Step {
     #[serde(default)]
     deltas: Vec<ModelDelta>,
     #[serde(default)]
-    output: Option<TurnOutput>,
+    output: Option<GenerationOutput>,
     #[serde(default)]
     error: Option<Failure>,
 }

@@ -27,7 +27,70 @@ impl Engine {
         let mut next = self.current.as_ref().clone();
         next.active.session.last_sequence = Some(event.sequence);
         let mut entries = vec![];
+        let mut seal_user_input = false;
         match event.body {
+            SessionEventBody::Ready { context_revision } => {
+                if next.active.session.ready {
+                    return Err(Error::Protocol("duplicate session ready".into()));
+                }
+                next.active.session.ready = true;
+                next.active.session.establishment = SessionEstablishment::Established;
+                if context_revision != next.active.session.acknowledged_context_revision {
+                    return Err(Error::Protocol(
+                        "initial projection revision mismatch".into(),
+                    ));
+                }
+            }
+            SessionEventBody::ResponseStarted {
+                generation_id,
+                input_position,
+            } => {
+                if !self
+                    .session_capabilities()
+                    .supports(Capability::ResponseEvents)
+                {
+                    return Err(Error::Protocol("undeclared response events".into()));
+                }
+                if !self
+                    .session_capabilities()
+                    .supports(Capability::ExplicitGeneration)
+                {
+                    if generation_id.is_empty()
+                        || input_position > next.active.session.input_position
+                        || (next.active.session.generation_id.is_some()
+                            && next.active.session.response_status.is_none())
+                    {
+                        return Err(Error::Protocol(
+                            "overlapping or invalid automatic generation".into(),
+                        ));
+                    }
+                    next.active.session.generation_id = Some(generation_id.clone());
+                    next.active.session.generated_input_position = input_position;
+                    next.active.session.generation_started = false;
+                    next.active.session.response_status = None;
+                    next.active.session.response_start = next.history.len();
+                }
+                if next.active.session.generation_started
+                    || next.active.session.generation_id.as_ref() != Some(&generation_id)
+                    || next.active.session.generated_input_position != input_position
+                {
+                    return Err(Error::Protocol("unexpected response start".into()));
+                }
+                next.active.session.generation_started = true;
+                if next.options.mode == RunMode::Task
+                    && self
+                        .session_capabilities()
+                        .supports(Capability::StreamingInput)
+                {
+                    next.active.session.input_closed = true;
+                    seal_user_input = true;
+                    next.active.commands.push(PendingCommand {
+                        id: new_id(),
+                        intent: CommandIntent::SealUserInput,
+                        sent: false,
+                    });
+                }
+            }
             SessionEventBody::ConversationItem { item_id, message } => {
                 if !self
                     .session_capabilities()
@@ -58,26 +121,34 @@ impl Engine {
             SessionEventBody::Acknowledged {
                 command_id,
                 recovery,
+                ..
             } => {
                 self.acknowledge_command(&mut next, command_id, recovery)?;
             }
             body @ SessionEventBody::Output { .. } => {
                 return self.accept_output(next, event.sequence, body).await;
             }
-            body @ SessionEventBody::TurnFinished { .. } => {
-                entries.push(self.complete_turn(&mut next, body)?);
+            body @ SessionEventBody::ResponseFinished { .. } => {
+                entries.push(self.complete_response(&mut next, body)?);
             }
             SessionEventBody::Recovery { reference } => {
                 next.active.session.recovery = Some(reference)
             }
-            SessionEventBody::Closed => {
-                self.model_closed = true;
-                next.active.session.closed = true;
+            SessionEventBody::Closed {
+                reason,
+                provider_data,
+            } => {
+                if reason.is_empty() || next.active.session.closure.is_some() {
+                    return Err(Error::Protocol(
+                        "invalid or duplicate session closure".into(),
+                    ));
+                }
+                next.active.session.closure = Some(SessionClosure {
+                    reason,
+                    provider_data,
+                });
                 next.active.session.input_closed = true;
                 self.media.close();
-                if next.active.session.disposition.is_none() {
-                    return self.suspend(WaitReason::Recovery).await;
-                }
             }
             SessionEventBody::Operation {
                 origin,
@@ -89,7 +160,23 @@ impl Engine {
             }
             SessionEventBody::Delta { .. } => unreachable!(),
         }
-        self.commit_session(next, event.sequence, entries).await
+        let unfinished_close = next.active.session.closure.is_some()
+            && (next
+                .active
+                .operations
+                .values()
+                .any(|op| !op.state.terminal())
+                || !next.active.commands.is_empty()
+                || (next.active.session.generation_id.is_some()
+                    && next.active.session.response_status.is_none()));
+        self.commit_session(next, event.sequence, entries).await?;
+        if seal_user_input {
+            self.media.close();
+        }
+        if unfinished_close {
+            self.suspend(WaitReason::Recovery).await?;
+        }
+        Ok(())
     }
 }
 
@@ -107,10 +194,24 @@ impl Engine {
             .position(|c| c.id == command_id)
             .ok_or_else(|| Error::Protocol("acknowledgement has no pending command".into()))?;
         let command = next.active.commands.remove(index);
-        if let CommandIntent::ToolResult { operation_id, .. }
-        | CommandIntent::DelegationResult { operation_id, .. } = &command.intent
+        if let CommandIntent::Append {
+            operation_id: Some(operation_id),
+            ..
+        } = &command.intent
         {
             next.active.operations.remove(operation_id);
+        }
+        if let CommandIntent::Append {
+            context_revision, ..
+        }
+        | CommandIntent::ReplaceContext { context_revision } = &command.intent
+        {
+            if *context_revision != next.active.session.acknowledged_context_revision + 1 {
+                return Err(Error::Protocol(
+                    "out-of-order projection acknowledgement".into(),
+                ));
+            }
+            next.active.session.acknowledged_context_revision = *context_revision;
         }
         if let CommandIntent::UpdateProfile { revision, profile } = command.intent {
             let mut request = self.model_request(next.history.len());
@@ -140,7 +241,7 @@ impl Engine {
         body: SessionEventBody,
     ) -> Result<()> {
         let SessionEventBody::Output {
-            turn_id,
+            generation_id,
             item_id,
             caller_id,
             output,
@@ -149,8 +250,14 @@ impl Engine {
             unreachable!("output event")
         };
 
-        if next.active.session.turn_id.as_ref() != Some(&turn_id) {
-            return Err(Error::Protocol("output belongs to another turn".into()));
+        if generation_id.is_some()
+            && (next.active.session.generation_id != generation_id
+                || next.active.session.response_status.is_some()
+                || !next.active.session.generation_started)
+        {
+            return Err(Error::Protocol(
+                "output belongs to another generation".into(),
+            ));
         }
         zhir_core::message::validate_output(std::slice::from_ref(&output))?;
         let call_id = match &output {
@@ -164,10 +271,11 @@ impl Engine {
                 "output requires nonempty item and caller identities".into(),
             ));
         }
-        let output_turn = turn_id.clone();
+        let output_generation = generation_id.clone();
         let mut origin = CallRef {
             session_id: next.active.session.id.clone(),
-            turn_id,
+            item_id: item_id.clone(),
+            generation_id,
             caller_id,
             call_id,
         };
@@ -185,7 +293,7 @@ impl Engine {
         let entry = HistoryEntry {
             id: serde_json::json!([
                 next.active.session.id,
-                output_turn,
+                output_generation,
                 origin.caller_id,
                 item_id
             ])
@@ -211,8 +319,19 @@ impl Engine {
                 )
                 .await;
         }
+        let late_work = next.active.session.closing
+            && matches!(
+                output,
+                Output::Delegation { .. }
+                    | Output::RuntimeToolCall { .. }
+                    | Output::ProviderToolCall { .. }
+            );
         self.record_output(&mut next, output, origin)?;
-        self.commit_session(next, sequence, vec![entry]).await
+        self.commit_session(next, sequence, vec![entry]).await?;
+        if late_work {
+            self.suspend(WaitReason::Recovery).await?;
+        }
+        Ok(())
     }
     fn record_output(&self, next: &mut Checkpoint, output: Output, origin: CallRef) -> Result<()> {
         if let Output::Delegation { .. } = &output {
@@ -307,14 +426,15 @@ impl Engine {
 
         Ok(())
     }
-    fn complete_turn(
+    fn complete_response(
         &mut self,
         next: &mut Checkpoint,
         body: SessionEventBody,
     ) -> Result<HistoryEntry> {
-        let SessionEventBody::TurnFinished {
-            turn_id,
-            disposition,
+        let SessionEventBody::ResponseFinished {
+            generation_id,
+            input_position,
+            response_status,
             usage,
             model_id,
             response_id,
@@ -323,20 +443,29 @@ impl Engine {
             effective,
         } = body
         else {
-            unreachable!("turn completion")
+            unreachable!("response completion")
         };
 
-        if next.active.session.turn_id.as_ref() != Some(&turn_id)
-            || next.active.session.disposition.is_some()
+        if next.active.session.generation_id.as_ref() != Some(&generation_id)
+            || next.active.session.response_status.is_some()
+            || !next.active.session.generation_started
         {
             return Err(Error::Protocol(
-                "duplicate or foreign turn completion".into(),
+                "duplicate or foreign response completion".into(),
             ));
         }
+        if input_position < next.active.session.generated_input_position
+            || input_position > next.active.session.input_position
+        {
+            return Err(Error::Protocol(
+                "response input position is outside its admitted range".into(),
+            ));
+        }
+        next.active.session.generated_input_position = input_position;
         next.active.operations.retain(|_, op| {
             !matches!(op.owner, OperationOwner::Provider { .. }) || !op.state.terminal()
         });
-        next.active.session.disposition = Some(disposition.clone());
+        next.active.session.response_status = Some(response_status.clone());
         next.active.session.effective.values = next
             .active
             .session
@@ -351,7 +480,7 @@ impl Engine {
             .values
             .extend(effective.values);
         next.metrics.usage.add(&usage);
-        next.metrics.model_turns += 1;
+        *next.metrics.observed_responses.get_or_insert(0) += 1;
         let mut data = provider_data;
         if let Some(object) = data.as_object_mut() {
             object.insert("completion".into(), serde_json::json!({"model_id":model_id,"response_id":response_id,"finish_reason":finish_reason}));
@@ -359,10 +488,11 @@ impl Engine {
             data = serde_json::json!({"completion":{"model_id":model_id,"response_id":response_id,"finish_reason":finish_reason},"native":data});
         }
         let entry = HistoryEntry {
-            id: format!("{}:{turn_id}:finished", next.active.session.id),
+            id: format!("{}:{generation_id}:finished", next.active.session.id),
             origin: Some(CallRef {
                 session_id: next.active.session.id.clone(),
-                turn_id,
+                item_id: format!("{generation_id}:finished"),
+                generation_id: Some(generation_id),
                 caller_id: "model".into(),
                 call_id: "completion".into(),
             }),
@@ -371,7 +501,23 @@ impl Engine {
                 provider_data: data,
             },
         };
-        self.needs_turn |= disposition != TurnDisposition::Finished;
+        next.active.session.needs_generation = matches!(
+            response_status,
+            ResponseStatus::Continuation | ResponseStatus::RequiresResults
+        ) || next.active.session.input_position
+            > next.active.session.generated_input_position;
+        match response_status {
+            ResponseStatus::Failed | ResponseStatus::Incomplete => {
+                next.state = State::Failed {
+                    error: Failure::new(
+                        "generation_failed",
+                        "model response did not finish successfully",
+                    ),
+                }
+            }
+            ResponseStatus::Cancelled => next.state = State::Cancelled,
+            _ => (),
+        }
         if next.options.limits.max_total_tokens.is_some_and(|limit| {
             next.metrics
                 .usage
@@ -450,7 +596,16 @@ impl Engine {
         let history = if entries.is_empty() {
             HistoryDelta::Unchanged
         } else {
+            let start = next.history.len();
             next.history = next.history.append(entries.clone())?;
+            if self
+                .session_capabilities()
+                .supports(Capability::ExplicitGeneration)
+            {
+                for index in start..next.history.len() {
+                    Self::append_command(&mut next, index, AppendSource::Accepted, None);
+                }
+            }
             HistoryDelta::Append(entries)
         };
         self.commit(

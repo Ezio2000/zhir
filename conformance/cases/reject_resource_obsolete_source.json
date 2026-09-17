@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "name": "reject_resource_obsolete_source",
   "kind": "value",
   "schema": "resource",

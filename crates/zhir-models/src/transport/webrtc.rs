@@ -20,7 +20,7 @@ use webrtc::{
 };
 use zhir_core::{BoxFuture, Result, error::Error};
 
-pub(crate) struct AudioPacket {
+pub struct AudioPacket {
     pub payload: Vec<u8>,
     pub timestamp: u32,
     pub sequence: u16,
@@ -38,10 +38,10 @@ pub(crate) struct PeerConfig {
 
 #[path = "webrtc/connection.rs"]
 mod connection;
-pub(crate) use connection::Connection;
+pub use connection::Connection;
 #[path = "rtp.rs"]
 mod rtp;
-pub(crate) use rtp::RtpTimeline;
+pub use rtp::RtpTimeline;
 pub(crate) struct Peer {
     pc: Arc<RTCPeerConnection>,
     channel: Arc<RTCDataChannel>,

@@ -67,11 +67,11 @@ async fn independent_conversation_and_durable_delegation_share_one_execution() {
         Capability::AsyncResults,
     ]);
     let model = SessionModel::new(caps, |_, mut peer| async move {
-        let start = peer.commands.recv().await.unwrap();
-        let SessionCommandBody::StartTurn { turn_id, .. } = &start.body else {
+        let start = peer.command().await?.unwrap();
+        let SessionCommandBody::Generate { generation_id, .. } = &start.body else {
             panic!()
         };
-        let turn = turn_id.clone();
+        let turn = generation_id.clone();
         peer.acknowledge(&start, None).await?;
         for (id, message) in [
             ("u1", Message::user("first")),
@@ -87,7 +87,7 @@ async fn independent_conversation_and_durable_delegation_share_one_execution() {
             .await?;
         }
         peer.event(SessionEventBody::Output {
-            turn_id: turn.clone(),
+            generation_id: Some(turn.clone()),
             item_id: "delegation".into(),
             caller_id: "live".into(),
             output: Output::Delegation {
@@ -98,18 +98,18 @@ async fn independent_conversation_and_durable_delegation_share_one_execution() {
             },
         })
         .await?;
-        let context = peer.commands.recv().await.unwrap();
+        let context = peer.command().await?.unwrap();
         assert!(
             matches!(&context.body,SessionCommandBody::DelegationContext {origin,content,..} if origin.call_id=="d1" && content==&vec![Content::text("working")])
         );
         peer.acknowledge(&context, None).await?;
-        let result = peer.commands.recv().await.unwrap();
+        let result = peer.command().await?.unwrap();
         assert!(
-            matches!(&result.body,SessionCommandBody::DelegationResult {origin,outcome,..} if origin.call_id=="d1" && outcome.content()==[Content::text("done")])
+            matches!(&result.body,SessionCommandBody::Append {entry: HistoryEntry { message: Message::DelegationResult {id,outcome}, .. },..} if id=="d1" && outcome.content()==[Content::text("done")])
         );
         peer.acknowledge(&result, None).await?;
-        peer.finished(turn, TurnDisposition::Finished).await?;
-        Ok(())
+        peer.finished(turn, ResponseStatus::Completed).await?;
+        peer.close().await
     });
     let store = Arc::new(RecordingStore::new(Arc::new(
         zhir_storage::MemoryRunStore::new(),
@@ -135,7 +135,7 @@ async fn independent_conversation_and_durable_delegation_share_one_execution() {
         "{:?}",
         checkpoint.state
     );
-    assert_eq!(checkpoint.metrics.model_turns, 1);
+    assert_eq!(checkpoint.metrics.generation_requests, 1);
     assert_eq!(checkpoint.metrics.runtime_tool_calls, 0);
     let messages: Vec<_> = checkpoint
         .history
@@ -180,19 +180,19 @@ async fn bytes(store: &dyn ResourceStore, reference: ResourceRef) -> Vec<u8> {
 async fn completed_streams_archive_without_exhausting_active_capacity() {
     let mut caps = zhir_testing::model_capabilities();
     caps.features.insert(Capability::Duplex);
-    let model = SessionModel::new(caps, |_, mut peer| async move {
-        let start = peer.commands.recv().await.unwrap();
-        let SessionCommandBody::StartTurn { turn_id, .. } = &start.body else {
+    let model = SessionModel::new(caps, |open, mut peer| async move {
+        let start = peer.command().await?.unwrap();
+        let SessionCommandBody::Generate { generation_id, .. } = &start.body else {
             panic!()
         };
-        let turn = turn_id.clone();
+        let turn = generation_id.clone();
         peer.acknowledge(&start, None).await?;
         for stream in 0..80 {
             for sequence in 0..2 {
                 peer.media_output
                     .send(MediaChunk {
                         stream_id: format!("speech-{stream}"),
-                        turn_id: turn.clone(),
+                        session_id: open.session_id.clone(),
                         epoch: 0,
                         sequence,
                         timestamp_us: sequence * 20000,
@@ -203,12 +203,8 @@ async fn completed_streams_archive_without_exhausting_active_capacity() {
                     .await?;
             }
         }
-        peer.finished(turn, TurnDisposition::Finished).await?;
-        if let Some(close) = peer.commands.recv().await {
-            assert!(matches!(close.body, SessionCommandBody::Close));
-            peer.acknowledge(&close, None).await?;
-        }
-        Ok(())
+        peer.finished(turn, ResponseStatus::Completed).await?;
+        peer.close().await
     });
     let resources = Arc::new(zhir_storage::MemoryResourceStore::new());
     let runtime = Runtime::builder(Arc::new(model))
@@ -261,7 +257,8 @@ async fn completed_streams_archive_without_exhausting_active_capacity() {
 fn native_delegation_history_rejects_orphans_and_duplicate_completion() {
     let origin = CallRef {
         session_id: "s".into(),
-        turn_id: "t".into(),
+        item_id: "d".into(),
+        generation_id: Some("t".into()),
         caller_id: "c".into(),
         call_id: "d".into(),
     };
@@ -346,7 +343,8 @@ async fn delegation_recovery_attaches_without_repeating_start() {
     }
     let origin = CallRef {
         session_id: "fixture-session".into(),
-        turn_id: "t".into(),
+        item_id: "d".into(),
+        generation_id: Some("t".into()),
         caller_id: "live".into(),
         call_id: "d".into(),
     };
@@ -380,7 +378,8 @@ async fn delegation_recovery_attaches_without_repeating_start() {
             wait: None,
         },
     );
-    checkpoint.active.session.turn_id = Some("t".into());
+    checkpoint.active.session.generation_id = Some("t".into());
+    checkpoint.active.session.generation_started = true;
     checkpoint.active.session.recovery = Some(RecoveryRef {
         adapter: "session-fixture".into(),
         data: serde_json::Value::Null,
@@ -403,14 +402,20 @@ async fn delegation_recovery_attaches_without_repeating_start() {
     ]);
     let model = SessionModel::new(caps, |open, mut peer| async move {
         assert!(open.recovery.is_some());
-        let result = peer.commands.recv().await.unwrap();
+        let result = peer.command().await?.unwrap();
         assert!(matches!(
             result.body,
-            SessionCommandBody::DelegationResult { .. }
+            SessionCommandBody::Append {
+                entry: HistoryEntry {
+                    message: Message::DelegationResult { .. },
+                    ..
+                },
+                ..
+            }
         ));
         peer.acknowledge(&result, None).await?;
-        peer.finished("t".into(), TurnDisposition::Finished).await?;
-        Ok(())
+        peer.finished("t".into(), ResponseStatus::Completed).await?;
+        peer.close().await
     });
     let runtime = Runtime::builder(Arc::new(model))
         .delegation(Arc::new(Recover))

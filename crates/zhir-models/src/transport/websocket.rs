@@ -15,7 +15,7 @@ use zhir_core::{
     error::{Error, Failure},
 };
 
-pub(crate) enum WireMessage {
+pub enum WireMessage {
     Text(String),
     Binary(Vec<u8>),
 }

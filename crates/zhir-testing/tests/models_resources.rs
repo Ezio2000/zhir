@@ -7,7 +7,7 @@ use zhir_core::{
     BoxFuture, Result,
     error::Error,
     message::{Content, Message, Output},
-    model::{ModelContext, ModelRequest, TurnOutput},
+    model::{GenerationOutput, ModelContext, ModelRequest},
     resource::*,
 };
 use zhir_models::{FunctionModel, ResourceModel};
@@ -73,7 +73,7 @@ async fn invalid_replay_and_storage_failure_stop_before_model() {
         caps.input_modalities.push("image".into());
         let inner = FunctionModel::new(caps, move |_, _| {
             seen.fetch_add(1, Ordering::SeqCst);
-            async { Ok(TurnOutput::text("unexpected")) }
+            async { Ok(GenerationOutput::text("unexpected")) }
         });
         let model = ResourceModel::new(Arc::new(inner), Arc::new(BrokenStore), 1024).unwrap();
         let message = if marker {
@@ -89,7 +89,7 @@ async fn invalid_replay_and_storage_failure_stop_before_model() {
             }
         };
         let error = model
-            .turn(request(vec![message]), context())
+            .generate(request(vec![message]), context())
             .await
             .unwrap_err();
         if marker {
@@ -103,18 +103,18 @@ async fn invalid_replay_and_storage_failure_stop_before_model() {
 #[tokio::test]
 async fn output_store_cannot_change_resource_media_type() {
     let inner = FunctionModel::new(zhir_testing::model_capabilities(), |_, _| async {
-        Ok(TurnOutput {
+        Ok(GenerationOutput {
             output: vec![Output::Content {
                 content: Content::resource(reference(ResourceSource::Inline {
                     bytes: vec![1, 2, 3],
                 })),
             }],
-            ..TurnOutput::text("")
+            ..GenerationOutput::text("")
         })
     });
     let model = ResourceModel::new(Arc::new(inner), Arc::new(BrokenStore), 1024).unwrap();
     assert!(
-        matches!(model.turn(request(vec![Message::user("generate")]),context()).await,Err(Error::Protocol(message)) if message.contains("media type"))
+        matches!(model.generate(request(vec![Message::user("generate")]),context()).await,Err(Error::Protocol(message)) if message.contains("media type"))
     );
 }
 #[tokio::test]
@@ -137,12 +137,12 @@ async fn stored_resources_resolve_in_chunks_with_an_aggregate_input_budget() {
             assert!(
                 matches!(&request.messages[0],Message::User { content } if matches!(&content[0],Content::Resource { input } if input.resource.source==ResourceSource::Inline { bytes:vec![1,2,3] }))
             );
-            Ok(TurnOutput::text("done"))
+            Ok(GenerationOutput::text("done"))
         }
     });
     let model = ResourceModel::new(Arc::new(inner), store, 4).unwrap();
     model
-        .turn(
+        .generate(
             request(vec![Message::User {
                 content: vec![Content::resource(saved.clone())],
             }]),
@@ -152,7 +152,7 @@ async fn stored_resources_resolve_in_chunks_with_an_aggregate_input_budget() {
         .unwrap();
     assert!(
         model
-            .turn(
+            .generate(
                 request(vec![Message::User {
                     content: vec![Content::resource(saved.clone()), Content::resource(saved)]
                 }]),
@@ -168,7 +168,7 @@ async fn sealed_output_retains_identity_and_rejects_duplicate_native_payloads() 
     for duplicate in [false, true] {
         let inner =
             FunctionModel::new(zhir_testing::model_capabilities(), move |_, _| async move {
-                Ok(TurnOutput {
+                Ok(GenerationOutput {
                     output: vec![Output::Content {
                         content: Content::resource(reference(ResourceSource::Inline {
                             bytes: vec![1, 2, 3],
@@ -179,7 +179,7 @@ async fn sealed_output_retains_identity_and_rejects_duplicate_native_payloads() 
                     } else {
                         json!(null)
                     },
-                    ..TurnOutput::text("")
+                    ..GenerationOutput::text("")
                 })
             });
         let model = ResourceModel::new(
@@ -189,7 +189,7 @@ async fn sealed_output_retains_identity_and_rejects_duplicate_native_payloads() 
         )
         .unwrap();
         let result = model
-            .turn(request(vec![Message::user("generate")]), context())
+            .generate(request(vec![Message::user("generate")]), context())
             .await;
         if duplicate {
             assert!(matches!(result, Err(Error::Protocol(_))));
@@ -219,11 +219,24 @@ async fn native_input_and_async_results_resolve_resources_and_seal_operation_out
         for index in 0..2 {
             let command = peer.commands.recv().await.unwrap();
             let content = match &command.body {
-                SessionCommandBody::Input {
-                    message: Message::User { content },
+                SessionCommandBody::Append {
+                    entry:
+                        zhir_core::run::HistoryEntry {
+                            message: Message::User { content },
+                            ..
+                        },
+                    ..
                 } if index == 0 => content,
-                SessionCommandBody::ToolResult {
-                    outcome: OperationOutcome::Success { content, .. },
+                SessionCommandBody::Append {
+                    entry:
+                        zhir_core::run::HistoryEntry {
+                            message:
+                                Message::RuntimeTool {
+                                    outcome: OperationOutcome::Success { content, .. },
+                                    ..
+                                },
+                            ..
+                        },
                     ..
                 } if index == 1 => content,
                 _ => panic!("unexpected command"),
@@ -236,7 +249,8 @@ async fn native_input_and_async_results_resolve_resources_and_seal_operation_out
         peer.event(SessionEventBody::Operation {
             origin: CallRef {
                 session_id: "s".into(),
-                turn_id: "t".into(),
+                item_id: "job".into(),
+                generation_id: Some("t".into()),
                 caller_id: "model".into(),
                 call_id: "job".into(),
             },
@@ -257,6 +271,10 @@ async fn native_input_and_async_results_resolve_resources_and_seal_operation_out
     let model = ResourceModel::new(Arc::new(inner), store.clone(), 3).unwrap();
     let mut session = model
         .open_session(SessionOpen {
+            context_revision: 0,
+            input_position: 0,
+            profile_revision: 0,
+            mode: zhir_core::run::RunMode::Interactive,
             session_id: "s".into(),
             after_sequence: None,
             output_epoch: 0,
@@ -271,9 +289,16 @@ async fn native_input_and_async_results_resolve_resources_and_seal_operation_out
         .input
         .send(SessionCommand {
             id: "input".into(),
-            body: SessionCommandBody::Input {
-                message: Message::User {
-                    content: vec![Content::resource(saved.clone())],
+            body: SessionCommandBody::Append {
+                context_revision: 1,
+                input_position: 1,
+                source: AppendSource::Submitted,
+                entry: zhir_core::run::HistoryEntry {
+                    id: "input".into(),
+                    origin: None,
+                    message: Message::User {
+                        content: vec![Content::resource(saved.clone())],
+                    },
                 },
             },
         })
@@ -283,22 +308,36 @@ async fn native_input_and_async_results_resolve_resources_and_seal_operation_out
         .input
         .send(SessionCommand {
             id: "result".into(),
-            body: SessionCommandBody::ToolResult {
-                operation_id: "op".into(),
-                origin: CallRef {
-                    session_id: "s".into(),
-                    turn_id: "t".into(),
-                    caller_id: "model".into(),
-                    call_id: "local".into(),
-                },
-                outcome: OperationOutcome::Success {
-                    content: vec![Content::resource(saved)],
-                    structured: json!(null),
+            body: SessionCommandBody::Append {
+                context_revision: 2,
+                input_position: 1,
+                source: AppendSource::Submitted,
+                entry: zhir_core::run::HistoryEntry {
+                    id: "result".into(),
+                    origin: Some(CallRef {
+                        session_id: "s".into(),
+                        item_id: "local".into(),
+                        generation_id: Some("t".into()),
+                        caller_id: "model".into(),
+                        call_id: "local".into(),
+                    }),
+                    message: Message::RuntimeTool {
+                        name: "tool".into(),
+                        call_id: "local".into(),
+                        outcome: OperationOutcome::Success {
+                            content: vec![Content::resource(saved)],
+                            structured: json!(null),
+                        },
+                    },
                 },
             },
         })
         .await
         .unwrap();
+    assert!(matches!(
+        session.output.receive().await.unwrap().unwrap().body,
+        SessionEventBody::Ready { .. }
+    ));
     for _ in 0..2 {
         assert!(matches!(
             session.output.receive().await.unwrap().unwrap().body,

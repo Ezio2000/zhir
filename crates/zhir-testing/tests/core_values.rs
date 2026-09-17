@@ -17,7 +17,8 @@ fn entry(id: impl Into<String>, message: Message) -> HistoryEntry {
 fn origin(index: usize) -> CallRef {
     CallRef {
         session_id: "session".into(),
-        turn_id: "turn".into(),
+        item_id: format!("call-{index}"),
+        generation_id: Some("turn".into()),
         caller_id: "caller".into(),
         call_id: format!("call-{index}"),
     }
@@ -81,7 +82,7 @@ fn wire_rejects_version_drift_unknown_fields_and_corrupt_history() {
     let checkpoint = zhir_testing::checkpoint(vec![Message::user("hello")]);
     let bytes = wire::encode_checkpoint(&checkpoint).unwrap();
     let original: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    for version in [0, 1, 2, 4] {
+    for version in [0, 1, 2, 3, 5] {
         let mut changed = original.clone();
         changed["version"] = json!(version);
         assert!(wire::decode_checkpoint(&serde_json::to_vec(&changed).unwrap()).is_err());
@@ -96,7 +97,7 @@ fn wire_rejects_version_drift_unknown_fields_and_corrupt_history() {
 #[test]
 fn limits_require_explicit_budgets_and_preserve_caller_values() {
     let mut limits = zhir_kernel::defaults::limits();
-    limits.max_model_turns = 3;
+    limits.max_generation_requests = 3;
     limits.max_operation_concurrency = 2;
     limits.commit_timeout_ms = 17;
     let encoded = serde_json::to_value(&limits).unwrap();
@@ -105,7 +106,7 @@ fn limits_require_explicit_budgets_and_preserve_caller_values() {
         limits
     );
     for field in [
-        "max_model_turns",
+        "max_generation_requests",
         "max_runtime_tool_calls",
         "max_inflight_operations",
         "max_operation_concurrency",

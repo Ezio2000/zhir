@@ -14,11 +14,20 @@ impl Checkpoint {
         }
         self.state.validate()?;
         self.history.validate()?;
-        if self.active.session.turn_start > self.history.len() {
+        if self.active.session.response_start > self.history.len()
+            || self.active.session.run_start > self.history.len()
+        {
             return Err(Error::Invalid("turn start exceeds history".into()));
         }
         if self.active.session.id.is_empty() {
             return Err(Error::Invalid("empty session identity".into()));
+        }
+        if self.active.session.acknowledged_context_revision > self.active.session.context_revision
+            || self.active.session.generated_input_position > self.active.session.input_position
+        {
+            return Err(Error::Invalid(
+                "session acknowledgement exceeds admitted context".into(),
+            ));
         }
         let mut ids = std::collections::HashSet::new();
         for command in &self.active.commands {
@@ -34,19 +43,19 @@ impl Checkpoint {
         }
         for command in &self.active.commands {
             match &command.intent {
-                CommandIntent::StartTurn {
-                    history_count,
-                    turn_id,
+                CommandIntent::Generate {
+                    context_revision,
+                    generation_id,
                     ..
-                } if *history_count > self.history.len()
-                    || self.active.session.turn_id.as_ref() != Some(turn_id) =>
+                } if *context_revision > self.active.session.context_revision
+                    || self.active.session.generation_id.as_ref() != Some(generation_id) =>
                 {
                     return Err(Error::Invalid("invalid turn command".into()));
                 }
                 CommandIntent::InterruptOutput {
-                    turn_id,
+                    generation_id,
                     output_epoch,
-                } if self.active.session.turn_id.as_ref() != Some(turn_id)
+                } if self.active.session.generation_id.as_ref() != Some(generation_id)
                     || *output_epoch == 0
                     || *output_epoch > self.active.session.output_epoch =>
                 {
@@ -54,20 +63,13 @@ impl Checkpoint {
                         "invalid interrupt output epoch or turn".into(),
                     ));
                 }
-                CommandIntent::Input { entry }
-                    if self.history.get(*entry).is_none_or(|e| {
-                        !matches!(e.message, Message::User { .. } | Message::External { .. })
-                    }) =>
-                {
+                CommandIntent::Append { entry, .. } if self.history.get(*entry).is_none() => {
                     return Err(Error::Invalid("invalid input command".into()));
                 }
-                CommandIntent::ToolResult {
-                    operation_id,
+                CommandIntent::Append {
+                    operation_id: Some(operation_id),
                     entry,
-                }
-                | CommandIntent::DelegationResult {
-                    operation_id,
-                    entry,
+                    ..
                 } if self
                     .active
                     .operations
@@ -100,31 +102,12 @@ impl Checkpoint {
                 _ => (),
             }
         }
-        for command in &self.active.commands {
-            let invalid = match &command.intent {
-                CommandIntent::DelegationResult { operation_id, .. } => self
-                    .active
-                    .operations
-                    .get(operation_id)
-                    .is_none_or(|op| op.owner != OperationOwner::Delegation),
-                CommandIntent::ToolResult { operation_id, .. } => self
-                    .active
-                    .operations
-                    .get(operation_id)
-                    .is_none_or(|op| !matches!(op.owner, OperationOwner::RuntimeTool { .. })),
-                _ => false,
-            };
-            if invalid {
-                return Err(Error::Invalid("result command owner mismatch".into()));
-            }
-        }
         if let Some(archive) = &self.active.session.media_archive {
             archive.validate()?;
         }
         self.validate_operations()?;
         if matches!(self.state, State::Completed { .. })
-            && (!self.active.commands.is_empty()
-                || self.active.session.disposition != Some(crate::model::TurnDisposition::Finished))
+            && (!self.active.commands.is_empty() || self.active.session.closure.is_none())
         {
             return Err(Error::Invalid(
                 "completed run has pending session work".into(),

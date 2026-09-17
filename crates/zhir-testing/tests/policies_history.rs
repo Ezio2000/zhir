@@ -10,7 +10,7 @@ use zhir_policies::history::HistoryWindow;
 
 fn checkpoint(messages: Vec<Message>) -> Arc<Checkpoint> {
     let mut checkpoint = zhir_testing::checkpoint(messages);
-    checkpoint.active.session.disposition = Some(zhir_core::model::TurnDisposition::Finished);
+    checkpoint.active.session.response_status = Some(zhir_core::model::ResponseStatus::Completed);
     Arc::new(checkpoint)
 }
 

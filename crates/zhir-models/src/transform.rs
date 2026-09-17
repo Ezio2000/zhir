@@ -49,9 +49,9 @@ impl TransformModel {
     }
 }
 struct Input {
-    opening: std::sync::Mutex<Option<(ModelRequest, ModelRequest)>>,
     inner: Arc<dyn SessionSender>,
     prepare: Arc<Prepare>,
+    config: tokio::sync::Mutex<ModelRequest>,
     context: ModelContext,
     transforms: Vec<Arc<MapCommand>>,
 }
@@ -64,25 +64,47 @@ impl SessionSender for Input {
     }
     fn send(&self, mut command: SessionCommand) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
-            if let SessionCommandBody::StartTurn { request, .. } = &mut command.body {
-                self.context.cancellation.check()?;
-                let opening = self.opening.lock().expect("prepared opening").take();
-                **request = if let Some((original, prepared)) =
-                    opening.filter(|(original, _)| original == request.as_ref())
-                {
-                    let _ = original;
-                    prepared
-                } else {
-                    (self.prepare)(*request.clone(), self.context.clone()).await?
-                };
-                self.context.cancellation.check()?;
+            let mut current_config = self.config.lock().await;
+            if let SessionCommandBody::ReplaceContext {
+                entries,
+                context_revision,
+            } = &mut command.body
+            {
+                let mut request = current_config.clone();
+                request.messages = conversation(entries.clone());
+                let prepared = (self.prepare)(request, self.context.clone()).await?;
+                let mut config = prepared.clone();
+                config.messages = current_config.messages.clone();
+                if config != *current_config {
+                    return Err(zhir_core::error::Error::Invalid(
+                        "context transform changed session configuration".into(),
+                    ));
+                }
+                *entries = prepared
+                    .messages
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, message)| zhir_core::run::HistoryEntry {
+                        id: format!("projection:{context_revision}:{index}"),
+                        origin: None,
+                        message,
+                    })
+                    .collect();
             }
             for transform in &self.transforms {
                 self.context.cancellation.check()?;
                 command = transform(command, self.context.clone()).await?;
             }
             self.context.cancellation.check()?;
-            self.inner.send(command).await
+            let profile = match &command.body {
+                SessionCommandBody::UpdateProfile { profile, .. } => Some(profile.clone()),
+                _ => None,
+            };
+            self.inner.send(command).await?;
+            if let Some(profile) = profile {
+                current_config.profile = profile;
+            }
+            Ok(())
         })
     }
 }
@@ -115,15 +137,15 @@ impl Model for TransformModel {
         Box::pin(async move {
             let context = open.context.clone();
             context.cancellation.check()?;
-            let original = open.request.clone();
             open.request = (self.prepare)(open.request, context.clone()).await?;
             context.cancellation.check()?;
-            let prepared = open.request.clone();
+            let mut config = open.request.clone();
+            config.messages.clear();
             let mut session = self.inner.open_session(open).await?;
             session.input = Arc::new(Input {
-                opening: std::sync::Mutex::new(Some((original, prepared))),
                 inner: session.input,
                 prepare: self.prepare.clone(),
+                config: tokio::sync::Mutex::new(config),
                 transforms: self.commands.clone(),
                 context: context.clone(),
             });

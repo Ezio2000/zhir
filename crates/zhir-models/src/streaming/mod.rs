@@ -10,5 +10,3 @@ mod http;
     feature = "anthropic"
 ))]
 pub(crate) use http::*;
-#[cfg(feature = "minimax")]
-pub(crate) mod minimax_tts;

@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use tokio::{net::TcpListener, task::JoinHandle};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Fault {
     None,
     Disconnect,
@@ -37,6 +37,20 @@ pub async fn serve(fault: Fault) -> (String, JoinHandle<Vec<String>>) {
                 "task_continue" => {
                     inputs += 1;
                     if inputs == 1 {
+                        if matches!(
+                            fault,
+                            Fault::BadAudio | Fault::OddAudio | Fault::OversizedAudio
+                        ) {
+                            // Task seals automatically. Receive that write before injecting
+                            // malformed audio and closing, so this tests decoding failure,
+                            // not a race between the seal write and a disconnected socket.
+                            let Message::Text(seal) = socket.next().await.unwrap().unwrap() else {
+                                panic!("expected Task input seal");
+                            };
+                            let seal: Value = serde_json::from_str(&seal).unwrap();
+                            assert_eq!(seal["event"], "task_finish");
+                            commands.push("task_finish".into());
+                        }
                         let mut replies = vec![json!({"event":"sentence_start"})];
                         replies.extend(match fault {
                             Fault::Disconnect => break,

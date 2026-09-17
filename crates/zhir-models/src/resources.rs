@@ -44,19 +44,27 @@ impl ResourceModel {
             async move {
                 let mut budget = max_input_bytes;
                 match &mut command.body {
-                    SessionCommandBody::Input { message } => {
-                        resolve_message(message, store.as_ref(), &context.cancellation, &mut budget)
-                            .await?
+                    SessionCommandBody::Append { entry, .. } => {
+                        resolve_message(
+                            &mut entry.message,
+                            store.as_ref(),
+                            &context.cancellation,
+                            &mut budget,
+                        )
+                        .await?
                     }
-                    SessionCommandBody::DelegationContext { content, .. }
-                    | SessionCommandBody::DelegationResult {
-                        outcome: zhir_core::operation::OperationOutcome::Success { content, .. },
-                        ..
+                    SessionCommandBody::ReplaceContext { entries, .. } => {
+                        for entry in entries {
+                            resolve_message(
+                                &mut entry.message,
+                                store.as_ref(),
+                                &context.cancellation,
+                                &mut budget,
+                            )
+                            .await?;
+                        }
                     }
-                    | SessionCommandBody::ToolResult {
-                        outcome: zhir_core::operation::OperationOutcome::Success { content, .. },
-                        ..
-                    } => {
+                    SessionCommandBody::DelegationContext { content, .. } => {
                         for content in content {
                             resolve_content(
                                 content,
@@ -162,7 +170,7 @@ impl SessionReceiver for SealedOutput {
                         save_content(content, self.store.as_ref(), &self.cancellation).await?;
                     }
                 }
-                SessionEventBody::TurnFinished { provider_data, .. } => {
+                SessionEventBody::ResponseFinished { provider_data, .. } => {
                     if contains_sealed_payload(provider_data, &self.payloads) {
                         return Err(Error::Protocol("inline resource remains in native turn data; declare its replay binding".into()));
                     }
