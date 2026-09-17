@@ -12,7 +12,8 @@ use serde_json::Value;
 #[serde(deny_unknown_fields)]
 pub struct CallRef {
     pub session_id: String,
-    pub turn_id: String,
+    pub item_id: String,
+    pub generation_id: Option<String>,
     pub caller_id: String,
     pub call_id: String,
 }
@@ -72,7 +73,12 @@ impl OperationRecord {
     pub fn validate(&self) -> Result<()> {
         if self.id.is_empty()
             || self.origin.session_id.is_empty()
-            || self.origin.turn_id.is_empty()
+            || self.origin.item_id.is_empty()
+            || self
+                .origin
+                .generation_id
+                .as_ref()
+                .is_some_and(String::is_empty)
             || self.origin.caller_id.is_empty()
             || self.origin.call_id.is_empty()
         {

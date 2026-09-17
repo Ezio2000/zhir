@@ -75,7 +75,13 @@ impl Commit {
             if next.active.session.id != previous.active.session.id
                 || next.active.session.output_epoch < previous.active.session.output_epoch
                 || next.active.session.profile_revision < previous.active.session.profile_revision
-                || next.metrics.model_turns < previous.metrics.model_turns
+                || next.active.session.context_revision < previous.active.session.context_revision
+                || next.active.session.acknowledged_context_revision
+                    < previous.active.session.acknowledged_context_revision
+                || next.active.session.input_position < previous.active.session.input_position
+                || next.active.session.generated_input_position
+                    < previous.active.session.generated_input_position
+                || next.metrics.generation_requests < previous.metrics.generation_requests
                 || next.metrics.runtime_tool_calls < previous.metrics.runtime_tool_calls
             {
                 return Err(Error::Storage("non-monotonic run state".into()));

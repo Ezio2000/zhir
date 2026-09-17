@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "name": "reject_extra_profile_field",
   "kind": "value",
   "schema": "request-profile",

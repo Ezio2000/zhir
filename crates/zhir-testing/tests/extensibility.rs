@@ -16,8 +16,8 @@ use zhir::{
     error::Error,
     message::{Content, Message, Output, visible_content},
     model::{
-        CapabilitySet, DeltaSink, Model, ModelContext, ModelDelta, ModelRequest, ResponseFormat,
-        ToolChoice, TurnOutput,
+        CapabilitySet, DeltaSink, GenerationOutput, Model, ModelContext, ModelDelta, ModelRequest,
+        ResponseFormat, ToolChoice,
     },
     models::{
         HttpModel, ModelConfig, Protocol, ProtocolExtension, anthropic, openai, transport::SseEvent,
@@ -179,7 +179,7 @@ async fn public_extension_boundaries() {
             data: json!({"type":"input_image","file_id":"file-test","detail":"original"}),
         }],
     });
-    model.turn(r, context()).await.unwrap();
+    model.generate(r, context()).await.unwrap();
     let sent = wire.await.unwrap();
     assert_eq!(sent["future_option"]["strength"], "new");
     assert_eq!(sent["input"][1]["content"][0]["file_id"], "file-test");
@@ -197,7 +197,7 @@ async fn public_extension_boundaries() {
     ))
     .unwrap();
     model
-        .turn(with_tool_image(request()), context())
+        .generate(with_tool_image(request()), context())
         .await
         .unwrap();
     let sent = wire.await.unwrap();
@@ -229,7 +229,7 @@ async fn public_extension_boundaries() {
         .or_default()
         .insert("logprobs".into(), json!(true));
     r.runtime_tools = vec![spec()];
-    let response = model.turn(r, context()).await.unwrap();
+    let response = model.generate(r, context()).await.unwrap();
     let sent = wire.await.unwrap();
     assert_eq!(sent["logprobs"], true);
     let logprobs_preserved = response.provider_data.to_string().contains("logprobs");
@@ -258,7 +258,7 @@ async fn public_extension_boundaries() {
         .or_default()
         .insert("tools".into(), json!([]));
     assert!(matches!(
-        model.turn(r, context()).await,
+        model.generate(r, context()).await,
         Err(Error::Invalid(_))
     ));
     findings.push(
@@ -280,7 +280,7 @@ async fn public_extension_boundaries() {
     ctx.deltas = Some(observed.clone());
     let mut r = request();
     r.stream = true;
-    model.turn(r, ctx).await.unwrap();
+    model.generate(r, ctx).await.unwrap();
     wire.await.unwrap();
     let preserved=observed.0.lock().unwrap().iter().any(|d|matches!(d,ModelDelta::ProtocolEvent {data,..} if data["data"]["type"]=="response.future_feature.delta"));
     assert!(preserved);
@@ -324,7 +324,7 @@ async fn multimodal_tool_results_preserve_order_for_both_responses_tool_kinds() 
             "fixture",
         ))
         .unwrap();
-        model.turn(r, context()).await.unwrap();
+        model.generate(r, context()).await.unwrap();
         let sent = wire.await.unwrap();
         assert_eq!(
             sent["input"][2]["type"],
@@ -409,8 +409,8 @@ impl ProtocolExtension for Session {
         &mut self,
         _: Protocol,
         _: &Value,
-        decoded: Result<TurnOutput>,
-    ) -> Result<TurnOutput> {
+        decoded: Result<GenerationOutput>,
+    ) -> Result<GenerationOutput> {
         let mut response = decoded?;
         response.provider_data["consumer"] = json!({"tag":self.tag,"fragments":self.fragments});
         Ok(response)
@@ -461,7 +461,7 @@ async fn extension_sessions_are_isolated_during_overlapping_calls() {
             barrier: barrier.clone(),
             seen: false.into(),
         }));
-        model.turn(r, ctx)
+        model.generate(r, ctx)
     };
     let (a, b) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         tokio::join!(invoke("first"), invoke("second"))
@@ -494,10 +494,10 @@ impl ProtocolExtension for ResponseMapping {
         &mut self,
         _: Protocol,
         raw: &Value,
-        decoded: Result<TurnOutput>,
-    ) -> Result<TurnOutput> {
+        decoded: Result<GenerationOutput>,
+    ) -> Result<GenerationOutput> {
         assert!(decoded.is_err()); // New response shape, standard codec cannot decode it.
-        let mut response = TurnOutput::text(raw["answer"].as_str().unwrap());
+        let mut response = GenerationOutput::text(raw["answer"].as_str().unwrap());
         if self.invalid {
             response.output.push(Output::RuntimeToolCall {
                 call: RuntimeToolCall {
@@ -523,7 +523,7 @@ async fn response_mapping_handles_new_shapes_and_still_validates_results() {
         ))
         .unwrap()
         .with_extension(move |_| Ok(ResponseMapping { invalid }));
-        let response = model.turn(request(), context()).await;
+        let response = model.generate(request(), context()).await;
         if invalid {
             assert!(response.is_err());
         } else {
@@ -556,7 +556,7 @@ async fn extension_errors_abort_before_http_or_response_completion() {
     .unwrap()
     .with_extension(|_| Ok(RejectRequest));
     assert!(
-        matches!(model.turn(request(), context()).await, Err(Error::Invalid(s)) if s=="consumer rejected request")
+        matches!(model.generate(request(), context()).await, Err(Error::Invalid(s)) if s=="consumer rejected request")
     );
     let (url, wire) = server(
         json!("data: {\"choices\":[{\"delta\":{\"content\":\"hidden\"}}]}\n\ndata: [DONE]\n\n"),
@@ -578,7 +578,7 @@ async fn extension_errors_abort_before_http_or_response_completion() {
     let mut r = request();
     r.stream = true;
     assert!(
-        matches!(model.turn(r, ctx).await, Err(Error::Protocol(s)) if s=="consumer rejected event")
+        matches!(model.generate(r, ctx).await, Err(Error::Protocol(s)) if s=="consumer rejected event")
     );
     assert!(observed.0.lock().unwrap().is_empty());
     wire.await.unwrap();
@@ -611,14 +611,14 @@ async fn response_metadata_is_retained_but_only_assistant_output_is_replayed() {
             Protocol::Messages => anthropic::messages::model(config),
         }
         .unwrap();
-        let response = model.turn(request(), context()).await.unwrap();
+        let response = model.generate(request(), context()).await.unwrap();
         assert_eq!(response.provider_data["response"], raw);
         let mut r = request();
         r.messages.push(Message::Assistant {
             output: response.output,
             provider_data: response.provider_data,
         });
-        model.turn(r, context()).await.unwrap();
+        model.generate(r, context()).await.unwrap();
         let sent = wire.await.unwrap();
         assert!(!sent[1].to_string().contains("future_metadata"));
         assert!(!sent[1].to_string().contains("logprobs"));
@@ -714,7 +714,7 @@ fn live_request(protocol: Protocol, effort: &str) -> ModelRequest {
     }
     r
 }
-fn output(response: &TurnOutput) -> String {
+fn output(response: &GenerationOutput) -> String {
     visible_content(&response.output)
         .iter()
         .filter_map(Content::as_text)
@@ -734,7 +734,7 @@ async fn invoke_model_check(model: HttpModel, r: ModelRequest, expected: &str) -
     let deltas = Arc::new(Deltas::default());
     let mut ctx = context();
     ctx.deltas = Some(deltas.clone());
-    match model.turn(r, ctx).await {
+    match model.generate(r, ctx).await {
         Ok(response) => {
             let text = output(&response);
             json!({"passed":text.trim()==expected,"text":text,"model":response.model_id,"response_id":response.response_id,"usage":response.usage,"reasoning_deltas":deltas.0.lock().unwrap().iter().filter(|d|matches!(d,ModelDelta::Reasoning {..})).count(),"elapsed_ms":started.elapsed().as_millis()})
@@ -865,7 +865,7 @@ async fn live_consumer_capability_audit() {
     });
     r.messages = vec![Message::user("Return JSON with code SCHEMA_OK.")];
     let response = live_model(Protocol::Responses, &key, false)
-        .turn(r, context())
+        .generate(r, context())
         .await;
     rows.push(match response {Ok(response)=>json!({"scenario":"responses_json_schema","passed":serde_json::from_str::<Value>(&output(&response)).ok()==Some(json!({"code":"SCHEMA_OK"})),"usage":response.usage}),Err(e)=>json!({"scenario":"responses_json_schema","passed":false,"error":e.to_string()})});
     let mut r = live_request(Protocol::Chat, "none");
@@ -894,7 +894,7 @@ async fn live_consumer_capability_audit() {
     r.messages = vec![Message::user("Call observe with code STRICT_OK.")];
     let response = live_model(Protocol::Chat, &key, true)
         .with_extension(|_| Ok(StrictDeclarations))
-        .turn(r, context())
+        .generate(r, context())
         .await;
     rows.push(match response {
         Ok(response) => json!({"scenario":"strict_tool_via_user_extension","passed":response.output.iter().any(|o| matches!(o,Output::RuntimeToolCall{call} if call.name=="observe" && call.input==RuntimeToolInput::Structured(json!({"code":"STRICT_OK"})))),"response_id":response.response_id,"usage":response.usage}),
@@ -968,7 +968,7 @@ impl Model for ConsumerModel {
                     })
                     .await?;
                 }
-                let mut response = TurnOutput::text("custom model completed");
+                let mut response = GenerationOutput::text("custom model completed");
                 response.output.push(Output::Content {
                     content: Content::Opaque {
                         provider: "consumer".into(),

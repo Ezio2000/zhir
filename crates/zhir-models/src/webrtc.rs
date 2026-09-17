@@ -1,9 +1,7 @@
 //! Session orchestration for a text DataChannel and an independent RTP audio queue.
 //! Provider phases, signaling, media interpretation and connection policy are injected.
-use crate::{
-    native::Buffered,
-    transport::webrtc::{AudioPacket, Connection},
-};
+use crate::native::Buffered;
+pub use crate::transport::webrtc::{AudioPacket, Connection, RtpTimeline};
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
 use tokio::time::Instant;
@@ -18,15 +16,15 @@ use zhir_core::{
 #[path = "webrtc/driver.rs"]
 mod driver;
 
-/// Built-in WebRTC models share ports and I/O orchestration. Provider factories
-/// select the protocol; custom public model implementations use core's Model trait.
+/// WebRTC session driver. Adapters supply signaling, protocol and media semantics;
+/// the driver owns I/O, bounded queues, reservations and terminal delivery.
 #[derive(Clone)]
 pub struct WebRtcModel {
     adapter: Arc<dyn WebRtcAdapter>,
     capabilities: CapabilitySet,
 }
 impl WebRtcModel {
-    pub(crate) fn new(adapter: Arc<dyn WebRtcAdapter>) -> Self {
+    pub fn new(adapter: Arc<dyn WebRtcAdapter>) -> Self {
         Self {
             capabilities: adapter.capabilities(),
             adapter,
@@ -50,7 +48,7 @@ impl Model for WebRtcModel {
     }
 }
 
-pub(crate) trait WebRtcAdapter: Send + Sync {
+pub trait WebRtcAdapter: Send + Sync {
     fn capabilities(&self) -> CapabilitySet;
     fn negotiate(&self, request: &ModelRequest) -> Result<NegotiatedProfile>;
     fn open(&self, open: &SessionOpen) -> Result<WebRtcSession>;
@@ -62,7 +60,7 @@ pub(crate) trait WebRtcAdapter: Send + Sync {
     ) -> BoxFuture<'a, Result<String>>;
 }
 
-pub(crate) struct WebRtcSession {
+pub struct WebRtcSession {
     pub protocol: Box<dyn WebRtcProtocol>,
     pub media: Box<dyn WebRtcMedia>,
     pub connection: Box<dyn WebRtcConnectionPolicy>,
@@ -71,7 +69,7 @@ pub(crate) struct WebRtcSession {
     /// Space retained for receipts and finalization when admitting commands.
     pub command_headroom: usize,
 }
-pub(crate) struct PeerSettings {
+pub struct PeerSettings {
     pub connection: RTCConfiguration,
     pub channel_label: &'static str,
     pub audio_codec: RTCRtpCodecParameters,
@@ -79,10 +77,9 @@ pub(crate) struct PeerSettings {
     pub audio_input: bool,
 }
 
-pub(crate) trait WebRtcProtocol: Send {
+pub trait WebRtcProtocol: Send {
     /// Empty for protocols that wait for a command before connecting.
     fn initial(&mut self) -> Result<Vec<Action>>;
-    fn turn(&self) -> Result<&str>;
     fn commands_allowed(&self) -> bool;
     fn input_allowed(&self) -> bool;
     /// Remote completion has been accepted; the driver must stop ingress and
@@ -97,28 +94,26 @@ pub(crate) trait WebRtcProtocol: Send {
     fn finalize(&mut self) -> Result<Vec<Action>>;
 }
 
-pub(crate) trait WebRtcMedia: Send {
-    fn input(&mut self, turn: &str, chunk: &MediaChunk) -> Result<Option<Duration>>;
-    /// Mapping must retain the ingress reservation until public consumption.
-    fn receive(
-        &mut self,
-        turn: &str,
-        packet: Buffered<AudioPacket>,
-    ) -> Result<Option<Buffered<MediaChunk>>>;
-    fn finish(&mut self, turn: &str) -> Option<MediaChunk>;
+pub trait WebRtcMedia: Send {
+    fn input(&mut self, session_id: &str, chunk: &MediaChunk) -> Result<Option<Duration>>;
+    /// Map an RTP packet into SDK media, or discard a late/duplicate packet.
+    /// The payload must not grow. The driver retains its ingress reservation
+    /// until consumption; adapters never handle queues or byte-budget permits.
+    fn receive(&mut self, session_id: &str, packet: AudioPacket) -> Result<Option<MediaChunk>>;
+    fn finish(&mut self, session_id: &str) -> Option<MediaChunk>;
 }
 
-pub(crate) struct ConnectionStatus {
+pub struct ConnectionStatus {
     pub commands_allowed: bool,
     pub input_allowed: bool,
     pub deadline: Option<Instant>,
 }
-pub(crate) trait WebRtcConnectionPolicy: Send {
+pub trait WebRtcConnectionPolicy: Send {
     /// The provider decides whether queued confirmations defer connection loss.
     fn evaluate(&self, connection: Connection, queued_events: bool) -> Result<ConnectionStatus>;
 }
 
-pub(crate) enum Action {
+pub enum Action {
     Connect {
         payload: Value,
         deadline: Instant,

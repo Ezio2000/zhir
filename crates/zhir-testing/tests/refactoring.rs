@@ -10,7 +10,7 @@ use zhir_core::operation::OperationOutcome;
 use zhir_core::{
     BoxFuture, Result,
     message::{Content, Message, Output, ProviderToolCall, ProviderToolStatus},
-    model::{Capability, SessionCommandBody, SessionEventBody, TurnDisposition, conversation},
+    model::{Capability, ResponseStatus, SessionCommandBody, SessionEventBody, conversation},
     operation::{CallRef, OperationControl, OperationEvent, OperationUpdate, ToolExecution},
     run::{HistoryEntry, State},
     tool::{Execution, InputSpec, RuntimeToolCall, RuntimeToolInput, RuntimeToolSpec},
@@ -40,11 +40,11 @@ async fn settled_provider_replay_survives_next_turn_and_checkpoint_roundtrip() {
         let model = Arc::new(SessionModel::new(caps, move |open, mut peer| {
             let outcome = expected.clone();
             async move {
-                let command = peer.commands.recv().await.unwrap();
-                let SessionCommandBody::StartTurn { turn_id, .. } = &command.body else {
+                let command = peer.command().await?.unwrap();
+                let SessionCommandBody::Generate { generation_id, .. } = &command.body else {
                     unreachable!()
                 };
-                let turn_id = turn_id.clone();
+                let generation_id = generation_id.clone();
                 peer.acknowledge(&command, None).await?;
                 let mut output =
                     ProviderOutput::new("media", "video", "job", ProviderToolStatus::Running)
@@ -56,7 +56,7 @@ async fn settled_provider_replay_survives_next_turn_and_checkpoint_roundtrip() {
                 call.data["custom"] = json!({"ticket":"keep-at-top-level"});
                 let original = call.data.clone();
                 peer.event(SessionEventBody::Output {
-                    turn_id: turn_id.clone(),
+                    generation_id: Some(generation_id.clone()),
                     item_id: "job-item".into(),
                     caller_id: "model".into(),
                     output,
@@ -67,7 +67,8 @@ async fn settled_provider_replay_survives_next_turn_and_checkpoint_roundtrip() {
                     peer.event(SessionEventBody::Operation {
                         origin: CallRef {
                             session_id: open.session_id.clone(),
-                            turn_id: turn_id.clone(),
+                            item_id: "job-item".into(),
+                            generation_id: Some(generation_id.clone()),
                             caller_id: "model".into(),
                             call_id: "job".into(),
                         },
@@ -80,13 +81,14 @@ async fn settled_provider_replay_survives_next_turn_and_checkpoint_roundtrip() {
                     })
                     .await?;
                 }
-                peer.finished(turn_id, TurnDisposition::Continue).await?;
-                let next = peer.commands.recv().await.unwrap();
-                let SessionCommandBody::StartTurn { turn_id, request } = &next.body else {
+                peer.finished(generation_id, ResponseStatus::Continuation)
+                    .await?;
+                let next = peer.command().await?.unwrap();
+                let SessionCommandBody::Generate { generation_id, .. } = &next.body else {
                     unreachable!()
                 };
-                let calls: Vec<_> = request
-                    .messages
+                let projection = peer.projection();
+                let calls: Vec<_> = projection
                     .iter()
                     .filter_map(|message| {
                         if let Message::Assistant { output, .. } = message {
@@ -112,8 +114,9 @@ async fn settled_provider_replay_survives_next_turn_and_checkpoint_roundtrip() {
                     vec![json!({"type":"video_job","id":"job"})]
                 );
                 peer.acknowledge(&next, None).await?;
-                peer.finished(turn_id.clone(), TurnDisposition::Finished)
-                    .await
+                peer.finished(generation_id.clone(), ResponseStatus::Completed)
+                    .await?;
+                peer.close().await
             }
         }));
         let runtime = Runtime::builder(model).build().unwrap();
@@ -153,7 +156,8 @@ fn projection_indexes_provider_updates_without_reordering_other_content_or_turns
             id: format!("{turn}:{index}"),
             origin: Some(CallRef {
                 session_id: "session".into(),
-                turn_id: turn.into(),
+                item_id: index.to_string(),
+                generation_id: Some(turn.into()),
                 caller_id: "model".into(),
                 call_id: index.to_string(),
             }),
@@ -282,14 +286,14 @@ async fn cleanup_uses_one_budget_and_bounded_concurrent_cancellation() {
     let model = Arc::new(SessionModel::new(
         zhir_testing::model_capabilities(),
         |_, mut peer| async move {
-            let command = peer.commands.recv().await.unwrap();
-            let SessionCommandBody::StartTurn { turn_id, .. } = &command.body else {
+            let command = peer.command().await?.unwrap();
+            let SessionCommandBody::Generate { generation_id, .. } = &command.body else {
                 unreachable!()
             };
             peer.acknowledge(&command, None).await?;
             for index in 0..12 {
                 peer.event(SessionEventBody::Output {
-                    turn_id: turn_id.clone(),
+                    generation_id: Some(generation_id.clone()),
                     item_id: index.to_string(),
                     caller_id: "model".into(),
                     output: Output::RuntimeToolCall {

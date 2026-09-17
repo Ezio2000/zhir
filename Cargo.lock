@@ -4272,7 +4272,7 @@ dependencies = [
 
 [[package]]
 name = "zhir"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures",
  "jsonschema",
@@ -4292,7 +4292,7 @@ dependencies = [
 
 [[package]]
 name = "zhir-builtins"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "fancy-regex 0.16.2",
  "globset",
@@ -4312,7 +4312,7 @@ dependencies = [
 
 [[package]]
 name = "zhir-conformance"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures",
  "jsonschema",
@@ -4330,7 +4330,7 @@ dependencies = [
 
 [[package]]
 name = "zhir-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "im",
  "schemars",
@@ -4342,7 +4342,7 @@ dependencies = [
 
 [[package]]
 name = "zhir-kernel"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures",
  "serde",
@@ -4354,8 +4354,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "zhir-minimax"
+version = "0.3.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
+ "zhir",
+ "zhir-core",
+ "zhir-models",
+ "zhir-policies",
+]
+
+[[package]]
 name = "zhir-models"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64",
  "bytes",
@@ -4372,8 +4385,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "zhir-openai"
+version = "0.3.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "webrtc",
+ "zhir",
+ "zhir-core",
+ "zhir-models",
+ "zhir-policies",
+]
+
+[[package]]
 name = "zhir-policies"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4382,7 +4410,7 @@ dependencies = [
 
 [[package]]
 name = "zhir-storage"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "redis",
  "serde",
@@ -4396,7 +4424,7 @@ dependencies = [
 
 [[package]]
 name = "zhir-testing"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64",
  "bytes",
@@ -4417,7 +4445,9 @@ dependencies = [
  "zhir-builtins",
  "zhir-core",
  "zhir-kernel",
+ "zhir-minimax",
  "zhir-models",
+ "zhir-openai",
  "zhir-policies",
  "zhir-storage",
  "zhir-tools",
@@ -4425,7 +4455,7 @@ dependencies = [
 
 [[package]]
 name = "zhir-tools"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "jsonschema",
  "schemars",

@@ -72,7 +72,10 @@ async fn replay_indexes_calls_without_changing_native_order_or_ownership_checks(
         cancellation: Default::default(),
         deltas: None,
     };
-    model.turn(request(items.clone()), context()).await.unwrap();
+    model
+        .generate(request(items.clone()), context())
+        .await
+        .unwrap();
     let sent = server.finish().await.unwrap();
     let body = sent[0].json().unwrap();
     assert_eq!(body["input"][1], items[0]);
@@ -85,6 +88,6 @@ async fn replay_indexes_calls_without_changing_native_order_or_ownership_checks(
         vec![json!({"$zhir_provider_calls":["c0"]})],
         vec![json!({"$zhir_provider_calls":ids,"other":true})],
     ] {
-        assert!(model.turn(request(items), context()).await.is_err());
+        assert!(model.generate(request(items), context()).await.is_err());
     }
 }

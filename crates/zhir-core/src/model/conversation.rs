@@ -7,17 +7,17 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 #[derive(Default)]
-struct Turn {
+struct Response {
     message_index: usize,
     provider_positions: BTreeMap<(String, String), usize>,
 }
 
-/// Project causal history into logical turns, retaining each provider call's
+/// Project causal history into real responses or independent items, retaining each provider call's
 /// original output position when a later item updates it. History remains in
-/// arrival order; only the request projection groups assistant output by turn.
+/// arrival order; only the context projection groups causally related assistant output.
 pub fn conversation(entries: impl IntoIterator<Item = HistoryEntry>) -> Vec<Message> {
     let mut messages = Vec::new();
-    let mut turns = BTreeMap::new();
+    let mut responses = BTreeMap::new();
     for entry in entries {
         match (entry.origin, entry.message) {
             (
@@ -27,16 +27,16 @@ pub fn conversation(entries: impl IntoIterator<Item = HistoryEntry>) -> Vec<Mess
                     provider_data,
                 },
             ) => {
-                let turn = turn(&mut turns, &mut messages, origin);
+                let response = response(&mut responses, &mut messages, origin);
                 let Message::Assistant {
                     output: accumulated,
                     provider_data: data,
-                } = &mut messages[turn.message_index]
+                } = &mut messages[response.message_index]
                 else {
-                    unreachable!("turns index assistant messages")
+                    unreachable!("responses index assistant messages")
                 };
                 for item in output {
-                    turn.merge(accumulated, item);
+                    response.merge(accumulated, item);
                 }
                 if !provider_data.is_null() {
                     *data = provider_data;
@@ -48,27 +48,28 @@ pub fn conversation(entries: impl IntoIterator<Item = HistoryEntry>) -> Vec<Mess
     messages
 }
 
-fn turn<'a>(
-    turns: &'a mut BTreeMap<(String, String), Turn>,
+fn response<'a>(
+    responses: &'a mut BTreeMap<(String, Option<String>, Option<String>), Response>,
     messages: &mut Vec<Message>,
     origin: CallRef,
-) -> &'a mut Turn {
-    turns
-        .entry((origin.session_id, origin.turn_id))
+) -> &'a mut Response {
+    let item = origin.generation_id.is_none().then_some(origin.item_id);
+    responses
+        .entry((origin.session_id, origin.generation_id, item))
         .or_insert_with(|| {
             let message_index = messages.len();
             messages.push(Message::Assistant {
                 output: Vec::new(),
                 provider_data: Value::Null,
             });
-            Turn {
+            Response {
                 message_index,
-                ..Turn::default()
+                ..Response::default()
             }
         })
 }
 
-impl Turn {
+impl Response {
     fn merge(&mut self, output: &mut Vec<Output>, item: Output) {
         if let Output::ProviderToolCall { call } = &item {
             let position = self

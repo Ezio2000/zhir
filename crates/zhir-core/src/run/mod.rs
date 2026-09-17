@@ -148,29 +148,28 @@ pub enum CommandIntent {
         operation_id: String,
         content: Vec<crate::message::Content>,
     },
-    DelegationResult {
-        operation_id: String,
-        entry: usize,
+    Generate {
+        generation_id: String,
+        context_revision: u64,
+        input_position: u64,
+        profile_revision: u64,
     },
-    StartTurn {
-        turn_id: String,
-        history_count: usize,
-        profile: crate::profile::RequestProfile,
-        runtime_tools: Vec<crate::tool::RuntimeToolSpec>,
-    },
-    Input {
+    Append {
         entry: usize,
+        context_revision: u64,
+        input_position: u64,
+        source: crate::model::AppendSource,
+        operation_id: Option<String>,
     },
-    ToolResult {
-        operation_id: String,
-        entry: usize,
+    ReplaceContext {
+        context_revision: u64,
     },
     UpdateProfile {
         revision: u64,
         profile: crate::profile::RequestProfile,
     },
     InterruptOutput {
-        turn_id: String,
+        generation_id: String,
         output_epoch: u64,
     },
     FlushInput,
@@ -178,7 +177,7 @@ pub enum CommandIntent {
     SetInputAudio {
         enabled: bool,
     },
-    EndInput,
+    SealUserInput,
     Close,
 }
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -195,10 +194,20 @@ pub struct PendingCommand {
 pub struct SessionSnapshot {
     pub capabilities: Option<crate::model::CapabilitySet>,
     pub id: String,
-    pub turn_id: Option<String>,
-    pub turn_start: usize,
+    pub generation_id: Option<String>,
+    pub establishment: SessionEstablishment,
+    pub ready: bool,
+    pub generation_started: bool,
+    pub context_revision: u64,
+    pub acknowledged_context_revision: u64,
+    pub reduced_context_revision: Option<u64>,
+    pub input_position: u64,
+    pub generated_input_position: u64,
+    pub needs_generation: bool,
+    pub response_start: usize,
+    pub run_start: usize,
     pub last_sequence: Option<u64>,
-    pub disposition: Option<crate::model::TurnDisposition>,
+    pub response_status: Option<crate::model::ResponseStatus>,
     pub recovery: Option<crate::operation::RecoveryRef>,
     pub output_epoch: u64,
     pub media_archive: Option<crate::resource::ResourceRef>,
@@ -206,11 +215,28 @@ pub struct SessionSnapshot {
     /// Latest committed audio input mode; pending commands record remote settlement.
     pub input_audio_enabled: bool,
     pub closing: bool,
-    pub closed: bool,
+    pub closure: Option<SessionClosure>,
     pub profile_revision: u64,
     pub profile: crate::profile::RequestProfile,
     pub negotiated: crate::profile::NegotiatedProfile,
     pub effective: crate::profile::EffectiveProfile,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionEstablishment {
+    New,
+    Opening,
+    Established,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionClosure {
+    pub reason: String,
+    pub provider_data: Value,
 }
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -234,7 +260,7 @@ pub struct ActiveState {
 #[serde(rename_all = "snake_case")]
 pub enum LimitReason {
     Deadline,
-    ModelTurns,
+    GenerationRequests,
     RuntimeToolCalls,
     TotalTokens,
 }
@@ -242,7 +268,7 @@ pub enum LimitReason {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Limits {
-    pub max_model_turns: u64,
+    pub max_generation_requests: u64,
     pub max_runtime_tool_calls: u64,
     pub max_inflight_operations: usize,
     pub max_control_commands: usize,
@@ -288,7 +314,8 @@ impl Limits {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Metrics {
-    pub model_turns: u64,
+    pub generation_requests: u64,
+    pub observed_responses: Option<u64>,
     pub runtime_tool_calls: u64,
     pub usage: Usage,
 }

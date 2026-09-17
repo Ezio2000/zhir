@@ -9,7 +9,7 @@ use zhir::{
     core::Cancellation,
     error::{ContextError, Error},
     message::{Message, Output},
-    model::{CapabilitySet, TurnOutput},
+    model::{CapabilitySet, GenerationOutput},
     models::FunctionModel,
     run::{ContextKey, RunContext, State},
     runtime_tools::{RuntimeToolRegistry, ToolReply, TypedTool},
@@ -42,8 +42,8 @@ fn call(name: &str) -> RuntimeToolCall {
         input: RuntimeToolInput::Structured(json!({"n": 7})),
     }
 }
-fn response(name: &str) -> TurnOutput {
-    let mut response = TurnOutput::text("");
+fn response(name: &str) -> GenerationOutput {
+    let mut response = GenerationOutput::text("");
     response.output = vec![Output::RuntimeToolCall { call: call(name) }];
     response
 }
@@ -114,7 +114,7 @@ async fn selection_controls_declaration_and_binding_through_the_kernel() {
         let opens = source.opens.clone();
         let script = Arc::new(ScriptedModel::new([
             ScriptStep::response(response("b")),
-            ScriptStep::response(TurnOutput::text("done")),
+            ScriptStep::response(GenerationOutput::text("done")),
         ]));
         let runtime = Runtime::builder(script.clone())
             .runtime_tools(Arc::new(source))
@@ -201,7 +201,7 @@ async fn binding_drift_becomes_a_tool_failure_without_invocation() {
         .description = "changed".into();
     let script = Arc::new(ScriptedModel::new([
         ScriptStep::response(response("a")),
-        ScriptStep::response(TurnOutput::text("recovered")),
+        ScriptStep::response(GenerationOutput::text("recovered")),
     ]));
     let runtime = Runtime::builder(script.clone())
         .runtime_tools(Arc::new(source))
@@ -232,7 +232,7 @@ async fn runtime_preserves_explicit_context_and_owns_fresh_creation() {
     supplied.parent_run_id = Some("consumer-parent".into());
     supplied.insert(TENANT, "acme".into()).unwrap();
     let runtime = Runtime::builder(Arc::new(ScriptedModel::new([ScriptStep::response(
-        TurnOutput::text("done"),
+        GenerationOutput::text("done"),
     )])))
     .build()
     .unwrap();
@@ -274,7 +274,7 @@ async fn capabilities_are_explicit_and_validated_before_model_io() {
         };
         let model = Arc::new(FunctionModel::new(capabilities, move |_, _| {
             counted.fetch_add(1, Ordering::SeqCst);
-            async { Ok(TurnOutput::text("done")) }
+            async { Ok(GenerationOutput::text("done")) }
         }));
         let runtime = Runtime::builder(model).build().unwrap();
         let result = runtime

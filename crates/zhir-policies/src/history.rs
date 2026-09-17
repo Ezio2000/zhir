@@ -40,7 +40,7 @@ impl HistoryReducer for HistoryWindow {
         Box::pin(async move {
             checkpoint.validate()?;
             if !checkpoint.state.active()
-                || checkpoint.active.session.disposition.is_none()
+                || checkpoint.active.session.response_status.is_none()
                 || checkpoint
                     .active
                     .operations

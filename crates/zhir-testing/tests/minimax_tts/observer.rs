@@ -1,12 +1,9 @@
-//! Test-only observation around the production adapter; no wire translation lives here.
+use zhir_minimax::tts::{self, TtsConfig};
+// Test-only observation around the production adapter; no wire translation lives here.
 use std::sync::Arc;
 use tokio::sync::watch;
-use zhir::models::{
-    WebSocketModel,
-    credentials::StaticCredential,
-    minimax::tts::{self, TtsConfig},
-};
 use zhir_core::{BoxFuture, Result, model::*, profile::NegotiatedProfile};
+use zhir_models::{WebSocketModel, credentials::StaticCredential};
 
 #[derive(Clone, Default, Debug, serde::Serialize)]
 pub struct Stats {

@@ -19,7 +19,7 @@ cargo run -p zhir-conformance --bin schemas --locked -- --check
 ```
 
 修改公开 DTO 后先执行 `cargo run -p zhir-conformance --bin schemas`，提交生成的
-`contracts/v3/schemas/`，再运行 check。契约 runner 包含 41 个当前 v3 JSON 案例，
+`contracts/v4/schemas/`，再运行 check。契约 runner 包含 41 个当前 v4 JSON 案例，
 覆盖状态、资源、profile、工具结算和运行限制。原生会话时序及故障验收由 Rust 测试覆盖，
 不能用 JSON 案例数量或通过率代替这部分证据。
 
@@ -28,7 +28,7 @@ cargo run -p zhir-conformance --bin schemas --locked -- --check
 | `conformance/tests/dependencies.rs` | 生产依赖图、feature 边界、验收代码位置 |
 | `core_values`、`core_boundaries` | 值、history、wire、运行参数、目录与绑定 |
 | `session_runtime` | 原生会话早发工具、provider 任务、等待恢复、媒体封存 |
-| `session_recovery` | 未确认 outbox 不重发、竞争恢复 CAS、跨轮 provider 完成、重复/冲突完成、双向流、中断及 EndInput |
+| `session_recovery` | 未确认 outbox 不重发、竞争恢复 CAS、跨轮 provider 完成、重复/冲突完成、双向流、中断及 SealUserInput |
 | `runtime_deadlines` | catalog/model 建立阶段截止时间、未确认 commit 超时 |
 | `refactoring` | provider operation 结算后的跨轮 replay 与 wire 往返、4096 项历史合并顺序、虚拟时钟下有界并发取消及统一退出预算 |
 | `minimax_tts`（feature `minimax`） | 生产 WebSocket TTS：分句封存、中断、尾音、背压、凭据刷新与连接生命周期；ignored 测试访问真实服务 |
@@ -53,11 +53,12 @@ cargo check -p zhir-testing --no-default-features --locked
 cargo check -p zhir-testing --no-default-features --features http --locked
 cargo check -p zhir-models --no-default-features --features websocket --locked
 cargo check -p zhir-models --no-default-features --features webrtc --locked
-cargo check -p zhir-models --no-default-features --features minimax --locked
+cargo check -p zhir-minimax --no-default-features --locked
+cargo check -p zhir-openai --no-default-features --locked
 cargo test -p zhir-testing --no-default-features --features webrtc --test webrtc_driver --locked
 cargo test -p zhir-testing --no-default-features --features minimax --test minimax_tts --locked
 cargo check -p zhir --no-default-features --locked
-for feature in policies tools typed-tools typed-output models filesystem shell interaction agent agent-runtime openai-chat openai-responses anthropic minimax openai-live memory sqlite mysql redis resources-filesystem; do
+for feature in policies tools typed-tools typed-output models filesystem shell interaction agent agent-runtime openai-chat openai-responses anthropic memory sqlite mysql redis resources-filesystem; do
   cargo check -p zhir --no-default-features --features "$feature" --locked || exit 1
 done
 cargo run -p zhir --no-default-features --example custom_tool --features models,typed-tools
@@ -65,14 +66,15 @@ cargo run -p zhir --no-default-features --example resume --features models,inter
 uv run conformance/package.py
 ```
 
-包验证脚本按 allowlist 只选择 8 个生产包，完成 archive 内源码编译，并检查归档文件、
+包验证脚本按 allowlist 只选择 10 个生产包，完成 archive 内源码编译，并检查归档文件、
 manifest 和 lockfile 均没有测试代码或测试包依赖。`zhir-testing` 与 `conformance` 都不发布。
 `publish = false` 不代替打包选择；不要用不带排除项的 `cargo package --workspace`。
 脚本每次生成独立临时 target-dir，防止同版本 registry 复用旧源码；结束后自动清理。
 无网络验证可使用 `uv run conformance/package.py --offline`；新增可选协议后使用
 `uv run conformance/package.py --offline --all-features` 同时编译归档中的可选实现。
-消费者最小 feature 测试运行在 `zhir-testing`，同名 feature 转发到 SDK；CI 保留这些检查。
-示例仍在 `zhir/examples`，生产归档仅允许 src、examples、manifest、README 和 LICENSE（以及 Cargo 生成的元数据）。
+消费者最小 feature 测试运行在 `zhir-testing`；SDK feature 转发到门面，
+`minimax` 和 `openai-live` 分别启用独立接入包。CI 保留这些检查。
+SDK 示例在 `zhir/examples`，供应商示例在各自独立包的 `examples`，生产归档仅允许 src、examples、manifest、README 和 LICENSE（以及 Cargo 生成的元数据）。
 
 基准入口全部放在测试 crate：
 
@@ -138,7 +140,7 @@ UTF-8 delegation context and bidirectional Opus RTP. It runs without credentials
 ```sh
 cargo test -p zhir-testing --no-default-features --features openai-live --test gpt_live
 cargo test -p zhir-testing --test session_semantics
-cargo check -p zhir --no-default-features --example gpt_live --features openai-live,memory
+cargo check -p zhir-openai --no-default-features --example gpt_live
 ```
 
 The explicit `codex_subscription_through_native_runtime` ignored test creates one
@@ -159,7 +161,7 @@ for every account, backend delegation correctness, microphone quality or process
 
 `ZHIR_LIVE_INPUT_PACKETS` may point to a JSON array of raw 20 ms Opus byte packets
 for a spoken fixture. The fixture must be shorter than 2.5 seconds; the test waits
-for the StartTurn acknowledgement, supplies a silence lead-in, then sends speech at
+for the Ready event, supplies a silence lead-in, then sends speech at
 20 ms intervals. The current fixture is MiniMax saying “这是会话测试”, encoded by
 host ffmpeg as 48 kHz stereo Opus. This additionally checks a remote user transcript;
 it does not claim microphone or human barge-in coverage. Reports belong in

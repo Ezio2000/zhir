@@ -72,6 +72,16 @@ pub enum Capability {
     ProfileUpdates,
     AsyncResults,
     Resume,
+    /// The host explicitly requests generation; opening never generates.
+    ExplicitGeneration,
+    /// The protocol exposes real start/finish events and a verified input boundary.
+    ResponseEvents,
+    /// Context is local; rebuilding an idle projection has no remote session-creation effect.
+    LocalProjection,
+    /// Context replacement is acknowledged before another generation may start.
+    ReplaceContext,
+    /// A generation consumes a stream until the host seals its user input.
+    StreamingInput,
 }
 impl CapabilitySet {
     pub fn supports(&self, capability: Capability) -> bool {
@@ -268,24 +278,23 @@ impl ModelRequest {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TurnOutput {
+pub struct GenerationOutput {
     pub output: Vec<Output>,
     #[serde(default)]
     pub usage: Usage,
-    #[serde(default)]
-    pub provider_turn_pending: bool,
+    pub status: ResponseStatus,
     #[serde(default)]
     pub provider_data: Value,
     pub model_id: Option<String>,
     pub response_id: Option<String>,
     pub finish_reason: Option<String>,
 }
-impl TurnOutput {
+impl GenerationOutput {
     pub fn text(s: impl Into<String>) -> Self {
         Self {
             output: vec![Output::text(s)],
             usage: Usage::default(),
-            provider_turn_pending: false,
+            status: ResponseStatus::Completed,
             provider_data: Value::Null,
             model_id: None,
             response_id: None,
@@ -302,7 +311,7 @@ impl TurnOutput {
             ),
             _ => false,
         });
-        if provider_pending && !self.provider_turn_pending {
+        if provider_pending && self.status != ResponseStatus::Continuation {
             return Err(Error::Protocol(
                 "unfinished provider call requires continuation".into(),
             ));

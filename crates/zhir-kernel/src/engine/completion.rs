@@ -79,22 +79,7 @@ impl Engine {
         operation.last_update = update.or(operation.last_update.take());
         operation.result_entry = Some(index);
         operation.wait = None;
-        let command_id = new_id();
-        next.active.commands.push(PendingCommand {
-            id: command_id,
-            intent: if record.owner == OperationOwner::Delegation {
-                CommandIntent::DelegationResult {
-                    operation_id: id.into(),
-                    entry: index,
-                }
-            } else {
-                CommandIntent::ToolResult {
-                    operation_id: id.into(),
-                    entry: index,
-                }
-            },
-            sent: false,
-        });
+        Self::append_command(&mut next, index, AppendSource::Submitted, Some(id.into()));
         self.commit(
             next,
             Fact::Operation {
@@ -166,7 +151,9 @@ impl Engine {
         operation.last_update = update.or(operation.last_update.take());
         operation.result_entry = Some(next.history.len());
         operation.wait = None;
+        let index = next.history.len();
         next.history = next.history.append(vec![entry.clone()])?;
+        Self::append_command(&mut next, index, AppendSource::Accepted, None);
         self.commit(
             next,
             Fact::Operation {
@@ -184,7 +171,7 @@ pub(super) fn provider_operation_id(origin: &CallRef) -> String {
         "provider:{}",
         serde_json::json!([
             origin.session_id,
-            origin.turn_id,
+            origin.generation_id,
             origin.caller_id,
             origin.call_id
         ])

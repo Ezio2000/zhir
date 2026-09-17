@@ -6,4 +6,4 @@ recovery. Adapters and policies are injected through core traits. Kernel depends
 only on zhir-core among production SDK crates; it has no provider/auth/storage
 implementation. Trace acceptance and benchmarks live in zhir-testing.
 
-Part of the zhir workspace, version 0.2.0.
+Part of the zhir workspace, version 0.3.0.

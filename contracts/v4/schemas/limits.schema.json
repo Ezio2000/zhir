@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "commit_timeout_ms": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "elapsed_ms": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "max_buffered_media_bytes": {
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "max_control_commands": {
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "max_generation_requests": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "max_inflight_operations": {
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "max_media_chunk_bytes": {
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "max_media_streams": {
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "max_observer_events": {
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "max_operation_concurrency": {
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "max_runtime_tool_calls": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "max_session_events": {
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "max_total_tokens": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "max_generation_requests",
+    "max_runtime_tool_calls",
+    "max_inflight_operations",
+    "max_control_commands",
+    "max_session_events",
+    "max_media_streams",
+    "max_media_chunk_bytes",
+    "max_buffered_media_bytes",
+    "max_operation_concurrency",
+    "max_observer_events",
+    "commit_timeout_ms"
+  ],
+  "title": "Limits",
+  "type": "object"
+}

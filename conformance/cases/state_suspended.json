@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "name": "state_suspended",
   "kind": "value",
   "schema": "state",

@@ -1,0 +1,657 @@
+{
+  "$defs": {
+    "Content": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "text",
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "input": {
+              "$ref": "#/$defs/ResourceInput"
+            },
+            "kind": {
+              "const": "resource",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "input"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": true,
+            "kind": {
+              "const": "opaque",
+              "type": "string"
+            },
+            "provider": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "provider",
+            "data"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "DelegationRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "prompt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "prompt"
+      ],
+      "type": "object"
+    },
+    "Failure": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "retryable": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "Fidelity": {
+      "enum": [
+        "economy",
+        "high",
+        "original"
+      ],
+      "type": "string"
+    },
+    "Output": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "delegation",
+              "type": "string"
+            },
+            "request": {
+              "$ref": "#/$defs/DelegationRequest"
+            }
+          },
+          "required": [
+            "kind",
+            "request"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "content": {
+              "$ref": "#/$defs/Content"
+            },
+            "kind": {
+              "const": "content",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "call": {
+              "$ref": "#/$defs/RuntimeToolCall"
+            },
+            "kind": {
+              "const": "runtime_tool_call",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "call"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "call": {
+              "$ref": "#/$defs/ProviderToolCall"
+            },
+            "kind": {
+              "const": "provider_tool_call",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "call"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ProviderToolCall": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "default": null
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderToolOutcome"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Kernel-owned operation settlement. Adapter data remains unchanged."
+        },
+        "output": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Content"
+          },
+          "type": "array"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/ProviderToolStatus"
+        }
+      },
+      "required": [
+        "id",
+        "provider",
+        "name",
+        "status"
+      ],
+      "type": "object"
+    },
+    "ProviderToolOutcome": {
+      "description": "Settlement metadata owned by the runtime. Content is stored once, in the\nprovider call's output, so resource normalization cannot create two versions.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "success",
+              "type": "string"
+            },
+            "structured": true
+          },
+          "required": [
+            "kind",
+            "structured"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/Failure"
+            },
+            "kind": {
+              "const": "failure",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "error"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "cancelled",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ProviderToolStatus": {
+      "enum": [
+        "cancelled",
+        "pending",
+        "running",
+        "completed",
+        "incomplete",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "Requirement": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "required",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Fidelity"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "strength": {
+              "const": "preferred",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Fidelity"
+            }
+          },
+          "required": [
+            "strength",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ResourceInput": {
+      "additionalProperties": false,
+      "properties": {
+        "resource": {
+          "$ref": "#/$defs/ResourceRef"
+        },
+        "usage": {
+          "$ref": "#/$defs/ResourceUsage"
+        }
+      },
+      "required": [
+        "resource",
+        "usage"
+      ],
+      "type": "object"
+    },
+    "ResourceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "media_type": {
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/ResourceSource"
+        }
+      },
+      "required": [
+        "id",
+        "media_type",
+        "source",
+        "metadata"
+      ],
+      "type": "object"
+    },
+    "ResourceSource": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "bytes": {
+              "items": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "inline",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "bytes"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "url",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "url"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "stored",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "key"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "provider",
+              "type": "string"
+            },
+            "provider": {
+              "type": "string"
+            },
+            "reference": true
+          },
+          "required": [
+            "kind",
+            "provider",
+            "reference"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ResourceUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "extensions": {
+          "additionalProperties": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "object"
+        },
+        "fidelity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Requirement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "transforms": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "transforms",
+        "extensions"
+      ],
+      "type": "object"
+    },
+    "ResponseStatus": {
+      "enum": [
+        "completed",
+        "requires_results",
+        "continuation",
+        "failed",
+        "cancelled",
+        "incomplete"
+      ],
+      "type": "string"
+    },
+    "RuntimeToolCall": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "input": {
+          "$ref": "#/$defs/RuntimeToolInput"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "input"
+      ],
+      "type": "object"
+    },
+    "RuntimeToolInput": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "structured",
+              "type": "string"
+            },
+            "value": true
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "freeform",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Usage": {
+      "additionalProperties": false,
+      "properties": {
+        "cache_read_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cache_write_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "input_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "output_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reasoning_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "total_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "finish_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "model_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "output": {
+      "items": {
+        "$ref": "#/$defs/Output"
+      },
+      "type": "array"
+    },
+    "provider_data": {
+      "default": null
+    },
+    "response_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "status": {
+      "$ref": "#/$defs/ResponseStatus"
+    },
+    "usage": {
+      "$ref": "#/$defs/Usage",
+      "default": {
+        "cache_read_tokens": null,
+        "cache_write_tokens": null,
+        "input_tokens": null,
+        "output_tokens": null,
+        "reasoning_tokens": null,
+        "total_tokens": null
+      }
+    }
+  },
+  "required": [
+    "output",
+    "status"
+  ],
+  "title": "GenerationOutput",
+  "type": "object"
+}

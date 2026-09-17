@@ -1,4 +1,4 @@
-//! Explicit native v3 envelopes. Provider payloads and storage layouts are separate.
+//! Explicit native v4 envelopes. Provider payloads and storage layouts are separate.
 use crate::{
     Result,
     error::Error,
@@ -8,7 +8,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -94,7 +94,7 @@ pub fn decode_checkpoint(bytes: &[u8]) -> Result<Checkpoint> {
     e.checkpoint.with_history(History::from_entries(e.history)?)
 }
 
-/// Schemas are generated from explicitly tagged native DTOs and checked into contracts/v3.
+/// Schemas are generated from explicitly tagged native DTOs and checked into contracts/v4.
 #[cfg(feature = "schema")]
 pub fn schemas() -> std::collections::BTreeMap<&'static str, serde_json::Value> {
     use schemars::schema_for;
@@ -114,7 +114,7 @@ pub fn schemas() -> std::collections::BTreeMap<&'static str, serde_json::Value> 
     add!("limits", crate::run::Limits);
     add!("run-options", crate::run::RunOptions);
     add!("suspension-ticket", crate::run::SuspensionTicket);
-    add!("turn-output", crate::model::TurnOutput);
+    add!("generation-output", crate::model::GenerationOutput);
     add!("tool-spec", crate::tool::RuntimeToolSpec);
     add!("operation-outcome", crate::operation::OperationOutcome);
     add!("capability-set", crate::model::CapabilitySet);

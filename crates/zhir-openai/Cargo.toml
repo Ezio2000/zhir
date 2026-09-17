@@ -1,0 +1,24 @@
+[package]
+name = "zhir-openai"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "OpenAI service adapters for zhir"
+include = ["src/**", "examples/**", "Cargo.toml", "README.md", "LICENSE"]
+
+[lints]
+workspace = true
+
+[dependencies]
+zhir-core.workspace = true
+zhir-policies.workspace = true
+zhir-models = { workspace = true, features = ["webrtc"] }
+serde_json.workspace = true
+tokio.workspace = true
+serde.workspace = true
+reqwest.workspace = true
+webrtc = "0.17.1"
+
+[dev-dependencies]
+zhir = { workspace = true, features = ["memory"] }

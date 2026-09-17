@@ -75,9 +75,13 @@ impl Engine {
     // True means the state advanced and must be reconsidered before receiving more work.
     async fn advance(&mut self) -> Result<bool> {
         let status = WorkStatus::read(&self.current.active.operations);
-        if self.can_advance_turn(&status) {
-            if self.needs_turn {
-                self.start_turn().await?;
+        if self.can_advance(&status) {
+            if self.current.active.session.needs_generation
+                && self
+                    .session_capabilities()
+                    .supports(Capability::ExplicitGeneration)
+            {
+                self.generate().await?;
                 return Ok(true);
             }
             if self.input_finished() && self.finish_or_drain().await? {
@@ -96,44 +100,55 @@ impl Engine {
         Ok(false)
     }
 
-    fn can_advance_turn(&self, status: &WorkStatus) -> bool {
-        let provider_continuation = self.needs_turn
+    fn can_advance(&self, status: &WorkStatus) -> bool {
+        let provider_continuation = self.current.active.session.needs_generation
             && !status.host_busy
-            && self.current.active.session.disposition == Some(TurnDisposition::Continue);
+            && self.current.active.session.response_status == Some(ResponseStatus::Continuation);
         (!status.busy || provider_continuation)
+            && self.current.active.session.ready
+            && (self.current.active.session.generation_id.is_none()
+                || self.current.active.session.response_status.is_some())
             && self.current.active.commands.is_empty()
             && !self.sending
     }
 
     fn input_finished(&self) -> bool {
-        self.current.active.session.disposition == Some(TurnDisposition::Finished)
+        (self.current.active.session.response_status == Some(ResponseStatus::Completed)
+            || !self
+                .session_capabilities()
+                .supports(Capability::ResponseEvents))
             && (self.current.options.mode == RunMode::Task
                 || self.current.active.session.input_closed)
     }
 
     fn waiting_for_input(&self, status: &WorkStatus) -> bool {
         status.busy
+            && self.current.active.commands.is_empty()
+            && !self.sending
             && !status.progressing
             && (self.current.options.mode == RunMode::Task || status.unknown)
             && self.pending_replies.is_empty()
             && self.pending_starts.is_empty()
-            && self.current.active.session.disposition.is_some()
+            && self.current.active.session.response_status.is_some()
     }
 
     async fn finish_or_drain(&mut self) -> Result<bool> {
-        if self.media_pending || self.input_sending {
-            if !self.model_closed && !self.current.active.session.closing && !self.input_sending {
+        if self.current.active.session.closure.is_none() {
+            if !self.current.active.session.closing && !self.input_sending {
                 self.prepare_command(CommandIntent::Close).await?;
             }
             return Ok(false);
         }
-        let content = conversation(
-            self.current
-                .history
-                .entries()
-                .into_iter()
-                .skip(self.current.active.session.turn_start),
-        )
+        if self.media_pending || self.input_sending {
+            return Ok(false);
+        }
+        let content = conversation(self.current.history.entries().into_iter().skip(
+            if self.current.options.mode == RunMode::Interactive {
+                self.current.active.session.run_start
+            } else {
+                self.current.active.session.response_start
+            },
+        ))
         .into_iter()
         .flat_map(|message| match message {
             Message::Assistant { output, .. } => zhir_core::message::visible_content(&output),
@@ -198,7 +213,6 @@ pub(crate) async fn execute(
         .store
         .clone()
         .unwrap_or_else(|| Arc::new(crate::defaults::Ephemeral::new(initial.clone())));
-    let fresh = initial.is_none();
     let (mut next, delta) = checkpoint::initial(&request);
     let expired = deadline.is_some_and(|d| Instant::now() >= d);
     if expired {
@@ -251,8 +265,6 @@ pub(crate) async fn execute(
         pending_replies: BTreeSet::new(),
         pending_starts: BTreeSet::new(),
         session_sequence: None,
-        needs_turn: fresh,
-        model_closed: false,
     };
     let result = engine.run(request).await;
     engine.stop_workers().await;

@@ -95,5 +95,4 @@ impl SseDecoder {
 pub(crate) mod websocket;
 
 #[cfg(feature = "webrtc")]
-#[cfg_attr(not(feature = "openai-live"), allow(dead_code, unused_imports))]
 pub(crate) mod webrtc;

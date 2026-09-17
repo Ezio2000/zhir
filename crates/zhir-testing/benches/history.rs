@@ -51,7 +51,8 @@ fn pending_serial(count: usize) -> std::time::Duration {
     };
     let origin = |i| CallRef {
         session_id: "session".into(),
-        turn_id: "turn".into(),
+        item_id: format!("c{i}"),
+        generation_id: Some("turn".into()),
         caller_id: "model".into(),
         call_id: format!("c{i}"),
     };

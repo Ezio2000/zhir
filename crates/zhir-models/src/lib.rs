@@ -1,7 +1,7 @@
 //! Protocol-specific model adapters and model composition.
 //!
 //! User policies belong in [`ProtocolExtension`], created per invocation with
-//! `HttpModel::with_extension` for HTTP protocols. MiniMax TTS uses its typed config.
+//! `HttpModel::with_extension` for HTTP protocols.
 //! Protocol capabilities are defaults, not model
 //! discovery; use `HttpModel::with_capabilities` for the selected endpoint.
 //!
@@ -19,11 +19,6 @@ mod codec;
 pub mod credentials;
 pub mod decorators;
 #[cfg(any(feature = "websocket", feature = "webrtc"))]
-// Transport-only builds compile the internal contracts without provider factories.
-#[cfg_attr(
-    not(any(feature = "minimax", feature = "openai-live")),
-    allow(dead_code, unused_imports)
-)]
 mod native;
 pub mod resources;
 mod session;
@@ -37,11 +32,7 @@ pub mod transform;
 pub use extension::{ExtensionChain, ExtensionContext, ProtocolExtension};
 pub use function::{FunctionDeltaSink, FunctionModel};
 pub use transform::TransformModel;
-#[cfg(any(
-    feature = "openai-chat",
-    feature = "openai-responses",
-    feature = "openai-live"
-))]
+#[cfg(any(feature = "openai-chat", feature = "openai-responses"))]
 pub mod openai;
 mod streaming;
 pub mod transport;
@@ -70,16 +61,15 @@ pub mod profiles;
 ))]
 pub use http::{HttpModel, ModelConfig};
 
-#[cfg(feature = "minimax")]
-pub mod minimax;
 #[cfg(feature = "websocket")]
-#[cfg_attr(not(feature = "minimax"), allow(dead_code))]
-mod websocket;
+pub mod websocket;
 #[cfg(feature = "websocket")]
 pub use websocket::{WebSocketConfig, WebSocketModel};
 
 #[cfg(feature = "webrtc")]
-#[cfg_attr(not(feature = "openai-live"), allow(dead_code))]
-mod webrtc;
+pub mod webrtc;
 #[cfg(feature = "webrtc")]
 pub use webrtc::WebRtcModel;
+
+#[cfg(any(feature = "websocket", feature = "webrtc"))]
+pub use native::Confirmation;

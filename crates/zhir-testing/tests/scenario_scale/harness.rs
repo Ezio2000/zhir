@@ -9,7 +9,7 @@ use zhir::{
     BoxFuture, Invocation, Result,
     error::Error,
     message::{Content, Message},
-    model::{ModelDelta, ModelRequest, TurnOutput},
+    model::{GenerationOutput, ModelDelta, ModelRequest},
     models::{
         HttpModel, ModelConfig, Protocol, ProtocolExtension, anthropic, openai, transport::SseEvent,
     },
@@ -139,8 +139,8 @@ impl ProtocolExtension for ConsumerSession {
         &mut self,
         _: Protocol,
         _: &Value,
-        decoded: Result<TurnOutput>,
-    ) -> Result<TurnOutput> {
+        decoded: Result<GenerationOutput>,
+    ) -> Result<GenerationOutput> {
         let mut response = decoded?;
         response.provider_data["consumer_session"] = json!({"tag":self.tag,"frames":self.frames});
         Ok(response)
@@ -151,7 +151,7 @@ pub fn recorded_turns(model: &RecordingModel) -> Vec<Value> {
     model.records().iter().flat_map(|record| {
         let run = &record.opening.run;
         let requested_tag = record.opening.request.profile.extensions.values().find_map(|values|values.get("consumer_tag")).cloned().unwrap_or(Value::Null);
-        record.completed_turns().into_iter().map(move |response|json!({"run_id":run.run_id,"requested_tag":requested_tag,"response_id":response.response_id,"model_id":response.model_id,"usage":response.usage,"session":response.provider_data["consumer_session"],"output":response.output,"finish_reason":response.finish_reason}))
+        record.completed_responses().into_iter().map(move |response|json!({"run_id":run.run_id,"requested_tag":requested_tag,"response_id":response.response_id,"model_id":response.model_id,"usage":response.usage,"session":response.provider_data["consumer_session"],"output":response.output,"finish_reason":response.finish_reason}))
     }).collect()
 }
 #[derive(Default)]

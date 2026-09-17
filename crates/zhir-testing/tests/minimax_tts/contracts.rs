@@ -1,4 +1,5 @@
-//! Public SDK contracts, transport authentication and task lifetime checks.
+use zhir_minimax::tts::{self, TtsConfig};
+// Public SDK contracts, transport authentication and task lifetime checks.
 use futures::{SinkExt, StreamExt};
 use std::{
     sync::{
@@ -12,11 +13,8 @@ use tokio_tungstenite::{
     accept_async, accept_hdr_async,
     tungstenite::{self, Message as Frame},
 };
-use zhir::models::{
-    credentials::{RefreshingCredential, StaticCredential},
-    minimax::tts::{self, TtsConfig},
-};
 use zhir_core::{credential::Credential, error::Error, message::Message, model::*};
+use zhir_models::credentials::{RefreshingCredential, StaticCredential};
 
 pub(super) fn config(url: &str) -> TtsConfig {
     let mut config = TtsConfig::new(
@@ -29,6 +27,10 @@ pub(super) fn config(url: &str) -> TtsConfig {
 }
 pub(super) fn open() -> SessionOpen {
     SessionOpen {
+        context_revision: 0,
+        input_position: 0,
+        profile_revision: 0,
+        mode: zhir_core::run::RunMode::Interactive,
         session_id: "fixture-session".into(),
         after_sequence: None,
         output_epoch: 0,
@@ -171,9 +173,9 @@ async fn websocket_refreshes_one_rejected_handshake_and_preserves_account_header
         got_ping.await.unwrap();
         session.input.send(SessionCommand { id:"close".into(), body:SessionCommandBody::Close }).await.unwrap();
         let first=next_event(&mut session.output).await.unwrap().unwrap();
-        assert_eq!(first.sequence,1);
+        assert_eq!(first.sequence,2);
         assert!(matches!(first.body,SessionEventBody::Acknowledged { command_id, .. } if command_id=="close"));
-        assert!(matches!(next_event(&mut session.output).await.unwrap().unwrap().body,SessionEventBody::Closed));
+        assert!(matches!(next_event(&mut session.output).await.unwrap().unwrap().body,SessionEventBody::Closed { .. }));
         assert!(next_event(&mut session.output).await.unwrap().is_none());
         server.await.unwrap();
         assert_eq!(calls.load(Ordering::SeqCst),2);
@@ -244,15 +246,16 @@ async fn websocket_cancellation_and_dropped_consumers_release_a_pending_task() {
             let model = tts::model(config(&endpoint)).unwrap();
             let open = open();
             let cancellation = open.context.cancellation.clone();
-            let request = open.request.clone();
             let mut session = model.open_session(open).await.unwrap();
             session
                 .input
                 .send(SessionCommand {
                     id: "start".into(),
-                    body: SessionCommandBody::StartTurn {
-                        turn_id: "turn".into(),
-                        request: Box::new(request),
+                    body: SessionCommandBody::Generate {
+                        generation_id: "turn".into(),
+                        context_revision: 0,
+                        input_position: 0,
+                        profile_revision: 0,
                     },
                 })
                 .await
@@ -315,7 +318,7 @@ async fn websocket_terminal_error_survives_a_full_event_queue() {
             assert!(matches!(socket.next().await, Some(Ok(Frame::Text(_)))));
             send_json(&mut socket, serde_json::json!({"event":"task_started"})).await;
             assert!(matches!(socket.next().await, Some(Ok(Frame::Text(_)))));
-            // StartTurn's acknowledgement fills the single event slot.
+            // Generate's acknowledgement fills the single event slot.
             send_json(&mut socket, serde_json::json!({"event":"unknown_event"})).await;
             assert!(!matches!(socket.next().await, Some(Ok(Frame::Text(_)))));
         });
@@ -324,15 +327,16 @@ async fn websocket_terminal_error_survives_a_full_event_queue() {
         let model = tts::model(settings).unwrap();
         let mut opening = open();
         opening.limits.max_session_events = 1;
-        let request = opening.request.clone();
         let mut session = model.open_session(opening).await.unwrap();
         session
             .input
             .send(SessionCommand {
                 id: "start".into(),
-                body: SessionCommandBody::StartTurn {
-                    turn_id: "turn".into(),
-                    request: Box::new(request),
+                body: SessionCommandBody::Generate {
+                    generation_id: "turn".into(),
+                    context_revision: 0,
+                    input_position: 0,
+                    profile_revision: 0,
                 },
             })
             .await
@@ -466,15 +470,16 @@ async fn websocket_requires_real_sentence_boundaries_before_completion() {
             });
             let model = tts::model(config(&endpoint)).unwrap();
             let opening = open();
-            let request = opening.request.clone();
             let mut session = model.open_session(opening).await.unwrap();
             session
                 .input
                 .send(SessionCommand {
                     id: "start".into(),
-                    body: SessionCommandBody::StartTurn {
-                        turn_id: "turn".into(),
-                        request: Box::new(request),
+                    body: SessionCommandBody::Generate {
+                        generation_id: "turn".into(),
+                        context_revision: 0,
+                        input_position: 0,
+                        profile_revision: 0,
                     },
                 })
                 .await
@@ -487,7 +492,7 @@ async fn websocket_requires_real_sentence_boundaries_before_completion() {
                 .input
                 .send(SessionCommand {
                     id: "finish".into(),
-                    body: SessionCommandBody::EndInput,
+                    body: SessionCommandBody::SealUserInput,
                 })
                 .await
                 .unwrap();
@@ -522,7 +527,9 @@ pub(super) async fn next_event(
         if !matches!(
             &event,
             Some(SessionEvent {
-                body: SessionEventBody::Delta { .. },
+                body: SessionEventBody::Delta { .. }
+                    | SessionEventBody::Ready { .. }
+                    | SessionEventBody::ResponseStarted { .. },
                 ..
             })
         ) {

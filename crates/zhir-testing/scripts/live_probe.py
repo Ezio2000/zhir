@@ -98,10 +98,10 @@ class Probe:
                 await self.wait_for(lambda: observed("session.started") or observed("error"))
                 if observed("session.started"):
                     await ws.send(json.dumps({"type": "session.close"}))
-                    await self.wait_for(lambda: observed("session.closed") or observed("error"))
+                    await self.wait_for(lambda: observed("session.closure.is_some()") or observed("error"))
                 self.record("primary_access_result", label=model,
                             started=observed("session.started"),
-                            finalized=observed("session.closed"), rejected=observed("error"))
+                            finalized=observed("session.closure.is_some()"), rejected=observed("error"))
                 await ws.close()
             self.record("probe_completed", interruption_verified=False, recovery_verified=False)
         finally:
@@ -176,7 +176,7 @@ class Probe:
             last = await self.connect(url, "after-primary-exit-later")
             if last:
                 await last.send(json.dumps({"type": "session.close"}))
-                await self.wait_for(lambda: any(e.get("event", {}).get("type") == "session.closed"
+                await self.wait_for(lambda: any(e.get("event", {}).get("type") == "session.closure.is_some()"
                                                for e in self.events))
                 await last.close()
             fork = await self.connect("wss://api.openai.com/v1/live/sessions/" + call_id + "/fork", "fork")

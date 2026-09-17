@@ -5,7 +5,7 @@ use zhir::{
     ResumeRequest, RunRequest, Runtime, SuspensionTicket,
     builtins::interaction,
     message::{Message, Output},
-    model::TurnOutput,
+    model::GenerationOutput,
     models::FunctionModel,
     runtime_tools::RuntimeToolRegistry,
     stores::MemoryRunStore,
@@ -21,9 +21,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .iter()
                 .any(|m| matches!(m, Message::RuntimeTool { .. }))
             {
-                return Ok(TurnOutput::text("Proceeding with Rust"));
+                return Ok(GenerationOutput::text("Proceeding with Rust"));
             }
-            Ok(TurnOutput {
+            Ok(GenerationOutput {
                 output: vec![Output::RuntimeToolCall {
                     call: RuntimeToolCall {
                         id: "question".into(),
@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         ),
                     },
                 }],
-                ..TurnOutput::text("")
+                ..GenerationOutput::text("")
             })
         },
     );

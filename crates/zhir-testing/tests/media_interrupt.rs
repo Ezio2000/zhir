@@ -23,16 +23,16 @@ async fn probe(late_after_new: bool) {
         let mut caps = zhir_testing::model_capabilities();
         caps.features.remove(&Capability::Steering);
         caps.features.extend([Capability::Duplex, Capability::InterruptOutput]);
-        let model = Arc::new(SessionModel::new(caps, move |_, mut peer| async move {
+        let model = Arc::new(SessionModel::new(caps, move |open, mut peer| async move {
             let start = peer.commands.recv().await.unwrap();
-            let SessionCommandBody::StartTurn { turn_id, .. } = &start.body else {
+            let SessionCommandBody::Generate { generation_id, .. } = &start.body else {
                 panic!("expected start");
             };
-            let turn_id = turn_id.clone();
+            let _generation_id = generation_id.clone();
             peer.acknowledge(&start, None).await?;
             for sequence in 0..2 {
                 peer.media_output.send(MediaChunk {
-                    stream_id: "voice".into(), turn_id: turn_id.clone(), epoch: 0,
+                    stream_id: "voice".into(), session_id: open.session_id.clone(), epoch: 0,
                     sequence, timestamp_us: sequence * 1000, media_type: "audio/pcm".into(),
                     bytes: vec![1; 4], end: false,
                 }).await?;
@@ -47,7 +47,7 @@ async fn probe(late_after_new: bool) {
                     };
                     for (epoch, sequence) in frames {
                         peer.media_output.send(MediaChunk {
-                            stream_id: "voice".into(), turn_id: turn_id.clone(), epoch,
+                            stream_id: "voice".into(), session_id: open.session_id.clone(), epoch,
                             sequence, timestamp_us: 3000, media_type: "audio/pcm".into(),
                             bytes: vec![2; 4], end: false,
                         }).await?;

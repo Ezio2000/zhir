@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use zhir_core::{
     message::Message,
-    model::{ModelContext, ModelRequest, TurnOutput},
+    model::{GenerationOutput, ModelContext, ModelRequest},
 };
 use zhir_models::{ModelConfig, Protocol, credentials::StaticCredential};
 use zhir_testing::{
@@ -13,7 +13,7 @@ use zhir_testing::{
 fn frame(value: Value) -> String {
     format!("data: {value}\n\n")
 }
-async fn exchange(protocol: Protocol, frames: String) -> TurnOutput {
+async fn exchange(protocol: Protocol, frames: String) -> GenerationOutput {
     let server = HttpFixture::start([
         HttpReply::bytes("text/event-stream", frames.into_bytes()).fragment_bytes(13)
     ])
@@ -31,7 +31,7 @@ async fn exchange(protocol: Protocol, frames: String) -> TurnOutput {
     }
     .unwrap();
     let response = model
-        .turn(
+        .generate(
             ModelRequest {
                 messages: vec![Message::user("run")],
                 runtime_tools: vec![],

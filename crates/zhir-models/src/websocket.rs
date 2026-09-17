@@ -1,6 +1,7 @@
 //! Persistent model-session orchestration, independent of provider wire semantics.
 use crate::native::{self, Outputs, guarded};
-use crate::transport::websocket::{Socket, WireMessage};
+use crate::transport::websocket::Socket;
+pub use crate::transport::websocket::WireMessage;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc;
 use zhir_core::{
@@ -61,30 +62,30 @@ impl WebSocketConfig {
     }
 }
 
-/// Built-in WebSocket models share transport and Session ports. Provider-specific
-/// constructors select the wire protocol; custom models can implement core::Model.
+/// WebSocket session driver. External adapters own protocol state and wire messages;
+/// this model owns transport, bounded delivery, cancellation and deadlines.
 #[derive(Clone)]
 pub struct WebSocketModel {
     config: WebSocketConfig,
     adapter: Arc<dyn WebSocketAdapter>,
     capabilities: CapabilitySet,
 }
-pub(crate) trait WebSocketAdapter: Send + Sync {
+pub trait WebSocketAdapter: Send + Sync {
     fn capabilities(&self) -> CapabilitySet;
     fn negotiate(&self, request: &ModelRequest) -> Result<NegotiatedProfile>;
     fn open(&self, open: &SessionOpen) -> Result<Box<dyn WebSocketProtocol>>;
 }
-pub(crate) trait WebSocketProtocol: Send {
+pub trait WebSocketProtocol: Send {
     fn connected(&mut self) -> Result<()>;
     fn commands_allowed(&self) -> bool;
     fn finished(&self) -> bool;
-    fn turn_id(&self) -> Option<&str>;
+    fn generation_id(&self) -> Option<&str>;
     fn deadline(&self) -> Option<tokio::time::Instant>;
     fn check_deadline(&self) -> Result<()>;
     fn command(&mut self, command: SessionCommand) -> Result<Vec<Action>>;
     fn receive(&mut self, message: WireMessage) -> Result<Vec<Action>>;
 }
-pub(crate) enum Action {
+pub enum Action {
     Send(WireMessage),
     Event(SessionEventBody),
     Observe(ModelDelta),
@@ -93,7 +94,7 @@ pub(crate) enum Action {
     Close,
 }
 impl WebSocketModel {
-    pub(crate) fn new(config: WebSocketConfig, adapter: Arc<dyn WebSocketAdapter>) -> Result<Self> {
+    pub fn new(config: WebSocketConfig, adapter: Arc<dyn WebSocketAdapter>) -> Result<Self> {
         config.validate()?;
         Ok(Self {
             capabilities: adapter.capabilities(),
@@ -201,7 +202,7 @@ impl Driver {
                     Action::Send(message) => self.socket.send(message).await?,
                     Action::Observe(delta) => {
                         self.outputs.event(SessionEventBody::Delta {
-                            turn_id: self.protocol.turn_id().unwrap_or_default().into(),
+                            generation_id: self.protocol.generation_id().map(str::to_owned),
                             delta,
                         })?;
                     }

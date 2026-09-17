@@ -106,7 +106,7 @@ async fn chat_stream_assembles_calls_unicode_and_usage() {
     .unwrap();
     let deltas = Arc::new(Deltas::default());
     let response = model
-        .turn(request(true), context(deltas.clone()))
+        .generate(request(true), context(deltas.clone()))
         .await
         .unwrap();
     assert_eq!(response.usage.total_tokens, Some(8));
@@ -143,7 +143,7 @@ async fn responses_preserves_provider_output_and_continuation_history() {
     let mut input = request(false);
     input.provider_tools = vec![image_spec()];
     let response = model
-        .turn(input, context(Arc::new(Deltas::default())))
+        .generate(input, context(Arc::new(Deltas::default())))
         .await
         .unwrap();
     assert!(
@@ -171,7 +171,7 @@ async fn responses_preserves_provider_output_and_continuation_history() {
         provider_data: response.provider_data,
     });
     model
-        .turn(next, context(Arc::new(Deltas::default())))
+        .generate(next, context(Arc::new(Deltas::default())))
         .await
         .unwrap();
     let sent = worker.await.unwrap();
@@ -197,7 +197,7 @@ async fn anthropic_stream_assembles_tool_blocks_and_usage() {
     ))
     .unwrap();
     let response = model
-        .turn(request(true), context(Arc::new(Deltas::default())))
+        .generate(request(true), context(Arc::new(Deltas::default())))
         .await
         .unwrap();
     assert_eq!(response.usage.input_tokens, Some(18));
@@ -227,7 +227,7 @@ async fn truncated_stream_and_http_errors_are_explicit() {
     .unwrap();
     assert!(
         model
-            .turn(request(true), context(Arc::new(Deltas::default())))
+            .generate(request(true), context(Arc::new(Deltas::default())))
             .await
             .is_err()
     );
@@ -247,7 +247,7 @@ async fn truncated_stream_and_http_errors_are_explicit() {
     ))
     .unwrap();
     assert!(
-        matches!(model.turn(request(false),context(Arc::new(Deltas::default()))).await,Err(zhir_core::error::Error::Model(e)) if e.retryable && e.code=="http_429")
+        matches!(model.generate(request(false),context(Arc::new(Deltas::default()))).await,Err(zhir_core::error::Error::Model(e)) if e.retryable && e.code=="http_429")
     );
     worker.await.unwrap();
 }
@@ -300,7 +300,7 @@ async fn responses_freeform_call_result_keeps_its_protocol_type() {
         },
     });
     model
-        .turn(next, context(Arc::new(Deltas::default())))
+        .generate(next, context(Arc::new(Deltas::default())))
         .await
         .unwrap();
     let sent = worker.await.unwrap();
@@ -322,7 +322,7 @@ async fn anthropic_nonstream_usage_includes_cached_input() {
     ))
     .unwrap();
     let response = model
-        .turn(request(false), context(Arc::new(Deltas::default())))
+        .generate(request(false), context(Arc::new(Deltas::default())))
         .await
         .unwrap();
     assert_eq!(response.usage.input_tokens, Some(21));
@@ -367,7 +367,7 @@ async fn every_protocol_forwards_unknown_sse_frames_with_their_fields() {
         .unwrap();
         let deltas = Arc::new(Deltas::default());
         model
-            .turn(request(true), context(deltas.clone()))
+            .generate(request(true), context(deltas.clone()))
             .await
             .unwrap();
         assert!(deltas.0.lock().unwrap().iter().any(|d|matches!(d, ModelDelta::ProtocolEvent {data,..} if *data==json!({"event":"future.feature","id":"frame-7","retry":1000,"data":{"type":"future.feature","payload":{"value":7}}}))));
@@ -425,7 +425,7 @@ async fn capture_request(protocol: zhir_models::Protocol, request: ModelRequest)
     };
     let (url, worker) = server(body, "200 OK", request.stream).await;
     protocol_model(protocol, url)
-        .turn(request, context(Arc::new(Deltas::default())))
+        .generate(request, context(Arc::new(Deltas::default())))
         .await
         .unwrap();
     worker.await.unwrap()
@@ -547,7 +547,7 @@ async fn extra_conflicts_report_exact_paths_and_reserved_fields_remain_owned() {
             serde_json::from_value(extra).unwrap(),
         );
         let error = protocol_model(protocol, "http://127.0.0.1:1".into())
-            .turn(next, context(Arc::new(Deltas::default())))
+            .generate(next, context(Arc::new(Deltas::default())))
             .await
             .unwrap_err();
         assert!(
@@ -594,7 +594,7 @@ async fn textual_tool_failure_requires_text_input_capability_in_http_adapter() {
         next.validate(&capabilities).unwrap();
         let error = model
             .with_capabilities(capabilities)
-            .turn(next, context(Arc::new(Deltas::default())))
+            .generate(next, context(Arc::new(Deltas::default())))
             .await
             .unwrap_err();
         assert!(

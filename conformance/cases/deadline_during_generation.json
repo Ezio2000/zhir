@@ -1,0 +1,43 @@
+{
+  "version": 4,
+  "name": "deadline_during_generation",
+  "kind": "runtime",
+  "case": {
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "kind": "text",
+            "text": "go"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "delay_ms": 100,
+        "output": {
+          "output": [
+            {
+              "kind": "content",
+              "content": {
+                "kind": "text",
+                "text": "done"
+              }
+            }
+          ],
+          "model_id": null,
+          "response_id": null,
+          "finish_reason": null,
+          "status": "completed"
+        }
+      }
+    ],
+    "tools": [],
+    "expected": {
+      "state": "limited"
+    },
+    "elapsed_ms": 25
+  }
+}

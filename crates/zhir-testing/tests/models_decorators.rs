@@ -9,7 +9,9 @@ use zhir_core::{
     BoxFuture, Cancellation, Result,
     error::{Error, Failure},
     message::Message,
-    model::{CapabilitySet, Model, ModelContext, ModelDelta, ModelRequest, ToolChoice, TurnOutput},
+    model::{
+        CapabilitySet, GenerationOutput, Model, ModelContext, ModelDelta, ModelRequest, ToolChoice,
+    },
     run::RunContext,
 };
 use zhir_models::decorators::{FallbackCandidate, FallbackModel, RetryingModel};
@@ -71,7 +73,7 @@ impl Model for Flaky {
                             }
                             return Err(Error::Model(failure));
                         }
-                        Ok(TurnOutput::text("done"))
+                        Ok(GenerationOutput::text("done"))
                     }
                 });
             model.open_session(open).await
@@ -107,7 +109,7 @@ async fn retries_only_retryable_session_establishment_before_any_turn() {
                 .backoff(zhir_policies::Backoff::fixed(Duration::ZERO)),
         )
         .unwrap();
-        let result = model.turn(request(), context()).await;
+        let result = model.generate(request(), context()).await;
         assert_eq!(result.is_ok(), expected == 2);
         assert_eq!(inner.calls.load(Ordering::SeqCst), expected);
     }
@@ -122,7 +124,7 @@ async fn fallback_stops_at_permanent_errors_and_visible_output() {
             FallbackCandidate::new("second", second.clone()),
         ])
         .unwrap();
-        let result = model.turn(request(), context()).await;
+        let result = model.generate(request(), context()).await;
         assert_eq!(result.is_ok(), expected == 1);
         assert_eq!(second.calls.load(Ordering::SeqCst), expected);
     }
@@ -190,7 +192,7 @@ impl Model for Emitting {
                             }
                         }
                         completed.fetch_add(1, Ordering::SeqCst);
-                        Ok(TurnOutput::text("done"))
+                        Ok(GenerationOutput::text("done"))
                     }
                 },
             );
@@ -234,7 +236,7 @@ async fn observers_are_isolated_per_concurrent_invocation_and_receive_context() 
                 .insert("tag".into(), index.into());
             let mut context = context();
             context.run.metadata.insert("tag".into(), index.into());
-            model.turn(request, context).await.unwrap()
+            model.generate(request, context).await.unwrap()
         }
     }))
     .await;
@@ -278,7 +280,7 @@ async fn observer_backpressure_is_awaited_and_dropped_calls_do_not_spawn_writes(
         });
         let captured = sink.clone();
         let model = ObservedModel::new(inner.clone(), move |_, _| Ok(captured.clone()));
-        let job = tokio::spawn(async move { model.turn(request(), context()).await });
+        let job = tokio::spawn(async move { model.generate(request(), context()).await });
         tokio::time::timeout(Duration::from_secs(2), sink.entered.notified())
             .await
             .unwrap();
@@ -335,7 +337,7 @@ async fn observer_errors_after_side_effects_never_retry_in_either_nesting_order(
             ))
         };
         assert!(
-            matches!(model.turn(request(), context()).await, Err(Error::Model(f)) if f.code=="observer_write")
+            matches!(model.generate(request(), context()).await, Err(Error::Model(f)) if f.code=="observer_write")
         );
         assert_eq!(inner.calls.load(Ordering::SeqCst), 1);
         assert_eq!(sink.values.lock().unwrap().len(), 1);
@@ -378,7 +380,7 @@ async fn observer_factory_scope_tracks_wrapper_invocations_across_retries() {
                 factory,
             ))
         };
-        model.turn(request(), context()).await.unwrap();
+        model.generate(request(), context()).await.unwrap();
         assert_eq!(inner.calls.load(Ordering::SeqCst), 2);
         assert_eq!(
             factories.load(Ordering::SeqCst),
@@ -401,7 +403,7 @@ async fn observer_factory_failures_and_pre_cancelled_calls_do_not_invoke_model()
         if cancelled {
             ctx.cancellation.cancel();
         }
-        let error = model.turn(request(), ctx).await.unwrap_err();
+        let error = model.generate(request(), ctx).await.unwrap_err();
         assert!(if cancelled {
             matches!(error, Error::Cancelled)
         } else {
@@ -424,7 +426,7 @@ async fn downstream_sink_errors_stop_before_observer_side_effects() {
     let model = ObservedModel::new(inner.clone(), move |_, _| Ok(captured.clone()));
     let mut ctx = context();
     ctx.deltas = Some(downstream.clone());
-    assert!(model.turn(request(), ctx).await.is_err());
+    assert!(model.generate(request(), ctx).await.is_err());
     assert_eq!(downstream.values.lock().unwrap().len(), 1);
     assert!(observer.values.lock().unwrap().is_empty());
     assert_eq!(inner.completed.load(Ordering::SeqCst), 0);
@@ -474,6 +476,10 @@ async fn fallback_recovery_uses_stable_identity_after_candidate_reordering() {
     };
     let model = FallbackModel::new(candidates()).unwrap();
     let mut open = SessionOpen {
+        context_revision: 0,
+        input_position: 0,
+        profile_revision: 0,
+        mode: zhir_core::run::RunMode::Interactive,
         session_id: "session".into(),
         after_sequence: None,
         output_epoch: 0,
@@ -483,6 +489,10 @@ async fn fallback_recovery_uses_stable_identity_after_candidate_reordering() {
         context: context(),
     };
     let mut session = model.open_session(open.clone()).await.unwrap();
+    assert!(matches!(
+        session.output.receive().await.unwrap().unwrap().body,
+        SessionEventBody::Ready { .. }
+    ));
     let event = session.output.receive().await.unwrap().unwrap();
     let SessionEventBody::Recovery { reference } = event.body else {
         panic!("expected recovery");
@@ -516,6 +526,10 @@ async fn session_concurrency_lease_survives_cloned_command_port() {
     ));
     let model = zhir_models::ConcurrencyLimitedModel::new(inner, 1).unwrap();
     let open = SessionOpen {
+        context_revision: 0,
+        input_position: 0,
+        profile_revision: 0,
+        mode: zhir_core::run::RunMode::Interactive,
         session_id: "session".into(),
         after_sequence: None,
         output_epoch: 0,

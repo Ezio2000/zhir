@@ -3,7 +3,14 @@ use super::*;
 impl Engine {
     pub(super) fn session_capabilities(&self) -> &CapabilitySet {
         self.session.as_ref().map_or_else(
-            || self.config.model.capabilities(),
+            || {
+                self.current
+                    .active
+                    .session
+                    .capabilities
+                    .as_ref()
+                    .unwrap_or_else(|| self.config.model.capabilities())
+            },
             |input| input.capabilities(),
         )
     }
@@ -34,11 +41,13 @@ impl Engine {
             stream: self.current.options.stream,
         }
     }
-    pub(super) async fn start_turn(&mut self) -> Result<()> {
-        if self.current.metrics.model_turns >= self.current.options.limits.max_model_turns {
+    pub(super) async fn generate(&mut self) -> Result<()> {
+        if self.current.metrics.generation_requests
+            >= self.current.options.limits.max_generation_requests
+        {
             let mut next = self.current.as_ref().clone();
             next.state = State::Limited {
-                reason: LimitReason::ModelTurns,
+                reason: LimitReason::GenerationRequests,
             };
             return self
                 .commit(
@@ -53,6 +62,8 @@ impl Engine {
         if self.current.active.operations.is_empty()
             && self.current.active.commands.is_empty()
             && self.current.active.media.is_empty()
+            && self.current.active.session.reduced_context_revision
+                != Some(self.current.active.session.context_revision)
             && let Some(reducer) = self.config.history_reducer.clone()
             && let Some(rewrite) = interruptible(
                 reducer.reduce(self.current.clone()),
@@ -62,8 +73,31 @@ impl Engine {
             .await?
         {
             let mut next = self.current.as_ref().clone();
+            let produced: std::collections::BTreeSet<_> = self
+                .current
+                .history
+                .entries()
+                .into_iter()
+                .skip(self.current.active.session.run_start)
+                .map(|entry| entry.id)
+                .collect();
+            next.active.session.run_start = rewrite
+                .entries
+                .iter()
+                .take_while(|entry| !produced.contains(&entry.id))
+                .count();
             next.history = History::from_entries(rewrite.entries.clone())?;
-            next.active.session.turn_start = next.history.len();
+            next.active.session.response_start = next.history.len();
+            next.active.session.context_revision += 1;
+            next.active.session.reduced_context_revision =
+                Some(next.active.session.context_revision);
+            next.active.commands.push(PendingCommand {
+                id: new_id(),
+                intent: CommandIntent::ReplaceContext {
+                    context_revision: next.active.session.context_revision,
+                },
+                sent: false,
+            });
             self.commit(
                 next,
                 Fact::HistoryRewrite {
@@ -72,23 +106,25 @@ impl Engine {
                 HistoryDelta::Replace(rewrite.entries),
             )
             .await?;
+            return Ok(());
         }
-        let turn_id = new_id();
-        let request = self.model_request(self.current.history.len());
-        let negotiated = self.negotiate(&request)?;
+        let generation_id = new_id();
         let id = new_id();
         let mut next = self.current.as_ref().clone();
-        next.active.session.turn_id = Some(turn_id.clone());
-        next.active.session.turn_start = next.history.len();
-        next.active.session.disposition = None;
-        next.active.session.negotiated = negotiated;
+        next.active.session.generation_id = Some(generation_id.clone());
+        next.active.session.response_start = next.history.len();
+        next.active.session.response_status = None;
+        next.active.session.generation_started = false;
+        next.active.session.generated_input_position = next.active.session.input_position;
+        next.active.session.needs_generation = false;
+        next.metrics.generation_requests += 1;
         next.active.commands.push(PendingCommand {
             id: id.clone(),
-            intent: CommandIntent::StartTurn {
-                turn_id,
-                history_count: next.history.len(),
-                profile: next.active.session.profile.clone(),
-                runtime_tools: self.catalog.specs(),
+            intent: CommandIntent::Generate {
+                generation_id,
+                context_revision: next.active.session.context_revision,
+                input_position: next.active.session.input_position,
+                profile_revision: next.active.session.profile_revision,
             },
             sent: false,
         });
@@ -98,7 +134,6 @@ impl Engine {
             HistoryDelta::Unchanged,
         )
         .await?;
-        self.needs_turn = false;
         Ok(())
     }
 }
@@ -129,8 +164,72 @@ impl Engine {
         Ok(())
     }
     pub(super) async fn open_model(&mut self) -> Result<()> {
+        if self.current.options.mode == RunMode::Task
+            && !self
+                .session_capabilities()
+                .supports(Capability::ResponseEvents)
+        {
+            return Err(Error::Invalid(
+                "Task mode requires verifiable response boundaries".into(),
+            ));
+        }
+        if self.config.history_reducer.is_some()
+            && !self
+                .session_capabilities()
+                .supports(Capability::ReplaceContext)
+        {
+            return Err(Error::Invalid(
+                "model does not support context replacement required by the history reducer".into(),
+            ));
+        }
+        let mut next = self.current.as_ref().clone();
+        next.active.session.establishment = SessionEstablishment::Opening;
+        next.active.session.ready = false;
+        self.commit(
+            next,
+            Fact::Command {
+                command_id: new_id(),
+            },
+            HistoryDelta::Unchanged,
+        )
+        .await?;
+        let seed_end = self
+            .current
+            .active
+            .commands
+            .iter()
+            .filter_map(|command| match command.intent {
+                CommandIntent::Append { entry, .. } => Some(entry),
+                _ => None,
+            })
+            .min()
+            .unwrap_or(self.current.history.len());
+        let seed_input_position = self
+            .current
+            .active
+            .commands
+            .iter()
+            .find_map(|command| match command.intent {
+                CommandIntent::Append {
+                    input_position,
+                    entry,
+                    source: AppendSource::Submitted,
+                    ..
+                } if self.current.history.get(entry).is_some_and(|e| {
+                    matches!(e.message, Message::User { .. } | Message::External { .. })
+                }) =>
+                {
+                    Some(input_position - 1)
+                }
+                _ => None,
+            })
+            .unwrap_or(self.current.active.session.input_position);
         let open = SessionOpen {
-            request: self.model_request(self.current.history.len()),
+            request: self.model_request(seed_end),
+            context_revision: self.current.active.session.acknowledged_context_revision,
+            input_position: seed_input_position,
+            profile_revision: self.current.active.session.profile_revision,
+            mode: self.current.options.mode,
             session_id: self.current.active.session.id.clone(),
             after_sequence: self
                 .current
@@ -148,6 +247,7 @@ impl Engine {
                 deltas: None,
             },
         };
+        let opening_request = open.request.clone();
         let model = self.config.model.clone();
         let opening = model.open_session(open);
         tokio::pin!(opening);
@@ -158,6 +258,7 @@ impl Engine {
                     Err(_) if self.current.active.session.recovery.is_some() => {
                         return self.suspend(WaitReason::Recovery).await;
                     }
+                    Err(Error::Uncertain(_)) => return self.suspend(WaitReason::Recovery).await,
                     Err(error) => return Err(error),
                 },
                 Some(control) = self.controls.recv(), if !self.controls.is_closed() || !self.controls.is_empty() => {
@@ -181,6 +282,17 @@ impl Engine {
             return self.suspend(WaitReason::Recovery).await;
         }
         next.active.session.capabilities = Some(session.input.capabilities().clone());
+        next.active.session.negotiated = session.input.negotiate(&opening_request)?;
+        if self.config.history_reducer.is_some()
+            && !session
+                .input
+                .capabilities()
+                .supports(Capability::ReplaceContext)
+        {
+            return Err(Error::Invalid(
+                "bound model does not support context replacement".into(),
+            ));
+        }
         if next.active.session.recovery.is_none() {
             next.active.session.last_sequence = None;
         }

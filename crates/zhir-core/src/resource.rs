@@ -90,7 +90,7 @@ pub trait ResourceStore: Send + Sync {
 /// Payload encoding and packet pacing belong to the selected model and host.
 pub struct MediaChunk {
     pub stream_id: String,
-    pub turn_id: String,
+    pub session_id: String,
     pub epoch: u64,
     pub sequence: u64,
     pub timestamp_us: u64,
@@ -101,7 +101,7 @@ pub struct MediaChunk {
 impl MediaChunk {
     pub fn validate(&self, max_bytes: usize) -> Result<()> {
         if self.stream_id.is_empty()
-            || self.turn_id.is_empty()
+            || self.session_id.is_empty()
             || self.media_type.is_empty()
             || self.bytes.len() > max_bytes
         {
@@ -126,7 +126,7 @@ pub trait MediaReceiver: Send {
 #[serde(deny_unknown_fields)]
 pub struct SealedMedia {
     pub stream_id: String,
-    pub turn_id: String,
+    pub session_id: String,
     pub epoch: u64,
     pub sequence: u64,
     pub timestamp_us: u64,

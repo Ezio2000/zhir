@@ -108,12 +108,12 @@ async fn workflow(
     let transform = transform.map_event(move |mut event, ctx| {
         if matches!(
             event.body,
-            zhir::model::SessionEventBody::TurnFinished { .. }
+            zhir::model::SessionEventBody::ResponseFinished { .. }
         ) {
             map_count.fetch_add(1, Ordering::SeqCst);
         }
         async move {
-            if let zhir::model::SessionEventBody::TurnFinished { provider_data, .. } =
+            if let zhir::model::SessionEventBody::ResponseFinished { provider_data, .. } =
                 &mut event.body
             {
                 provider_data["consumer_transform"] = json!(ctx.run.require(CASE)?);
@@ -161,7 +161,7 @@ async fn workflow(
         .defaults(|run| run.stream(stream))
         .defaults(|run| {
             run.limits(Limits {
-                max_model_turns: 3,
+                max_generation_requests: 3,
                 max_runtime_tool_calls: 1,
                 elapsed_ms: Some(60_000),
                 ..zhir::kernel::defaults::limits()
@@ -174,7 +174,10 @@ async fn workflow(
     }).await.map_err(|e|zhir::error::Error::Invalid(e.to_string()))?.into_checkpoint();
     let output = zhir::output::decode::<Quote>(&checkpoint)?;
     let records = recorded.records();
-    let responses: Vec<_> = records.iter().flat_map(|r| r.completed_turns()).collect();
+    let responses: Vec<_> = records
+        .iter()
+        .flat_map(|r| r.completed_responses())
+        .collect();
     let raw_frames = observer
         .deltas()
         .iter()

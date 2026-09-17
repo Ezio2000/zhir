@@ -27,8 +27,58 @@ pub struct SessionPeer {
     pub media_output: Arc<dyn MediaSender>,
     events: mpsc::Sender<Result<SessionEvent>>,
     sequence: u64,
+    input_position: u64,
+    seed: Vec<zhir_core::message::Message>,
+    projection: Vec<zhir_core::run::HistoryEntry>,
 }
 impl SessionPeer {
+    pub fn projection(&self) -> Vec<zhir_core::message::Message> {
+        let mut messages = self.seed.clone();
+        messages.extend(conversation(self.projection.clone()));
+        messages
+    }
+    /// Apply kernel-accepted output to the fixture projection before exposing host commands.
+    pub async fn command(&mut self) -> Result<Option<SessionCommand>> {
+        while let Some(command) = self.commands.recv().await {
+            match &command.body {
+                SessionCommandBody::Append { entry, .. } => self.projection.push(entry.clone()),
+                SessionCommandBody::ReplaceContext { entries, .. } => {
+                    self.seed.clear();
+                    self.projection = entries.clone();
+                }
+                _ => (),
+            }
+            if matches!(
+                command.body,
+                SessionCommandBody::Append {
+                    source: AppendSource::Accepted,
+                    ..
+                }
+            ) {
+                self.acknowledge(&command, None).await?;
+            } else {
+                return Ok(Some(command));
+            }
+        }
+        Ok(None)
+    }
+    pub async fn close(&mut self) -> Result<()> {
+        if let Some(command) = self.command().await? {
+            if !matches!(command.body, SessionCommandBody::Close) {
+                return Err(Error::Protocol(
+                    "unexpected command while waiting for graceful close".into(),
+                ));
+            }
+            self.acknowledge(&command, None).await?;
+            self.event(SessionEventBody::Closed {
+                reason: "host_request".into(),
+                provider_data: serde_json::Value::Null,
+            })
+            .await?;
+            return Ok(());
+        }
+        Err(Error::Protocol("host did not request close".into()))
+    }
     pub async fn event(&mut self, body: SessionEventBody) -> Result<()> {
         let sequence = self.sequence;
         self.sequence += 1;
@@ -48,13 +98,33 @@ impl SessionPeer {
         self.event(SessionEventBody::Acknowledged {
             command_id: command.id.clone(),
             recovery,
+            level: Acknowledgement::Provider,
         })
-        .await
+        .await?;
+        if let SessionCommandBody::Generate {
+            generation_id,
+            input_position,
+            ..
+        } = &command.body
+        {
+            self.input_position = *input_position;
+            self.event(SessionEventBody::ResponseStarted {
+                generation_id: generation_id.clone(),
+                input_position: *input_position,
+            })
+            .await?;
+        }
+        Ok(())
     }
-    pub async fn finished(&mut self, turn_id: String, disposition: TurnDisposition) -> Result<()> {
-        self.event(SessionEventBody::TurnFinished {
-            turn_id,
-            disposition,
+    pub async fn finished(
+        &mut self,
+        generation_id: String,
+        response_status: ResponseStatus,
+    ) -> Result<()> {
+        self.event(SessionEventBody::ResponseFinished {
+            generation_id,
+            input_position: self.input_position,
+            response_status,
             usage: Default::default(),
             model_id: None,
             response_id: None,
@@ -125,10 +195,13 @@ impl Model for SessionModel {
             let capacity = (open.limits.max_buffered_media_bytes / limit).max(1);
             let (media_input, media_commands) = mpsc::channel(capacity);
             let (media_output, media_events) = mpsc::channel(capacity);
-            let peer = SessionPeer {
+            let mut peer = SessionPeer {
                 commands,
                 events: events.clone(),
                 sequence: open.after_sequence.map_or(0, |s| s + 1),
+                input_position: open.input_position,
+                seed: open.request.messages.clone(),
+                projection: vec![],
                 media_input: media_commands,
                 media_output: Arc::new(MediaInput {
                     sender: media_output,
@@ -137,6 +210,15 @@ impl Model for SessionModel {
             };
             let handler = self.handler.clone();
             tokio::spawn(async move {
+                if let Err(error) = peer
+                    .event(SessionEventBody::Ready {
+                        context_revision: open.context_revision,
+                    })
+                    .await
+                {
+                    let _ = events.send(Err(error)).await;
+                    return;
+                }
                 if let Err(error) = handler(open, peer).await {
                     let _ = events.send(Err(error)).await;
                 }

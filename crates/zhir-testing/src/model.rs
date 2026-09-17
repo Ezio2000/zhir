@@ -5,7 +5,7 @@ use std::{
 use zhir_core::{
     BoxFuture, Result,
     error::Error,
-    model::{CapabilitySet, Model, ModelContext, ModelDelta, ModelRequest, TurnOutput},
+    model::{CapabilitySet, GenerationOutput, Model, ModelContext, ModelDelta, ModelRequest},
     run::RunContext,
 };
 #[derive(Clone, Debug)]
@@ -16,10 +16,10 @@ pub struct RecordedRequest {
 #[derive(Clone, Debug)]
 pub struct ScriptStep {
     pub deltas: Vec<ModelDelta>,
-    pub outcome: Result<TurnOutput>,
+    pub outcome: Result<GenerationOutput>,
 }
 impl ScriptStep {
-    pub fn response(response: TurnOutput) -> Self {
+    pub fn response(response: GenerationOutput) -> Self {
         Self {
             deltas: vec![],
             outcome: Ok(response),
@@ -131,7 +131,7 @@ impl ScriptedModel {
             Err(Error::Protocol(issues.join("; ")))
         }
     }
-    pub fn responses(responses: impl IntoIterator<Item = TurnOutput>) -> Self {
+    pub fn responses(responses: impl IntoIterator<Item = GenerationOutput>) -> Self {
         Self::new(responses.into_iter().map(ScriptStep::response))
     }
     pub fn with_capabilities(mut self, capabilities: CapabilitySet) -> Self {
@@ -350,11 +350,11 @@ impl Model for RecordingModel {
 
 /// Drives one native turn in adapter tests, asserting its session boundary.
 pub trait ModelTestExt: Model {
-    fn turn(
+    fn generate(
         &self,
         request: ModelRequest,
         context: ModelContext,
-    ) -> BoxFuture<'_, Result<TurnOutput>> {
+    ) -> BoxFuture<'_, Result<GenerationOutput>> {
         Box::pin(async move {
             use zhir_core::model::*;
             let mut session = self
@@ -362,6 +362,10 @@ pub trait ModelTestExt: Model {
                     session_id: "test-session".into(),
                     after_sequence: None,
                     output_epoch: 0,
+                    context_revision: 0,
+                    input_position: 0,
+                    profile_revision: 0,
+                    mode: zhir_core::run::RunMode::Task,
                     limits: zhir_kernel::defaults::limits(),
                     request: request.clone(),
                     recovery: None,
@@ -372,19 +376,21 @@ pub trait ModelTestExt: Model {
                 .input
                 .send(SessionCommand {
                     id: "test-command".into(),
-                    body: SessionCommandBody::StartTurn {
-                        turn_id: "test-turn".into(),
-                        request: Box::new(request),
+                    body: SessionCommandBody::Generate {
+                        generation_id: "test-turn".into(),
+                        context_revision: 0,
+                        input_position: 0,
+                        profile_revision: 0,
                     },
                 })
                 .await?;
-            let mut result = TurnOutput::text("");
+            let mut result = GenerationOutput::text("");
             result.output.clear();
             while let Some(event) = session.output.receive().await? {
                 match event.body {
                     SessionEventBody::Output { output, .. } => result.output.push(output),
-                    SessionEventBody::TurnFinished {
-                        disposition,
+                    SessionEventBody::ResponseFinished {
+                        response_status,
                         usage,
                         model_id,
                         response_id,
@@ -393,7 +399,7 @@ pub trait ModelTestExt: Model {
                         ..
                     } => {
                         result.usage = usage;
-                        result.provider_turn_pending = disposition == TurnDisposition::Continue;
+                        result.status = response_status;
                         result.model_id = model_id;
                         result.response_id = response_id;
                         result.finish_reason = finish_reason;
@@ -402,6 +408,8 @@ pub trait ModelTestExt: Model {
                         return Ok(result);
                     }
                     SessionEventBody::Acknowledged { .. }
+                    | SessionEventBody::Ready { .. }
+                    | SessionEventBody::ResponseStarted { .. }
                     | SessionEventBody::Delta { .. }
                     | SessionEventBody::Recovery { .. } => (),
                     _ => {
@@ -422,31 +430,33 @@ impl<T: Model + ?Sized> ModelTestExt for T {}
 impl SessionRecord {
     /// Completed turns reconstructed from the session event log; unfinished turns
     /// remain visible in `events` and are deliberately absent here.
-    pub fn completed_turns(&self) -> Vec<TurnOutput> {
-        use zhir_core::model::{SessionEventBody, TurnDisposition};
+    pub fn completed_responses(&self) -> Vec<GenerationOutput> {
+        use zhir_core::model::SessionEventBody;
         let mut outputs =
             std::collections::BTreeMap::<String, Vec<zhir_core::message::Output>>::new();
         let mut turns = Vec::new();
         for event in &self.events {
             match &event.body {
                 SessionEventBody::Output {
-                    turn_id, output, ..
+                    generation_id: Some(generation_id),
+                    output,
+                    ..
                 } => outputs
-                    .entry(turn_id.clone())
+                    .entry(generation_id.clone())
                     .or_default()
                     .push(output.clone()),
-                SessionEventBody::TurnFinished {
-                    turn_id,
-                    disposition,
+                SessionEventBody::ResponseFinished {
+                    generation_id,
+                    response_status,
                     usage,
                     model_id,
                     response_id,
                     finish_reason,
                     provider_data,
                     ..
-                } => turns.push(TurnOutput {
-                    output: outputs.remove(turn_id).unwrap_or_default(),
-                    provider_turn_pending: *disposition == TurnDisposition::Continue,
+                } => turns.push(GenerationOutput {
+                    output: outputs.remove(generation_id).unwrap_or_default(),
+                    status: response_status.clone(),
                     usage: usage.clone(),
                     model_id: model_id.clone(),
                     response_id: response_id.clone(),

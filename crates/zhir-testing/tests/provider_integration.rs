@@ -56,12 +56,12 @@ async fn provider_adapter_matrix_preserves_identity_order_progress_and_replay() 
                         };
                     }
                     let response = model
-                        .turn(first_request, context(deltas.clone()))
+                        .generate(first_request, context(deltas.clone()))
                         .await
                         .unwrap();
                     assert_eq!(response.output.len(), count);
                     assert_eq!(
-                        response.provider_turn_pending,
+                        response.status == zhir_core::model::ResponseStatus::Continuation,
                         matches!(stage, "queued" | "working")
                     );
                     for (index, output) in response.output.iter().enumerate() {
@@ -95,7 +95,7 @@ async fn provider_adapter_matrix_preserves_identity_order_progress_and_replay() 
                         provider_data: response.provider_data,
                     });
                     model
-                        .turn(next, context(Arc::new(Deltas::default())))
+                        .generate(next, context(Arc::new(Deltas::default())))
                         .await
                         .unwrap();
                     let sent = worker.await.unwrap();
@@ -160,7 +160,7 @@ async fn unknown_disabled_duplicate_and_unmapped_calls_fail_without_scheduling()
             input.provider_tools.clear();
             assert!(
                 model
-                    .turn(input, context(Arc::new(Deltas::default())))
+                    .generate(input, context(Arc::new(Deltas::default())))
                     .await
                     .unwrap_err()
                     .to_string()
@@ -183,7 +183,7 @@ async fn unknown_disabled_duplicate_and_unmapped_calls_fail_without_scheduling()
     disabled.provider_tools.clear();
     assert!(
         model
-            .turn(disabled, context(Arc::new(Deltas::default())))
+            .generate(disabled, context(Arc::new(Deltas::default())))
             .await
             .unwrap_err()
             .to_string()
@@ -202,7 +202,7 @@ async fn unknown_disabled_duplicate_and_unmapped_calls_fail_without_scheduling()
     .unwrap();
     assert!(
         model
-            .turn(request(false), context(Arc::new(Deltas::default())))
+            .generate(request(false), context(Arc::new(Deltas::default())))
             .await
             .unwrap_err()
             .to_string()
@@ -224,7 +224,7 @@ async fn unknown_disabled_duplicate_and_unmapped_calls_fail_without_scheduling()
     .with_extension(move |_| extension());
     assert!(
         model
-            .turn(request(false), context(Arc::new(Deltas::default())))
+            .generate(request(false), context(Arc::new(Deltas::default())))
             .await
             .unwrap_err()
             .to_string()
@@ -418,7 +418,7 @@ async fn resources_are_durable_before_commit_and_replay_after_reconstruction() {
     next.messages = zhir::model::conversation(restored.history.entries());
     next.messages.push(Message::user("continue"));
     model
-        .turn(next, context(Arc::new(Deltas::default())))
+        .generate(next, context(Arc::new(Deltas::default())))
         .await
         .unwrap();
     let sent = worker.await.unwrap();
@@ -429,7 +429,11 @@ async fn resources_are_durable_before_commit_and_replay_after_reconstruction() {
         .find(|item| item["type"] == "consumer_render_call")
         .unwrap();
     assert_eq!(image["result"], "aGVsbG8=");
-    assert_eq!(gets.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        gets.load(Ordering::SeqCst),
+        4,
+        "canonical accepted outputs are also projected into the active session"
+    );
 }
 
 #[tokio::test]
@@ -477,11 +481,11 @@ async fn resource_failure_or_missing_binding_never_commits_a_partial_provider_re
             let error = result.unwrap_err();
             assert!(matches!(error.error, Error::Storage(_)));
             let checkpoint = error.last_checkpoint.unwrap();
-            assert!(checkpoint.active.session.turn_id.is_some());
+            assert!(checkpoint.active.session.generation_id.is_some());
             checkpoint
         } else {
             let checkpoint = result.unwrap().into_checkpoint();
-            assert!(checkpoint.active.session.turn_id.is_some());
+            assert!(checkpoint.active.session.generation_id.is_some());
             assert!(
                 matches!(&checkpoint.state, State::Failed { error } if error.code == "protocol"),
                 "{:?}",
@@ -514,7 +518,7 @@ async fn invocation_sessions_are_isolated_across_concurrent_streams() {
         async move {
             let deltas = Arc::new(Deltas::default());
             model
-                .turn(request(true), context(deltas.clone()))
+                .generate(request(true), context(deltas.clone()))
                 .await
                 .unwrap();
             let events = deltas.0.lock().unwrap();
@@ -565,7 +569,7 @@ async fn provider_continuation_never_enters_runtime_tool_execution() {
             .unwrap()
             .into_checkpoint();
         assert!(matches!(completed.state, State::Completed { .. }));
-        assert_eq!(completed.metrics.model_turns, 2);
+        assert_eq!(completed.metrics.generation_requests, 2);
         assert_eq!(completed.metrics.runtime_tool_calls, 0);
         assert_eq!(zhir::output::provider_calls(&completed).len(), 2);
         assert_eq!(worker.await.unwrap().len(), 2);
@@ -691,7 +695,7 @@ async fn conflicting_mapping_and_malformed_provider_status_are_explicit_errors()
     });
     assert!(
         model
-            .turn(request(false), context(Arc::new(Deltas::default())))
+            .generate(request(false), context(Arc::new(Deltas::default())))
             .await
             .unwrap_err()
             .to_string()
@@ -711,7 +715,7 @@ async fn conflicting_mapping_and_malformed_provider_status_are_explicit_errors()
         let deltas = Arc::new(Deltas::default());
         assert!(
             model
-                .turn(request(true), context(deltas.clone()))
+                .generate(request(true), context(deltas.clone()))
                 .await
                 .is_err()
         );
@@ -752,7 +756,7 @@ async fn resource_resolution_preserves_business_objects_and_missing_references_s
                     assert!(
                         matches!(&request.messages[1],Message::Assistant{output,..} if matches!(&output[0],Output::RuntimeToolCall{call} if call.input == zhir::tool::RuntimeToolInput::Structured(json!({"kind":"artifact","id":"business"}))))
                     );
-                    Ok(zhir::model::TurnOutput::text("done"))
+                    Ok(zhir::model::GenerationOutput::text("done"))
                 }
             }
         },
@@ -773,7 +777,7 @@ async fn resource_resolution_preserves_business_objects_and_missing_references_s
         provider_data: Value::Null,
     });
     model
-        .turn(first, context(Arc::new(Deltas::default())))
+        .generate(first, context(Arc::new(Deltas::default())))
         .await
         .unwrap();
     assert_eq!(gets.load(Ordering::SeqCst), 0);
@@ -791,7 +795,7 @@ async fn resource_resolution_preserves_business_objects_and_missing_references_s
         })],
     });
     let error = model
-        .turn(second, context(Arc::new(Deltas::default())))
+        .generate(second, context(Arc::new(Deltas::default())))
         .await
         .unwrap_err();
     assert!(matches!(error, Error::Resource(_)), "{error:?}");
@@ -875,7 +879,7 @@ async fn arbitrary_native_identity_fields_and_custom_replay_do_not_require_core_
         options: json!([1, 2]),
     }];
     let response = model
-        .turn(input.clone(), context(Arc::new(Deltas::default())))
+        .generate(input.clone(), context(Arc::new(Deltas::default())))
         .await
         .unwrap();
     assert_eq!(
@@ -887,7 +891,7 @@ async fn arbitrary_native_identity_fields_and_custom_replay_do_not_require_core_
         provider_data: response.provider_data,
     });
     model
-        .turn(input, context(Arc::new(Deltas::default())))
+        .generate(input, context(Arc::new(Deltas::default())))
         .await
         .unwrap();
     let sent = worker.await.unwrap();
@@ -998,7 +1002,7 @@ async fn paired_native_blocks_replay_once_in_stream_and_nonstream_messages() {
             })
         });
         let response = model
-            .turn(request(streaming), context(Arc::new(Deltas::default())))
+            .generate(request(streaming), context(Arc::new(Deltas::default())))
             .await
             .unwrap();
         assert_eq!(response.output.len(), 1);
@@ -1012,7 +1016,7 @@ async fn paired_native_blocks_replay_once_in_stream_and_nonstream_messages() {
             provider_data: response.provider_data,
         });
         model
-            .turn(next, context(Arc::new(Deltas::default())))
+            .generate(next, context(Arc::new(Deltas::default())))
             .await
             .unwrap();
         let sent = worker.await.unwrap();
@@ -1107,7 +1111,7 @@ async fn consumer_media_outputs_are_independent_of_native_model_input_modalities
         options: json!({}),
     }];
     let response = model
-        .turn(input.clone(), context(Arc::new(Deltas::default())))
+        .generate(input.clone(), context(Arc::new(Deltas::default())))
         .await
         .unwrap();
     assert_eq!(zhir::message::visible_content(&response.output).len(), 3);
@@ -1116,7 +1120,7 @@ async fn consumer_media_outputs_are_independent_of_native_model_input_modalities
         provider_data: response.provider_data,
     });
     model
-        .turn(input.clone(), context(Arc::new(Deltas::default())))
+        .generate(input.clone(), context(Arc::new(Deltas::default())))
         .await
         .unwrap();
     let sent = worker.await.unwrap();
@@ -1132,7 +1136,7 @@ async fn consumer_media_outputs_are_independent_of_native_model_input_modalities
     });
     assert!(
         model
-            .turn(input, context(Arc::new(Deltas::default())))
+            .generate(input, context(Arc::new(Deltas::default())))
             .await
             .unwrap_err()
             .to_string()
@@ -1146,8 +1150,8 @@ impl zhir::models::ProtocolExtension for ReverseNormalized {
         &mut self,
         _: zhir::models::Protocol,
         _: &Value,
-        decoded: Result<zhir::model::TurnOutput>,
-    ) -> Result<zhir::model::TurnOutput> {
+        decoded: Result<zhir::model::GenerationOutput>,
+    ) -> Result<zhir::model::GenerationOutput> {
         let mut response = decoded?;
         response.output.reverse();
         Ok(response)
@@ -1205,7 +1209,7 @@ async fn canonical_media_replay_survives_reordered_outputs_and_multiple_native_p
             )
             .unwrap();
             let response = model
-                .turn(request(streaming), context(Arc::new(Deltas::default())))
+                .generate(request(streaming), context(Arc::new(Deltas::default())))
                 .await
                 .unwrap();
             assert!(
@@ -1213,14 +1217,14 @@ async fn canonical_media_replay_survives_reordered_outputs_and_multiple_native_p
             );
             let bytes = serde_json::to_vec(&response).unwrap();
             assert!(!String::from_utf8_lossy(&bytes).contains("aGVsbG8="));
-            let restored: zhir::model::TurnOutput = serde_json::from_slice(&bytes).unwrap();
+            let restored: zhir::model::GenerationOutput = serde_json::from_slice(&bytes).unwrap();
             let mut next = request(false);
             next.messages.push(Message::Assistant {
                 output: restored.output,
                 provider_data: restored.provider_data,
             });
             model
-                .turn(next, context(Arc::new(Deltas::default())))
+                .generate(next, context(Arc::new(Deltas::default())))
                 .await
                 .unwrap();
             let sent = worker.await.unwrap();
@@ -1285,7 +1289,7 @@ async fn local_media_paths_support_multiple_items_escaped_keys_and_every_media_k
             move |_, _| {
                 let output = output.clone();
                 async move {
-                    let mut r = zhir::model::TurnOutput::text("");
+                    let mut r = zhir::model::GenerationOutput::text("");
                     r.output = vec![output];
                     Ok(r)
                 }
@@ -1293,7 +1297,7 @@ async fn local_media_paths_support_multiple_items_escaped_keys_and_every_media_k
         );
         let model = ResourceModel::new(Arc::new(inner), files.clone(), 16 * 1024 * 1024).unwrap();
         let response = model
-            .turn(request(false), context(Arc::new(Deltas::default())))
+            .generate(request(false), context(Arc::new(Deltas::default())))
             .await
             .unwrap();
         let bytes = serde_json::to_vec(&response).unwrap();
@@ -1316,7 +1320,7 @@ async fn local_media_paths_support_multiple_items_escaped_keys_and_every_media_k
                 let native = ProviderOutput::replay(call)?;
                 assert_eq!(native[0]["a/b~"][0], "aGVsbG8=");
                 assert_eq!(native[1]["data"]["bytes"], "c2Vjb25k");
-                Ok(zhir::model::TurnOutput::text("done"))
+                Ok(zhir::model::GenerationOutput::text("done"))
             },
         );
         let mut next = request(false);
@@ -1326,7 +1330,7 @@ async fn local_media_paths_support_multiple_items_escaped_keys_and_every_media_k
         });
         ResourceModel::new(Arc::new(verifier), files, 16 * 1024 * 1024)
             .unwrap()
-            .turn(next, context(Arc::new(Deltas::default())))
+            .generate(next, context(Arc::new(Deltas::default())))
             .await
             .unwrap();
         assert_eq!(puts.load(Ordering::SeqCst), 2);

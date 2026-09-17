@@ -1,11 +1,30 @@
 use super::*;
 
 impl Engine {
+    pub(super) fn append_command(
+        next: &mut Checkpoint,
+        entry: usize,
+        source: AppendSource,
+        operation_id: Option<String>,
+    ) {
+        next.active.session.context_revision += 1;
+        next.active.commands.push(PendingCommand {
+            id: new_id(),
+            intent: CommandIntent::Append {
+                entry,
+                context_revision: next.active.session.context_revision,
+                input_position: next.active.session.input_position,
+                source,
+                operation_id,
+            },
+            sent: false,
+        });
+    }
     pub(super) async fn prepare_command(&mut self, intent: CommandIntent) -> Result<String> {
         if self.current.active.commands.len() >= self.current.options.limits.max_control_commands {
             return Err(Error::Invalid("pending command capacity exceeded".into()));
         }
-        let end_input = matches!(intent, CommandIntent::EndInput);
+        let seal_user_input = matches!(intent, CommandIntent::SealUserInput);
         let interrupt = matches!(intent, CommandIntent::InterruptOutput { .. });
         let id = new_id();
         let mut next = self.current.as_ref().clone();
@@ -26,7 +45,7 @@ impl Engine {
                     next.active.media.remove(&key);
                 }
             }
-            CommandIntent::EndInput => next.active.session.input_closed = true,
+            CommandIntent::SealUserInput => next.active.session.input_closed = true,
             CommandIntent::SetInputAudio { enabled } => {
                 next.active.session.input_audio_enabled = *enabled
             }
@@ -49,7 +68,7 @@ impl Engine {
             self.media_output
                 .invalidate_before(self.current.active.session.output_epoch);
         }
-        if end_input {
+        if seal_user_input {
             self.media.close();
         }
         Ok(id)
@@ -58,7 +77,7 @@ impl Engine {
         let Some(input) = self.session.clone() else {
             return Ok(());
         };
-        if self.sending {
+        if self.sending || !self.current.active.session.ready {
             return Ok(());
         }
         let Some(command) = self
@@ -66,7 +85,8 @@ impl Engine {
             .active
             .commands
             .iter()
-            .find(|command| self.can_send(command))
+            .find(|command| !self.sent.contains(&command.id))
+            .filter(|command| self.can_send(command))
             .cloned()
         else {
             return Ok(());
@@ -111,16 +131,31 @@ impl Engine {
         if self.sent.contains(&command.id) {
             return false;
         }
-        let busy_turn = self.current.active.session.disposition.is_none()
-            && self.current.active.session.turn_id.is_some();
+        let busy_generation = self.current.active.session.response_status.is_none()
+            && self.current.active.session.generation_id.is_some();
         match &command.intent {
-            CommandIntent::EndInput | CommandIntent::Close | CommandIntent::FlushInput => {
+            CommandIntent::SealUserInput | CommandIntent::Close | CommandIntent::FlushInput => {
                 !self.input_sending && self.media.is_empty()
             }
-            CommandIntent::ToolResult { .. } if busy_turn => self
-                .session_capabilities()
-                .supports(Capability::AsyncResults),
-            CommandIntent::Input { .. } if busy_turn => {
+            CommandIntent::Append {
+                operation_id: Some(_),
+                ..
+            } if busy_generation
+                && !self
+                    .session_capabilities()
+                    .supports(Capability::ReplaceContext) =>
+            {
+                self.session_capabilities()
+                    .supports(Capability::AsyncResults)
+            }
+            CommandIntent::Append {
+                source: AppendSource::Submitted,
+                ..
+            } if busy_generation
+                && !self
+                    .session_capabilities()
+                    .supports(Capability::ReplaceContext) =>
+            {
                 self.session_capabilities().supports(Capability::Steering)
             }
             _ => true,
@@ -146,97 +181,55 @@ impl Engine {
                     content,
                 }
             }
-            CommandIntent::DelegationResult {
-                operation_id,
+            CommandIntent::Generate {
+                generation_id,
+                context_revision,
+                input_position,
+                profile_revision,
+            } => SessionCommandBody::Generate {
+                generation_id,
+                context_revision,
+                input_position,
+                profile_revision,
+            },
+            CommandIntent::Append {
                 entry,
-            } => {
-                let Message::DelegationResult { outcome, .. } = &self
-                    .current
-                    .history
-                    .get(entry)
-                    .ok_or_else(|| Error::Protocol("delegation result missing".into()))?
-                    .message
-                else {
-                    return Err(Error::Protocol("delegation result entry mismatch".into()));
-                };
-                let origin = self
-                    .current
-                    .active
-                    .operations
-                    .get(&operation_id)
-                    .ok_or_else(|| Error::Protocol("delegation origin missing".into()))?
-                    .origin
-                    .clone();
-                SessionCommandBody::DelegationResult {
-                    operation_id,
-                    origin,
-                    outcome: outcome.clone(),
-                }
-            }
-            CommandIntent::StartTurn {
-                turn_id,
-                history_count,
-                profile,
-                runtime_tools,
-            } => {
-                let mut request = self.model_request(history_count);
-                request.profile = profile;
-                request.runtime_tools = runtime_tools;
-                SessionCommandBody::StartTurn {
-                    turn_id,
-                    request: Box::new(request),
-                }
-            }
-            CommandIntent::Input { entry } => SessionCommandBody::Input {
-                message: self
+                context_revision,
+                input_position,
+                source,
+                ..
+            } => SessionCommandBody::Append {
+                entry: self
                     .current
                     .history
                     .get(entry)
                     .ok_or_else(|| Error::Protocol("missing input entry".into()))?
-                    .message
                     .clone(),
+                context_revision,
+                input_position,
+                source,
             },
-            CommandIntent::ToolResult {
-                operation_id,
-                entry,
-            } => {
-                let Message::RuntimeTool { outcome, .. } = &self
-                    .current
-                    .history
-                    .get(entry)
-                    .ok_or_else(|| Error::Protocol("missing result entry".into()))?
-                    .message
-                else {
-                    return Err(Error::Protocol("command result entry mismatch".into()));
-                };
-                SessionCommandBody::ToolResult {
-                    origin: self
-                        .current
-                        .active
-                        .operations
-                        .get(&operation_id)
-                        .ok_or_else(|| Error::Protocol("result origin missing".into()))?
-                        .origin
-                        .clone(),
-                    operation_id,
-                    outcome: outcome.clone(),
+            CommandIntent::ReplaceContext { context_revision } => {
+                SessionCommandBody::ReplaceContext {
+                    entries: self.current.history.entries(),
+                    context_revision,
                 }
             }
             CommandIntent::UpdateProfile { revision, profile } => {
                 SessionCommandBody::UpdateProfile { revision, profile }
             }
             CommandIntent::InterruptOutput {
-                turn_id,
+                generation_id,
                 output_epoch,
             } => SessionCommandBody::InterruptOutput {
-                turn_id,
+                generation_id,
                 output_epoch,
             },
             CommandIntent::FlushInput => SessionCommandBody::FlushInput,
             CommandIntent::SetInputAudio { enabled } => {
                 SessionCommandBody::SetInputAudio { enabled }
             }
-            CommandIntent::EndInput => SessionCommandBody::EndInput,
+            CommandIntent::SealUserInput => SessionCommandBody::SealUserInput,
             CommandIntent::Close => SessionCommandBody::Close,
         })
     }
