@@ -346,7 +346,8 @@ async fn websocket_tts_disconnect_is_uncertain_and_bad_audio_is_not_committed() 
         fixture::Fault::OversizedAudio,
     ] {
         let (endpoint, server) = fixture::serve(fault).await;
-        let (model, _) = TtsModel::new(TtsModel::config(endpoint, String::new(), "fixture".into()));
+        let (model, stats) =
+            TtsModel::new(TtsModel::config(endpoint, String::new(), "fixture".into()));
         let runtime = Runtime::builder(Arc::new(model))
             .resources(Arc::new(MemoryResourceStore::new()))
             .build()
@@ -366,12 +367,20 @@ async fn websocket_tts_disconnect_is_uncertain_and_bad_audio_is_not_committed() 
             fixture::Fault::BadAudio
             | fixture::Fault::OddAudio
             | fixture::Fault::OversizedAudio => {
-                assert!(matches!(checkpoint.state, State::Failed { .. }));
+                assert!(
+                    matches!(checkpoint.state, State::Failed { .. }),
+                    "{fault:?}: {:?}; adapter failure: {:?}",
+                    checkpoint.state,
+                    stats.borrow().failure
+                );
                 assert!(checkpoint.active.media.is_empty());
             }
             fixture::Fault::None | fixture::Fault::Burst => unreachable!(),
         }
-        server.await.unwrap();
+        let commands = server.await.unwrap();
+        if !matches!(fault, fixture::Fault::Disconnect) {
+            assert_eq!(commands, ["task_start", "task_continue", "task_finish"]);
+        }
     }
 }
 
