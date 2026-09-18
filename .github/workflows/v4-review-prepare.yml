@@ -1,0 +1,52 @@
+name: Prepare v4 review fixes
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: write
+concurrency:
+  group: v4-review-prepare-${{ github.head_ref }}
+  cancel-in-progress: true
+jobs:
+  prepare:
+    if: github.head_ref == 'fix/model-session-v4-review-followup' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.95.0'
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v6
+      - name: Apply assertion-checked review fixes
+        run: uv run --no-project .github/v4-review/prepare.py
+      - name: Format and regenerate current schemas
+        run: |
+          cargo fmt --all
+          cargo run -p zhir-conformance --bin schemas --locked
+          git diff --check
+      - name: Verify formatting and lints
+        run: |
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Verify regression and workspace tests
+        run: |
+          cargo test --workspace --all-features --locked
+          cargo run -p zhir-conformance --bin zhir-conformance --locked
+          cargo run -p zhir-conformance --bin schemas --locked -- --check
+      - name: Commit verified source changes to the repair branch only
+        env:
+          REPAIR_BRANCH: fix/model-session-v4-review-followup
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git ls-remote origin "refs/heads/$REPAIR_BRANCH" | cut -f1)" = "$EXPECTED_HEAD"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add crates contracts conformance .github/v4-review
+          git commit -m 'fix: complete v4 session semantics, binding recovery and regression coverage'
+          git push origin "HEAD:refs/heads/$REPAIR_BRANCH"
+          echo "Verified commit: $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
