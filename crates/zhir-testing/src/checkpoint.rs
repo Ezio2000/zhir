@@ -42,6 +42,7 @@ pub fn checkpoint_with_history(history: History) -> Checkpoint {
         state: State::Running,
         active: ActiveState {
             session: SessionSnapshot {
+                binding: None,
                 capabilities: None,
                 id: "fixture-session".into(),
                 generation_id: None,

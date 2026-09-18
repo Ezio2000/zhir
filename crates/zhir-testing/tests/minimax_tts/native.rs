@@ -32,7 +32,24 @@ async fn next(socket: &mut WebSocketStream<TcpStream>) -> Option<Value> {
     while let Some(Ok(frame)) = socket.next().await {
         match frame {
             Frame::Text(text) => return Some(serde_json::from_str(&text).unwrap()),
-            Frame::Ping(_) => socket.flush().await.unwrap(),
+            Frame::Ping(_) => {
+                // The fixed deadline can close the peer while its auto-pong is pending.
+                if let Err(error) = socket.flush().await {
+                    let closed = match &error {
+                        tokio_tungstenite::tungstenite::Error::ConnectionClosed
+                        | tokio_tungstenite::tungstenite::Error::AlreadyClosed => true,
+                        tokio_tungstenite::tungstenite::Error::Io(error) => matches!(
+                            error.kind(),
+                            std::io::ErrorKind::ConnectionReset
+                                | std::io::ErrorKind::ConnectionAborted
+                                | std::io::ErrorKind::BrokenPipe
+                        ),
+                        _ => false,
+                    };
+                    assert!(closed, "fixture pong flush failed: {error}");
+                    return None;
+                }
+            }
             Frame::Close(_) => return None,
             _ => (),
         }
@@ -96,6 +113,7 @@ async fn setup(mode: u8) -> (ModelSession, zhir_core::Cancellation, JoinHandle<(
     }
     let session = model
         .open_session(SessionOpen {
+            binding: None,
             context_revision: 0,
             input_position: 0,
             profile_revision: 0,
@@ -314,6 +332,7 @@ async fn interruption_progresses_while_media_consumer_is_blocked() {
         limits.max_media_chunk_bytes = 4;
         limits.max_buffered_media_bytes = 4;
         let mut session = model.open_session(SessionOpen {
+        binding: None,
  context_revision: 0, input_position: 0, profile_revision: 0, mode: zhir_core::run::RunMode::Interactive,
             session_id:"probe".into(), after_sequence:None, output_epoch:0,
             limits, request:request(), recovery:None,
@@ -380,6 +399,7 @@ async fn flush_waits_for_remote_receipt_and_allows_more_input() {
         config.pronunciation_dictionary = vec!["测试/(ce4)(shi4)".into()];
         let model = tts::model(config).unwrap();
         let mut session = model.open_session(SessionOpen {
+        binding: None,
  context_revision: 0, input_position: 0, profile_revision: 0, mode: zhir_core::run::RunMode::Interactive,
             session_id:"flush".into(), after_sequence:None, output_epoch:0,
             limits:zhir_kernel::defaults::limits(), request:request(), recovery:None,

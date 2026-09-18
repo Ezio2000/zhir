@@ -271,6 +271,7 @@ async fn native_input_and_async_results_resolve_resources_and_seal_operation_out
     let model = ResourceModel::new(Arc::new(inner), store.clone(), 3).unwrap();
     let mut session = model
         .open_session(SessionOpen {
+            binding: None,
             context_revision: 0,
             input_position: 0,
             profile_revision: 0,

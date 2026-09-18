@@ -56,6 +56,9 @@ struct Input {
     transforms: Vec<Arc<MapCommand>>,
 }
 impl SessionSender for Input {
+    fn binding(&self) -> Option<zhir_core::model::ModelBinding> {
+        self.inner.binding()
+    }
     fn capabilities(&self) -> &CapabilitySet {
         self.inner.capabilities()
     }

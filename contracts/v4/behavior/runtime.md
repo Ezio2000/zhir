@@ -176,3 +176,16 @@ payload on subsequent turns.
     Live opens directly, reports independent conversation/delegation items, and closes
     only after host sealing and operation-result delivery. Closure with unresolved work
     is a recovery condition, never fabricated success.
+
+36. Response-capable sessions may complete only when the latest verified response
+    covers the current input position and no generation remains required. This applies
+    equally to explicit and automatic generation; a submitted-input acknowledgement
+    cannot settle that input. Checkpoint validation enforces the same invariant.
+37. ModelBinding persists adapter selection separately from RecoveryRef. Local
+    projection reconstruction must reopen that binding, even after fallback candidates
+    recover or change order. Missing or conflicting bindings fail rather than select
+    another model. Transparent sender decorators preserve the binding unchanged.
+38. Exchange command acknowledgements, generated deltas and final output are polled
+    by one scheduler. A blocked emission cannot stop the generation or cancellation
+    needed to release its capacity. Control staging is bounded; terminal settlement
+    uses an independent port and never waits for output consumption.

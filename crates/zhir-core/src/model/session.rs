@@ -10,8 +10,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
+/// Stable adapter selection. This is not evidence of remote session recovery.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelBinding {
+    pub adapter: String,
+    pub data: Value,
+}
+
 #[derive(Clone)]
 pub struct SessionOpen {
+    pub binding: Option<ModelBinding>,
     pub session_id: String,
     pub after_sequence: Option<u64>,
     pub output_epoch: u64,
@@ -170,6 +180,10 @@ pub struct SessionEvent {
 }
 
 pub trait SessionSender: Send + Sync {
+    /// Identity to persist independently of optional remote recovery credentials.
+    fn binding(&self) -> Option<ModelBinding> {
+        None
+    }
     fn capabilities(&self) -> &super::CapabilitySet;
     fn negotiate(&self, request: &ModelRequest) -> Result<crate::profile::NegotiatedProfile>;
     fn send(&self, command: SessionCommand) -> BoxFuture<'_, Result<()>>;

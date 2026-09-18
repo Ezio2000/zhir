@@ -198,7 +198,7 @@ pub async fn serve(fault: Fault) -> (String, tokio::task::JoinHandle<Evidence>) 
                 Some("delegation.context.append") if fault == Fault::ExpiredWithDelegation => {
                     channel
                         .send_text(
-                            json!({"type":"session.closure.is_some()","reason":"expired","usage":{}})
+                            json!({"type":"session.closed","reason":"expired","usage":{}})
                                 .to_string(),
                         )
                         .await
@@ -228,7 +228,7 @@ pub async fn serve(fault: Fault) -> (String, tokio::task::JoinHandle<Evidence>) 
                                 .unwrap();
                         }
                         Fault::CloseBeforeAudioConfirmation => {
-                            channel.send_text(json!({"type":"session.closure.is_some()","reason":"client_request","usage":{}}).to_string()).await.unwrap();
+                            channel.send_text(json!({"type":"session.closed","reason":"client_request","usage":{}}).to_string()).await.unwrap();
                         }
                         Fault::RejectedAudio | Fault::RejectedUnderPressure => {
                             channel.send_text(json!({"type":"error","event_id":"server-error","error":{"code":"control_rejected","message":"Input control was rejected","event_id":event["event_id"],"param":"type"}}).to_string()).await.unwrap();
@@ -265,7 +265,10 @@ pub async fn serve(fault: Fault) -> (String, tokio::task::JoinHandle<Evidence>) 
                 Fault::ExpiredOnClose => "expired",
                 _ => "client_request",
             };
-            channel.send_text(json!({"type":"session.closure.is_some()","reason":reason,"usage":{"audio_duration_ms":80}}).to_string()).await.unwrap();
+            let mut closure: Value =
+                serde_json::from_str(include_str!("fixtures/session-closed.json")).unwrap();
+            closure["reason"] = json!(reason);
+            channel.send_text(closure.to_string()).await.unwrap();
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         pc.close().await.unwrap();

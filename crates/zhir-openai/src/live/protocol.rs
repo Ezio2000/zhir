@@ -74,7 +74,7 @@ impl Protocol {
             .ok_or_else(|| Error::Protocol("Live close has no command identity".into()))?;
         self.confirmation.begin(
             Pending::Close(id),
-            "session.closure.is_some()",
+            "session.closed",
             self.adapter.config.command_timeout,
         )?;
         Ok(Action::Send(json!({"type":"session.close"}).to_string()))

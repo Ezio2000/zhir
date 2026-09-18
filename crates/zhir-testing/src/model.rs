@@ -266,6 +266,9 @@ struct RecordedInput {
     index: usize,
 }
 impl zhir_core::model::SessionSender for RecordedInput {
+    fn binding(&self) -> Option<zhir_core::model::ModelBinding> {
+        self.inner.binding()
+    }
     fn capabilities(&self) -> &CapabilitySet {
         self.inner.capabilities()
     }
@@ -359,6 +362,7 @@ pub trait ModelTestExt: Model {
             use zhir_core::model::*;
             let mut session = self
                 .open_session(SessionOpen {
+                    binding: None,
                     session_id: "test-session".into(),
                     after_sequence: None,
                     output_epoch: 0,

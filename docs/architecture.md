@@ -329,3 +329,31 @@ No additional public recovery fields are introduced without a verified protocol
 consumer. `RecoveryRef` is an adapter-owned handle, while `after_sequence` is the
 local committed event watermark, not a provider cursor. Provider replay/correlation
 and uncertain-command reconciliation must be established before advertising Resume.
+
+
+## Binding and completion invariants
+
+`ModelBinding` records stable adapter selection independently of a remote
+`RecoveryRef`. The kernel persists the bound sender identity before consuming
+session events and supplies it when rebuilding an idle local projection.
+Fallback unwraps each binding layer and reopens only the original candidate;
+reordering, temporary availability changes or missing candidates cannot cause
+silent reselection. Transparent sender decorators forward the binding.
+
+Response-capable sessions cannot complete over an older input position, whether
+generation is explicit or automatic. Acknowledging Append is not a claim that
+its input has been answered. Kernel advancement and checkpoint validation both
+require current response coverage. Protocols without response events continue
+to use their real closure boundary, not a fabricated response or idle timeout.
+
+Ordinary exchanges use one scheduler to poll active generation, bounded pending
+emissions, command admission and cancellation/deadlines. Command handlers do
+not await public output capacity. Sequence allocation is serialized with event
+delivery; terminal settlement uses an independent port and drains admitted
+events before returning an error once. No second kernel or execution path is
+introduced.
+
+Persistent history indexes share immutable call identities and values through
+Arc references, keeping B-tree node rebalancing stack-bounded during bulk
+operation settlement. Public history references and snapshot semantics do not
+change; regression coverage also exercises a 512 KiB worker stack.
