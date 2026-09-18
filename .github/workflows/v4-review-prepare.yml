@@ -31,12 +31,6 @@ jobs:
           from pathlib import Path
           p = Path('crates/zhir-models/src/session.rs')
           text = p.read_text()
-          old = '''} else if let Some(finish) = &mut finishing {
-                              Some(finish.next())
-                          } else {
-                              None
-                          }'''
-          # Match the unformatted staged source by exact, checked text.
           old = '} else if let Some(finish) = &mut finishing {\n                    Some(finish.next())\n                } else {\n                    None\n                }'
           assert text.count(old) == 1
           p.write_text(text.replace(old, '} else {\n                    finishing.as_mut().map(FinishEvents::next)\n                }'))
@@ -75,7 +69,19 @@ jobs:
         run: |
           cargo fmt --all --check
           cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - name: Verify regression and workspace tests
+      - name: Verify review regressions and storage integration
+        run: |
+          set +e
+          cargo test -p zhir-testing --all-features --locked --test v4_review -- --nocapture
+          review_status=$?
+          cargo test -p zhir-testing --all-features --locked --test storage_stores memory -- --exact --nocapture
+          storage_status=$?
+          if test "$storage_status" -ne 0; then
+            binary=$(find target/debug/deps -maxdepth 1 -type f -name 'storage_stores-*' -executable | head -n 1)
+            gdb --batch -ex 'set pagination off' -ex 'handle SIGSEGV stop print nopass' -ex 'run memory --exact --nocapture' -ex 'bt 40' --args "$binary"
+          fi
+          test "$review_status" -eq 0 && test "$storage_status" -eq 0
+      - name: Verify workspace tests and contracts
         run: |
           cargo test --workspace --all-features --locked
           cargo run -p zhir-conformance --bin zhir-conformance --locked
