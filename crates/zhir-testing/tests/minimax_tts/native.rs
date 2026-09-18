@@ -32,7 +32,24 @@ async fn next(socket: &mut WebSocketStream<TcpStream>) -> Option<Value> {
     while let Some(Ok(frame)) = socket.next().await {
         match frame {
             Frame::Text(text) => return Some(serde_json::from_str(&text).unwrap()),
-            Frame::Ping(_) => socket.flush().await.unwrap(),
+            Frame::Ping(_) => {
+                // The fixed deadline can close the peer while its auto-pong is pending.
+                if let Err(error) = socket.flush().await {
+                    let closed = match &error {
+                        tokio_tungstenite::tungstenite::Error::ConnectionClosed
+                        | tokio_tungstenite::tungstenite::Error::AlreadyClosed => true,
+                        tokio_tungstenite::tungstenite::Error::Io(error) => matches!(
+                            error.kind(),
+                            std::io::ErrorKind::ConnectionReset
+                                | std::io::ErrorKind::ConnectionAborted
+                                | std::io::ErrorKind::BrokenPipe
+                        ),
+                        _ => false,
+                    };
+                    assert!(closed, "fixture pong flush failed: {error}");
+                    return None;
+                }
+            }
             Frame::Close(_) => return None,
             _ => (),
         }
