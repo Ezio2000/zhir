@@ -34,6 +34,16 @@ jobs:
           old = '} else if let Some(finish) = &mut finishing {\n                    Some(finish.next())\n                } else {\n                    None\n                }'
           assert text.count(old) == 1
           p.write_text(text.replace(old, '} else {\n                    finishing.as_mut().map(FinishEvents::next)\n                }'))
+          p = Path('crates/zhir-testing/tests/v4_review.rs')
+          text = p.read_text()
+          old = 'let mut invocation = runtime.start(RunRequest::new([Message::user("A")]).mode(mode)).unwrap();'
+          assert text.count(old) == 1
+          text = text.replace(old, '''// Task seals user admission at creation, but host context is still admissible.
+                  let late_input = if mode == RunMode::Task { Message::external("B") } else { Message::user("B") };
+                  ''' + old)
+          old = 'invocation.control().input(Message::user("B"), "test").await.unwrap();'
+          assert text.count(old) == 1
+          p.write_text(text.replace(old, 'invocation.control().input(late_input, "test").await.unwrap();'))
           p = Path('docs/architecture.md')
           p.write_text(p.read_text() + '''
 
@@ -77,6 +87,8 @@ jobs:
           cargo test -p zhir-testing --all-features --locked --test storage_stores memory -- --exact --nocapture
           storage_status=$?
           if test "$storage_status" -ne 0; then
+            sudo apt-get update -qq
+            sudo apt-get install -y gdb
             binary=$(find target/debug/deps -maxdepth 1 -type f -name 'storage_stores-*' -executable | head -n 1)
             gdb --batch -ex 'set pagination off' -ex 'handle SIGSEGV stop print nopass' -ex 'run memory --exact --nocapture' -ex 'bt 40' --args "$binary"
           fi
