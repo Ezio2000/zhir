@@ -34,6 +34,22 @@ jobs:
           old = '} else if let Some(finish) = &mut finishing {\n                    Some(finish.next())\n                } else {\n                    None\n                }'
           assert text.count(old) == 1
           p.write_text(text.replace(old, '} else {\n                    finishing.as_mut().map(FinishEvents::next)\n                }'))
+          p = Path('crates/zhir-core/src/run/history.rs')
+          text = p.read_text()
+          replacements = [
+              ('calls: im::OrdMap<CallRef, RuntimeToolCall>,', '// Keep persistent B-tree nodes small: removal/rebalancing moves node arrays.\n    calls: im::OrdMap<Arc<CallRef>, Arc<RuntimeToolCall>>,', 1),
+              ('completed: im::OrdSet<CallRef>,', 'completed: im::OrdSet<Arc<CallRef>>,', 1),
+              ('delegations: im::OrdSet<CallRef>,', 'delegations: im::OrdSet<Arc<CallRef>>,', 1),
+              ('self.delegations.insert(origin);', 'self.delegations.insert(Arc::new(origin));', 1),
+              ('self.calls.insert(origin, call.clone());', 'self.calls.insert(Arc::new(origin), Arc::new(call.clone()));', 1),
+              ('self.completed.insert(origin.clone());', 'self.completed.insert(Arc::new(origin.clone()));', 2),
+              ('self.order.delegations.iter()', 'self.order.delegations.iter().map(|origin| origin.as_ref())', 1),
+              ('self.order.calls.iter()', 'self.order.calls.iter().map(|(origin, call)| (origin.as_ref(), call.as_ref()))', 1),
+          ]
+          for old, new, count in replacements:
+              assert text.count(old) == count, old
+              text = text.replace(old, new)
+          p.write_text(text)
           p = Path('crates/zhir-testing/tests/v4_review.rs')
           text = p.read_text()
           old = 'let mut invocation = runtime.start(RunRequest::new([Message::user("A")]).mode(mode)).unwrap();'
@@ -43,7 +59,65 @@ jobs:
                   ''' + old)
           old = 'invocation.control().input(Message::user("B"), "test").await.unwrap();'
           assert text.count(old) == 1
-          p.write_text(text.replace(old, 'invocation.control().input(late_input, "test").await.unwrap();'))
+          text = text.replace(old, 'invocation.control().input(late_input, "test").await.unwrap();')
+          p.write_text(text + '''
+
+          #[test]
+          fn persistent_call_index_settles_on_a_small_stack_without_mutating_snapshots() {
+              std::thread::Builder::new()
+                  .name("bounded-history-stack".into())
+                  .stack_size(512 * 1024)
+                  .spawn(|| {
+                      use zhir_core::{
+                          operation::{CallRef, OperationOutcome},
+                          run::History,
+                          tool::{RuntimeToolCall, RuntimeToolInput},
+                      };
+                      let calls = (0..256).map(|index| {
+                          let id = format!("call-{index}");
+                          HistoryEntry {
+                              id: id.clone(),
+                              origin: Some(CallRef {
+                                  session_id: "s".into(), item_id: id.clone(),
+                                  generation_id: Some("g".into()), caller_id: "model".into(),
+                                  call_id: id.clone(),
+                              }),
+                              message: Message::Assistant {
+                                  output: vec![Output::RuntimeToolCall {
+                                      call: RuntimeToolCall {
+                                          id, name: "tool".into(),
+                                          input: RuntimeToolInput::Structured(json!({"argument":"value"})),
+                                      },
+                                  }],
+                                  provider_data: Value::Null,
+                              },
+                          }
+                      }).collect();
+                      let original = History::from_entries(calls).unwrap();
+                      let digest = original.digest();
+                      let pending: Vec<_> = original.pending_calls()
+                          .map(|(origin, call)| (origin.clone(), call.id.clone())).collect();
+                      let mut settled = original.clone();
+                      for (origin, id) in pending.into_iter().rev() {
+                          settled = settled.append(vec![HistoryEntry {
+                              id: format!("result:{id}"), origin: Some(origin),
+                              message: Message::RuntimeTool {
+                                  call_id: id, name: "tool".into(),
+                                  outcome: OperationOutcome::Success {
+                                      content: vec![], structured: Value::Null,
+                                  },
+                              },
+                          }]).unwrap();
+                      }
+                      original.validate().unwrap();
+                      settled.validate().unwrap();
+                      assert_eq!(original.digest(), digest);
+                      assert_eq!(original.pending_calls().count(), 256);
+                      assert_eq!(settled.pending_calls().count(), 0);
+                      assert_eq!(settled.len(), 512);
+                  }).unwrap().join().unwrap();
+          }
+          '''.replace('\n          ', '\n'))
           p = Path('docs/architecture.md')
           p.write_text(p.read_text() + '''
 
@@ -68,6 +142,11 @@ jobs:
           delivery; terminal settlement uses an independent port and drains admitted
           events before returning an error once. No second kernel or execution path is
           introduced.
+
+          Persistent history indexes share immutable call identities and values through
+          Arc references, keeping B-tree node rebalancing stack-bounded during bulk
+          operation settlement. Public history references and snapshot semantics do not
+          change; regression coverage also exercises a 512 KiB worker stack.
           '''.replace('\n          ', '\n'))
           PY
       - name: Format and regenerate current schemas
