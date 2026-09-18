@@ -11,6 +11,7 @@ async fn configured(
     let model = live::model(config).unwrap();
     let session = model
         .open_session(SessionOpen {
+            binding: None,
             context_revision: 0,
             input_position: 0,
             profile_revision: 0,

@@ -74,7 +74,7 @@ pub(super) enum ServerEvent {
     Turn { turn: Turn },
     #[serde(rename = "delegation.created")]
     Delegation { item: Delegation },
-    #[serde(rename = "session.closure.is_some()")]
+    #[serde(rename = "session.closed")]
     Closed { reason: String, usage: Value },
     #[serde(rename = "error")]
     Error { error: ServerError },

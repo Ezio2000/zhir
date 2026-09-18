@@ -40,6 +40,12 @@ impl Model for WebRtcModel {
     }
     fn open_session(&self, open: SessionOpen) -> BoxFuture<'_, Result<ModelSession>> {
         Box::pin(async move {
+            if open.binding.is_some() {
+                return Err(Error::Invalid(
+                    "binding does not belong to this transport adapter".into(),
+                ));
+            }
+
             open.limits.validate()?;
             self.negotiate(&open.request)?;
             let session = self.adapter.open(&open)?;

@@ -56,9 +56,10 @@ pub struct History {
 #[derive(Debug, Clone, Default)]
 struct Order {
     ids: im::OrdMap<String, usize>,
-    calls: im::OrdMap<CallRef, RuntimeToolCall>,
-    completed: im::OrdSet<CallRef>,
-    delegations: im::OrdSet<CallRef>,
+    // Keep persistent B-tree nodes small: removal/rebalancing moves node arrays.
+    calls: im::OrdMap<Arc<CallRef>, Arc<RuntimeToolCall>>,
+    completed: im::OrdSet<Arc<CallRef>>,
+    delegations: im::OrdSet<Arc<CallRef>>,
     error: Option<&'static str>,
 }
 impl Order {
@@ -91,7 +92,7 @@ impl Order {
                         {
                             return Err("duplicate operation identity");
                         }
-                        self.delegations.insert(origin);
+                        self.delegations.insert(Arc::new(origin));
                     }
                     if let Output::RuntimeToolCall { call } = item {
                         let mut origin = entry
@@ -105,7 +106,7 @@ impl Order {
                         {
                             return Err("duplicate tool call identity");
                         }
-                        self.calls.insert(origin, call.clone());
+                        self.calls.insert(Arc::new(origin), Arc::new(call.clone()));
                     }
                 }
             }
@@ -118,7 +119,7 @@ impl Order {
                     return Err("delegation result has no matching pending request");
                 }
                 self.delegations.remove(origin);
-                self.completed.insert(origin.clone());
+                self.completed.insert(Arc::new(origin.clone()));
             }
             Message::RuntimeTool { call_id, name, .. } => {
                 let origin = entry
@@ -133,7 +134,7 @@ impl Order {
                     return Err("tool result identity mismatch");
                 }
                 self.calls.remove(origin);
-                self.completed.insert(origin.clone());
+                self.completed.insert(Arc::new(origin.clone()));
             }
             _ => (),
         }
@@ -167,10 +168,13 @@ impl History {
         Ok(())
     }
     pub fn pending_delegations(&self) -> impl Iterator<Item = &CallRef> {
-        self.order.delegations.iter()
+        self.order.delegations.iter().map(|origin| origin.as_ref())
     }
     pub fn pending_calls(&self) -> impl Iterator<Item = (&CallRef, &RuntimeToolCall)> {
-        self.order.calls.iter()
+        self.order
+            .calls
+            .iter()
+            .map(|(origin, call)| (origin.as_ref(), call.as_ref()))
     }
     pub fn by_id(&self, id: &str) -> Option<&HistoryEntry> {
         self.order.ids.get(id).and_then(|index| self.get(*index))

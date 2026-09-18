@@ -96,6 +96,7 @@ async fn setup(mode: u8) -> (ModelSession, zhir_core::Cancellation, JoinHandle<(
     }
     let session = model
         .open_session(SessionOpen {
+            binding: None,
             context_revision: 0,
             input_position: 0,
             profile_revision: 0,
@@ -314,6 +315,7 @@ async fn interruption_progresses_while_media_consumer_is_blocked() {
         limits.max_media_chunk_bytes = 4;
         limits.max_buffered_media_bytes = 4;
         let mut session = model.open_session(SessionOpen {
+        binding: None,
  context_revision: 0, input_position: 0, profile_revision: 0, mode: zhir_core::run::RunMode::Interactive,
             session_id:"probe".into(), after_sequence:None, output_epoch:0,
             limits, request:request(), recovery:None,
@@ -380,6 +382,7 @@ async fn flush_waits_for_remote_receipt_and_allows_more_input() {
         config.pronunciation_dictionary = vec!["测试/(ce4)(shi4)".into()];
         let model = tts::model(config).unwrap();
         let mut session = model.open_session(SessionOpen {
+        binding: None,
  context_revision: 0, input_position: 0, profile_revision: 0, mode: zhir_core::run::RunMode::Interactive,
             session_id:"flush".into(), after_sequence:None, output_epoch:0,
             limits:zhir_kernel::defaults::limits(), request:request(), recovery:None,

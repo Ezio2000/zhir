@@ -60,7 +60,7 @@ bytes = "1"
 serde.workspace = true
 futures.workspace = true
 zhir.workspace = true
-zhir-core.workspace = true
+zhir-core = { workspace = true, features = ["schema"] }
 zhir-policies.workspace = true
 zhir-tools = { workspace = true, features = ["typed"] }
 zhir-builtins = { workspace = true, features = ["filesystem", "shell", "interaction", "agent-runtime"] }

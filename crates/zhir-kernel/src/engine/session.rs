@@ -225,6 +225,7 @@ impl Engine {
             })
             .unwrap_or(self.current.active.session.input_position);
         let open = SessionOpen {
+            binding: self.current.active.session.binding.clone(),
             request: self.model_request(seed_end),
             context_revision: self.current.active.session.acknowledged_context_revision,
             input_position: seed_input_position,
@@ -280,6 +281,23 @@ impl Engine {
                 .is_some_and(|caps| caps != session.input.capabilities())
         {
             return self.suspend(WaitReason::Recovery).await;
+        }
+        let binding = session.input.binding();
+        if next.active.session.binding.is_some() && next.active.session.binding != binding {
+            return Err(Error::Protocol(
+                "model binding changed during recovery".into(),
+            ));
+        }
+        next.active.session.binding = binding;
+        if next.options.mode == RunMode::Task
+            && !session
+                .input
+                .capabilities()
+                .supports(Capability::ResponseEvents)
+        {
+            return Err(Error::Invalid(
+                "bound model has no verifiable response boundaries".into(),
+            ));
         }
         next.active.session.capabilities = Some(session.input.capabilities().clone());
         next.active.session.negotiated = session.input.negotiate(&opening_request)?;

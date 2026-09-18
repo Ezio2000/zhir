@@ -113,12 +113,14 @@ impl Engine {
     }
 
     fn input_finished(&self) -> bool {
-        (self.current.active.session.response_status == Some(ResponseStatus::Completed)
-            || !self
-                .session_capabilities()
-                .supports(Capability::ResponseEvents))
-            && (self.current.options.mode == RunMode::Task
-                || self.current.active.session.input_closed)
+        let session = &self.current.active.session;
+        let response_finished = !self
+            .session_capabilities()
+            .supports(Capability::ResponseEvents)
+            || (session.response_status == Some(ResponseStatus::Completed)
+                && !session.needs_generation
+                && session.generated_input_position == session.input_position);
+        response_finished && (self.current.options.mode == RunMode::Task || session.input_closed)
     }
 
     fn waiting_for_input(&self, status: &WorkStatus) -> bool {

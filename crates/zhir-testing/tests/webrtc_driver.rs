@@ -295,6 +295,7 @@ async fn setup_mapping(
     limits.max_buffered_media_bytes = 3;
     let session = model
         .open_session(SessionOpen {
+            binding: None,
             context_revision: 0,
             input_position: 0,
             profile_revision: 0,

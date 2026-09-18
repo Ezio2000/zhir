@@ -177,6 +177,33 @@ struct FallbackRecovery {
     candidate: String,
     reference: zhir_core::operation::RecoveryRef,
 }
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FallbackBinding {
+    candidate: String,
+    inner: Option<ModelBinding>,
+}
+struct BoundInput {
+    candidate: String,
+    inner: Arc<dyn SessionSender>,
+}
+impl SessionSender for BoundInput {
+    fn binding(&self) -> Option<ModelBinding> {
+        Some(ModelBinding {
+            adapter: "zhir.fallback".into(),
+            data: serde_json::json!({"candidate": self.candidate, "inner": self.inner.binding()}),
+        })
+    }
+    fn capabilities(&self) -> &CapabilitySet {
+        self.inner.capabilities()
+    }
+    fn negotiate(&self, request: &ModelRequest) -> Result<NegotiatedProfile> {
+        self.inner.negotiate(request)
+    }
+    fn send(&self, command: SessionCommand) -> BoxFuture<'_, Result<()>> {
+        self.inner.send(command)
+    }
+}
 struct BoundEvents {
     candidate: String,
     inner: Box<dyn SessionReceiver>,
@@ -210,6 +237,10 @@ impl SessionReceiver for BoundEvents {
     }
 }
 fn bind(mut session: ModelSession, candidate: &str) -> ModelSession {
+    session.input = Arc::new(BoundInput {
+        candidate: candidate.into(),
+        inner: session.input,
+    });
     session.output = Box::new(BoundEvents {
         candidate: candidate.into(),
         inner: session.output,
@@ -229,22 +260,54 @@ impl Model for FallbackModel {
     fn open_session(&self, mut open: SessionOpen) -> BoxFuture<'_, Result<ModelSession>> {
         Box::pin(async move {
             open.context.cancellation.check()?;
-            if let Some(reference) = open.recovery.take() {
-                if reference.adapter != "zhir.fallback" {
+            let binding: Option<FallbackBinding> = open
+                .binding
+                .take()
+                .map(|binding| {
+                    if binding.adapter != "zhir.fallback" {
+                        return Err(Error::Invalid(
+                            "binding does not belong to this fallback adapter".into(),
+                        ));
+                    }
+                    serde_json::from_value(binding.data)
+                        .map_err(|error| Error::Invalid(error.to_string()))
+                })
+                .transpose()?;
+            let recovery: Option<FallbackRecovery> = open
+                .recovery
+                .take()
+                .map(|reference| {
+                    if reference.adapter != "zhir.fallback" {
+                        return Err(Error::Invalid(
+                            "recovery does not belong to this fallback adapter".into(),
+                        ));
+                    }
+                    serde_json::from_value(reference.data)
+                        .map_err(|error| Error::Invalid(error.to_string()))
+                })
+                .transpose()?;
+            if binding.is_some() || recovery.is_some() {
+                if let (Some(binding), Some(recovery)) = (&binding, &recovery)
+                    && binding.candidate != recovery.candidate
+                {
                     return Err(Error::Invalid(
-                        "recovery does not belong to this fallback adapter".into(),
+                        "recovery differs from the bound candidate".into(),
                     ));
                 }
-                let saved: FallbackRecovery = serde_json::from_value(reference.data)
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                let id = binding
+                    .as_ref()
+                    .map(|saved| &saved.candidate)
+                    .or_else(|| recovery.as_ref().map(|saved| &saved.candidate))
+                    .expect("binding or recovery");
                 let candidate = self
                     .models
                     .iter()
-                    .find(|candidate| candidate.id == saved.candidate)
+                    .find(|candidate| &candidate.id == id)
                     .ok_or_else(|| {
                         Error::Invalid("original fallback candidate is unavailable".into())
                     })?;
-                open.recovery = Some(saved.reference);
+                open.binding = binding.and_then(|saved| saved.inner);
+                open.recovery = recovery.map(|saved| saved.reference);
                 return candidate
                     .model
                     .open_session(open)
