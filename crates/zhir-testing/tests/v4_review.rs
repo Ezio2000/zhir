@@ -235,6 +235,57 @@ async fn automatic_generation_cannot_close_over_unprocessed_late_input() {
 }
 
 #[tokio::test]
+async fn eager_exchange_deltas_follow_acknowledgement_and_response_start() {
+    use futures::FutureExt;
+
+    let model = FunctionModel::new(zhir_testing::model_capabilities(), |_, context| {
+        // Emit during callback invocation, before returning its generation future.
+        // The default event capacity makes this immediately ready without threads
+        // or timing assumptions about how a background producer is scheduled.
+        let emitted = context
+            .deltas
+            .expect("delta sink")
+            .emit(ModelDelta::Text {
+                output_index: 0,
+                text: "first".into(),
+            })
+            .now_or_never()
+            .expect("event capacity available");
+        async move {
+            emitted?;
+            Ok(GenerationOutput::text("done"))
+        }
+    });
+    let mut session = model.open_session(open()).await.unwrap();
+    assert!(matches!(
+        receive(&mut session).await.body,
+        SessionEventBody::Ready { .. }
+    ));
+    session.input.send(generate()).await.unwrap();
+    let mut events = Vec::new();
+    loop {
+        let event = receive(&mut session).await;
+        assert_eq!(event.sequence, events.len() as u64 + 1);
+        let finished = matches!(event.body, SessionEventBody::ResponseFinished { .. });
+        events.push(event.body);
+        if finished {
+            break;
+        }
+    }
+    assert!(
+        matches!(events.as_slice(), [
+        SessionEventBody::Acknowledged { command_id, .. },
+        SessionEventBody::ResponseStarted { generation_id: started, .. },
+        SessionEventBody::Delta { generation_id: Some(delta), .. },
+        SessionEventBody::Output { generation_id: Some(output), .. },
+        SessionEventBody::ResponseFinished { generation_id: finished, .. },
+    ] if command_id == "generate" && [started, delta, output, finished].iter().all(|id| *id == "g")),
+        "unexpected event order: {events:?}"
+    );
+    finish(&mut session).await;
+}
+
+#[tokio::test]
 async fn bounded_delta_and_command_ack_keep_each_other_runnable() {
     let blocked = Arc::new(Notify::new());
     let signal = blocked.clone();

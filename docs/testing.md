@@ -34,6 +34,7 @@ cargo run -p zhir-conformance --bin schemas --locked -- --check
 | `minimax_tts`（feature `minimax`） | 生产 WebSocket TTS：分句封存、中断、尾音、背压、凭据刷新与连接生命周期；ignored 测试访问真实服务 |
 | `webrtc_driver`（feature `webrtc`） | 生产骨架配确定性传输与非 Live 适配器：无 Peer 命令、主动建连、排水期间确认与期限、发送顺序、媒体预算与关闭边界 |
 | `models_*` | 请求与流协议、Unicode/分片、回放、装饰器、资源预算、会话资源输入 |
+| `v4_review` | v4 检查点 schema、最新输入完成条件、恢复绑定、小栈历史结算，以及 exchange 回调即时发出 delta 时的确认/开始顺序和有界队列取消 |
 | `profiles_credentials` | required/preferred、fast/original 映射、Unknown、401 刷新与账号头 |
 | `tools_*`、`policies_*` | 工具 Schema、Active 最终校验、重试/熔断与历史策略 |
 | `builtins_*` | 文件、Shell、交互、子任务限流/恢复/脱离/持久化取消 |

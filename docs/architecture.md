@@ -349,7 +349,10 @@ to use their real closure boundary, not a fabricated response or idle timeout.
 Ordinary exchanges use one scheduler to poll active generation, bounded pending
 emissions, command admission and cancellation/deadlines. Command handlers do
 not await public output capacity. Sequence allocation is serialized with event
-delivery; terminal settlement uses an independent port and drains admitted
+delivery. Generate freezes the exchange request, but invokes the callback only
+after its acknowledgement and ResponseStarted reach the event port. This orders
+even deltas emitted during callback invocation after the response start.
+Terminal settlement uses an independent port and drains admitted
 events before returning an error once. No second kernel or execution path is
 introduced.
 

@@ -188,4 +188,6 @@ payload on subsequent turns.
 38. Exchange command acknowledgements, generated deltas and final output are polled
     by one scheduler. A blocked emission cannot stop the generation or cancellation
     needed to release its capacity. Control staging is bounded; terminal settlement
-    uses an independent port and never waits for output consumption.
+    uses an independent port and never waits for output consumption. The exchange
+    callback is invoked only after Generate acknowledgement and ResponseStarted are
+    delivered to the event port, so even eagerly produced deltas follow both events.

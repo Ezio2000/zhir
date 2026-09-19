@@ -322,10 +322,14 @@ impl SessionTask {
                     generation_id: generation_id.clone(),
                     downstream: context.deltas.clone(),
                 }));
+                let exchange = self.exchange.clone();
+                let request = self.request.clone();
                 self.active = Some((
                     generation_id.clone(),
                     input_position,
-                    (self.exchange)(self.request.clone(), context),
+                    // Invoking the callback can itself emit deltas. Defer invocation
+                    // until the scheduler has delivered ResponseStarted.
+                    Box::pin(async move { exchange(request, context).await }),
                 ));
                 Ok(vec![
                     acknowledge,
