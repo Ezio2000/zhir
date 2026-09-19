@@ -1,9 +1,6 @@
-//! Incremental context projection and bounded, single-generation exchange driver.
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
-use tokio::sync::mpsc;
+//! Incremental context projection and one bounded exchange/event scheduler.
+use std::{collections::VecDeque, sync::Arc};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use zhir_core::run::History;
 use zhir_core::{BoxFuture, Result, error::Error, model::*};
 pub(crate) type Exchange = dyn Fn(ModelRequest, ModelContext) -> BoxFuture<'static, Result<GenerationOutput>>
@@ -23,24 +20,69 @@ impl SessionSender for Sender {
         Box::pin(async move { self.0.send(command).await.map_err(|_| Error::Cancelled) })
     }
 }
-struct Receiver(mpsc::Receiver<Result<SessionEvent>>);
+struct Receiver {
+    events: mpsc::Receiver<SessionEvent>,
+    terminal: oneshot::Receiver<Result<()>>,
+    stopped: bool,
+    error: Option<Error>,
+}
+impl Receiver {
+    fn settle(&mut self, result: std::result::Result<Result<()>, oneshot::error::RecvError>) {
+        self.stopped = true;
+        self.events.close();
+        self.error = match result {
+            Ok(result) => result.err(),
+            Err(_) => Some(Error::Protocol(
+                "exchange driver lost its terminal result".into(),
+            )),
+        };
+    }
+}
 impl SessionReceiver for Receiver {
     fn receive(&mut self) -> BoxFuture<'_, Result<Option<SessionEvent>>> {
-        Box::pin(async move { self.0.recv().await.transpose() })
+        Box::pin(async move {
+            loop {
+                if self.stopped {
+                    return match self.events.recv().await {
+                        Some(event) => Ok(Some(event)),
+                        None => self.error.take().map_or(Ok(None), Err),
+                    };
+                }
+                tokio::select! {
+                    biased;
+                    result = &mut self.terminal => self.settle(result),
+                    event = self.events.recv() => match event {
+                        Some(event) => return Ok(Some(event)),
+                        None => {
+                            let result = (&mut self.terminal).await;
+                            self.settle(result);
+                        }
+                    },
+                }
+            }
+        })
     }
 }
 #[derive(Clone)]
 struct Events {
-    tx: mpsc::Sender<Result<SessionEvent>>,
-    sequence: Arc<AtomicU64>,
+    tx: mpsc::Sender<SessionEvent>,
+    // Serialize sequence allocation and delivery, including concurrent user delta sinks.
+    sequence: Arc<Mutex<u64>>,
 }
 impl Events {
     async fn send(&self, body: SessionEventBody) -> Result<()> {
-        let sequence = self.sequence.fetch_add(1, Ordering::Relaxed);
+        let mut sequence = self.sequence.lock().await;
         self.tx
-            .send(Ok(SessionEvent { sequence, body }))
+            .send(SessionEvent {
+                sequence: *sequence,
+                body,
+            })
             .await
-            .map_err(|_| Error::Cancelled)
+            .map_err(|_| Error::Cancelled)?;
+        *sequence = sequence
+            .checked_add(1)
+            .ok_or_else(|| Error::Protocol("event sequence overflow".into()))?;
+        Ok(())
     }
 }
 struct Deltas {
@@ -81,19 +123,24 @@ pub(crate) fn open(
         Capability::ProfileUpdates,
     ]);
     let deadline = zhir_policies::timing::deadline(&open.context.run)?;
+    if open.binding.is_some() {
+        return Err(Error::Invalid(
+            "binding does not belong to an exchange adapter".into(),
+        ));
+    }
     if open.recovery.is_some() {
         return Err(Error::Protocol(
             "exchange session has no persistent session resume".into(),
         ));
     }
-    let (tx, mut rx) = mpsc::channel::<SessionCommand>(open.limits.max_control_commands);
+    let (tx, rx) = mpsc::channel::<SessionCommand>(open.limits.max_control_commands);
     let (event_tx, event_rx) = mpsc::channel(open.limits.max_session_events);
-    let events = Events {
-        tx: event_tx,
-        sequence: Arc::new(AtomicU64::new(0)),
-    };
-    let mut task = SessionTask {
-        events,
+    let (terminal_tx, terminal_rx) = oneshot::channel();
+    let task = SessionTask {
+        events: Events {
+            tx: event_tx,
+            sequence: Arc::new(Mutex::new(0)),
+        },
         exchange,
         negotiate: negotiate.clone(),
         context: open.context,
@@ -108,35 +155,19 @@ pub(crate) fn open(
         active: None,
     };
     tokio::spawn(async move {
-        let result: Result<()> = async {
-            task.events.send(SessionEventBody::Ready { context_revision: task.context_revision }).await?;
-            loop {
-                tokio::select! {
-                    command = rx.recv() => {
-                        let Some(command) = command else { break };
-                        if !task.command(command).await? { break; }
-                    }
-                    result = async { task.active.as_mut().expect("active generation").2.as_mut().await }, if task.active.is_some() => {
-                        let (id, input_position, _) = task.active.take().expect("active generation");
-                        let response = result?;
-                        zhir_policies::timing::check(&task.context.cancellation, task.deadline)?;
-                        response.validate()?;
-                        task.finish(id, input_position, response).await?;
-                    }
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {
-                        zhir_policies::timing::check(&task.context.cancellation, task.deadline)?;
-                    }
-                }
-            }
-            Ok(())
-        }.await;
-        if let Err(error) = result {
-            let _ = task.events.tx.send(Err(error)).await;
-        }
+        let result = task.run(rx).await;
+        // Teardown never waits for public output capacity. The receiver drains admitted
+        // events before returning the terminal error exactly once.
+        let _ = terminal_tx.send(result);
     });
     Ok(ModelSession {
         input: Arc::new(Sender(tx, capabilities, negotiate)),
-        output: Box::new(Receiver(event_rx)),
+        output: Box::new(Receiver {
+            events: event_rx,
+            terminal: terminal_rx,
+            stopped: false,
+            error: None,
+        }),
         media_input: None,
         media_output: None,
     })
@@ -179,9 +210,92 @@ struct SessionTask {
     sealed: bool,
     active: Option<(String, u64, BoxFuture<'static, Result<GenerationOutput>>)>,
 }
+#[derive(Clone, Copy)]
+enum Emission {
+    Control,
+    Start,
+    Output,
+    Finish,
+}
+impl Emission {
+    fn control(self) -> bool {
+        matches!(self, Self::Control | Self::Start)
+    }
+}
 impl SessionTask {
-    async fn command(&mut self, command: SessionCommand) -> Result<bool> {
+    async fn run(mut self, mut commands: mpsc::Receiver<SessionCommand>) -> Result<()> {
+        // At most one two-event command batch and one in-flight emission are staged.
+        // A completed response retains its original output iterator, not another event
+        // transcript. No command handler awaits the shared bounded output channel.
+        let mut controls = VecDeque::from([SessionEventBody::Ready {
+            context_revision: self.context_revision,
+        }]);
+        let mut sending: Option<BoxFuture<'static, Result<()>>> = None;
+        let mut emission = Emission::Control;
+        let mut generating = false;
+        let mut finishing: Option<FinishEvents> = None;
+        let mut closing = false;
+        let closed = self.events.tx.clone();
+        loop {
+            zhir_policies::timing::check(&self.context.cancellation, self.deadline)?;
+            if sending.is_none() {
+                let next = if let Some(body) = controls.pop_front() {
+                    let kind = if matches!(body, SessionEventBody::ResponseStarted { .. }) {
+                        Emission::Start
+                    } else {
+                        Emission::Control
+                    };
+                    Some((body, kind))
+                } else {
+                    finishing.as_mut().map(FinishEvents::next)
+                };
+                if let Some((body, kind)) = next {
+                    let events = self.events.clone();
+                    sending = Some(Box::pin(async move { events.send(body).await }));
+                    emission = kind;
+                } else if closing {
+                    return Ok(());
+                }
+            }
+            tokio::select! {
+                _ = closed.closed() => return Err(Error::Cancelled),
+                result = async { sending.as_mut().expect("pending emission").as_mut().await }, if sending.is_some() => {
+                    result?;
+                    sending = None;
+                    match emission {
+                        Emission::Start => generating = true,
+                        Emission::Finish => finishing = None,
+                        _ => (),
+                    }
+                }
+                result = async { self.active.as_mut().expect("active generation").2.as_mut().await }, if generating => {
+                    let (generation_id, input_position, _) = self.active.take().expect("active generation");
+                    generating = false;
+                    let response = result?;
+                    response.validate()?;
+                    finishing = Some(FinishEvents::new(generation_id, input_position, response)?);
+                }
+                command = commands.recv(), if !closing && controls.is_empty() && (sending.is_none() || !emission.control()) => {
+                    let Some(command) = command else { return Err(Error::Cancelled) };
+                    let busy = self.active.is_some() || finishing.is_some();
+                    closing = matches!(command.body, SessionCommandBody::Close);
+                    controls.extend(self.command(command, busy)?);
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => (),
+            }
+        }
+    }
+
+    fn command(&mut self, command: SessionCommand, busy: bool) -> Result<Vec<SessionEventBody>> {
         self.context.cancellation.check()?;
+        if command.id.is_empty() {
+            return Err(Error::Invalid("empty command identity".into()));
+        }
+        let acknowledge = SessionEventBody::Acknowledged {
+            command_id: command.id,
+            recovery: None,
+            level: Acknowledgement::Projection,
+        };
         match command.body {
             SessionCommandBody::Generate {
                 generation_id,
@@ -189,7 +303,7 @@ impl SessionTask {
                 input_position,
                 profile_revision,
             } => {
-                if self.active.is_some()
+                if busy
                     || generation_id.is_empty()
                     || context_revision != self.context_revision
                     || input_position != self.input_position
@@ -202,25 +316,28 @@ impl SessionTask {
                     .messages
                     .extend(conversation(self.history.entries()));
                 (self.negotiate)(&self.request)?;
-                self.acknowledge(command.id).await?;
-                self.events
-                    .send(SessionEventBody::ResponseStarted {
-                        generation_id: generation_id.clone(),
-                        input_position,
-                    })
-                    .await?;
                 let mut context = self.context.clone();
                 context.deltas = Some(Arc::new(Deltas {
                     events: self.events.clone(),
                     generation_id: generation_id.clone(),
                     downstream: context.deltas.clone(),
                 }));
+                let exchange = self.exchange.clone();
+                let request = self.request.clone();
                 self.active = Some((
-                    generation_id,
+                    generation_id.clone(),
                     input_position,
-                    (self.exchange)(self.request.clone(), context),
+                    // Invoking the callback can itself emit deltas. Defer invocation
+                    // until the scheduler has delivered ResponseStarted.
+                    Box::pin(async move { exchange(request, context).await }),
                 ));
-                Ok(true)
+                Ok(vec![
+                    acknowledge,
+                    SessionEventBody::ResponseStarted {
+                        generation_id,
+                        input_position,
+                    },
+                ])
             }
             SessionCommandBody::Append {
                 entry,
@@ -243,14 +360,13 @@ impl SessionTask {
                 self.history = self.history.append(vec![entry])?;
                 self.context_revision = context_revision;
                 self.input_position = input_position;
-                self.acknowledge(command.id).await?;
-                Ok(true)
+                Ok(vec![acknowledge])
             }
             SessionCommandBody::ReplaceContext {
                 entries,
                 context_revision,
             } => {
-                if self.active.is_some() || context_revision != self.context_revision + 1 {
+                if busy || context_revision != self.context_revision + 1 {
                     return Err(Error::Protocol(
                         "context replacement crosses a generation or revision".into(),
                     ));
@@ -258,8 +374,7 @@ impl SessionTask {
                 self.seed = conversation(History::from_entries(entries)?.entries());
                 self.history = History::from_entries(vec![])?;
                 self.context_revision = context_revision;
-                self.acknowledge(command.id).await?;
-                Ok(true)
+                Ok(vec![acknowledge])
             }
             SessionCommandBody::UpdateProfile { revision, profile } => {
                 if revision != self.profile_revision + 1 {
@@ -268,64 +383,39 @@ impl SessionTask {
                 self.request.profile = profile;
                 (self.negotiate)(&self.request)?;
                 self.profile_revision = revision;
-                self.acknowledge(command.id).await?;
-                Ok(true)
-            }
-            SessionCommandBody::InterruptOutput { .. } => Err(Error::Invalid(
-                "exchange session cannot interrupt natively".into(),
-            )),
-            SessionCommandBody::FlushInput | SessionCommandBody::SetInputAudio { .. } => Err(
-                Error::Invalid("exchange session cannot flush an active input".into()),
-            ),
-            SessionCommandBody::DelegationContext { .. } => Err(Error::Invalid(
-                "exchange session cannot accept native delegation".into(),
-            )),
-            SessionCommandBody::Close => {
-                if self.active.is_some() {
-                    return Err(Error::Protocol("cannot close an active generation".into()));
-                }
-                self.acknowledge(command.id).await?;
-                self.events
-                    .send(SessionEventBody::Closed {
-                        reason: "host_request".into(),
-                        provider_data: serde_json::Value::Null,
-                    })
-                    .await?;
-                Ok(false)
+                Ok(vec![acknowledge])
             }
             SessionCommandBody::SealUserInput => {
                 self.sealed = true;
-                self.acknowledge(command.id).await?;
-                Ok(true)
+                Ok(vec![acknowledge])
             }
+            SessionCommandBody::Close => {
+                if busy {
+                    return Err(Error::Protocol("cannot close an active generation".into()));
+                }
+                Ok(vec![
+                    acknowledge,
+                    SessionEventBody::Closed {
+                        reason: "host_request".into(),
+                        provider_data: serde_json::Value::Null,
+                    },
+                ])
+            }
+            _ => Err(Error::Invalid(
+                "unsupported exchange session command".into(),
+            )),
         }
     }
-    async fn acknowledge(&mut self, command_id: String) -> Result<()> {
-        self.events
-            .send(SessionEventBody::Acknowledged {
-                command_id,
-                recovery: None,
-                level: Acknowledgement::Projection,
-            })
-            .await
-    }
-    async fn finish(
-        &mut self,
-        generation_id: String,
-        input_position: u64,
-        response: GenerationOutput,
-    ) -> Result<()> {
+}
+
+struct FinishEvents {
+    generation_id: String,
+    output: std::iter::Enumerate<std::vec::IntoIter<zhir_core::message::Output>>,
+    finished: Option<SessionEventBody>,
+}
+impl FinishEvents {
+    fn new(generation_id: String, input_position: u64, response: GenerationOutput) -> Result<Self> {
         let response_status = response_status(&response);
-        for (index, output) in response.output.into_iter().enumerate() {
-            self.events
-                .send(SessionEventBody::Output {
-                    generation_id: Some(generation_id.clone()),
-                    item_id: format!("{generation_id}:{index}"),
-                    caller_id: "model".into(),
-                    output,
-                })
-                .await?;
-        }
         let effective = response
             .provider_data
             .get("effective")
@@ -334,19 +424,40 @@ impl SessionTask {
             .transpose()
             .map_err(|e| Error::Protocol(format!("effective profile: {e}")))?
             .unwrap_or_default();
-        self.events
-            .send(SessionEventBody::ResponseFinished {
-                generation_id,
-                input_position,
-                response_status,
-                usage: response.usage,
-                model_id: response.model_id,
-                response_id: response.response_id,
-                finish_reason: response.finish_reason,
-                provider_data: response.provider_data,
-                effective,
-            })
-            .await
+        let finished = SessionEventBody::ResponseFinished {
+            generation_id: generation_id.clone(),
+            input_position,
+            response_status,
+            usage: response.usage,
+            model_id: response.model_id,
+            response_id: response.response_id,
+            finish_reason: response.finish_reason,
+            provider_data: response.provider_data,
+            effective,
+        };
+        Ok(Self {
+            generation_id,
+            output: response.output.into_iter().enumerate(),
+            finished: Some(finished),
+        })
+    }
+    fn next(&mut self) -> (SessionEventBody, Emission) {
+        if let Some((index, output)) = self.output.next() {
+            (
+                SessionEventBody::Output {
+                    generation_id: Some(self.generation_id.clone()),
+                    item_id: format!("{}:{index}", self.generation_id),
+                    caller_id: "model".into(),
+                    output,
+                },
+                Emission::Output,
+            )
+        } else {
+            (
+                self.finished.take().expect("one response completion"),
+                Emission::Finish,
+            )
+        }
     }
 }
 fn response_status(response: &GenerationOutput) -> ResponseStatus {

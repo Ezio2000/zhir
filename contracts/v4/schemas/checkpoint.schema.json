@@ -1139,6 +1139,21 @@
       ],
       "type": "object"
     },
+    "ModelBinding": {
+      "additionalProperties": false,
+      "description": "Stable adapter selection. This is not evidence of remote session recovery.",
+      "properties": {
+        "adapter": {
+          "type": "string"
+        },
+        "data": true
+      },
+      "required": [
+        "adapter",
+        "data"
+      ],
+      "type": "object"
+    },
     "NegotiatedProfile": {
       "additionalProperties": false,
       "properties": {
@@ -2425,6 +2440,16 @@
           "minimum": 0,
           "type": "integer"
         },
+        "binding": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelBinding"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "capabilities": {
           "anyOf": [
             {
@@ -2892,8 +2917,8 @@
     },
     "version": {
       "format": "uint32",
-      "maximum": 3,
-      "minimum": 3,
+      "maximum": 4,
+      "minimum": 4,
       "type": "integer"
     }
   },

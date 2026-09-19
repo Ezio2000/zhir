@@ -71,7 +71,7 @@ impl CheckpointCore {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CheckpointEnvelope {
-    #[cfg_attr(feature = "schema", schemars(range(min = 3, max = 3)))]
+    #[cfg_attr(feature = "schema", schemars(range(min = 4, max = 4)))]
     version: u32,
     checkpoint: CheckpointCore,
     history: Vec<HistoryEntry>,

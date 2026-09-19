@@ -46,6 +46,7 @@ fn request() -> ModelRequest {
 async fn open(model: &zhir_models::WebRtcModel) -> ModelSession {
     model
         .open_session(SessionOpen {
+            binding: None,
             context_revision: 0,
             input_position: 0,
             profile_revision: 0,
@@ -141,6 +142,7 @@ async fn recovery_and_unsupported_profiles_fail_before_signaling() {
     let model = live::model(config).unwrap();
     let result = model
         .open_session(SessionOpen {
+            binding: None,
             context_revision: 0,
             input_position: 0,
             profile_revision: 0,
@@ -552,6 +554,7 @@ async fn credential_resolution_is_cancelled_and_startup_is_bounded() {
         let cancellation = zhir_core::Cancellation::default();
         let mut session = model
             .open_session(SessionOpen {
+                binding: None,
                 context_revision: 0,
                 input_position: 0,
                 profile_revision: 0,
@@ -649,6 +652,7 @@ async fn native_controls_progress_while_audio_output_is_full() {
         limits.max_media_chunk_bytes=3;
         limits.max_buffered_media_bytes=12;
         let mut session=model.open_session(SessionOpen {
+        binding: None,
  context_revision: 0, input_position: 0, profile_revision: 0, mode: zhir_core::run::RunMode::Interactive,
             session_id:"pressure".into(),after_sequence:None,output_epoch:0,limits,request:request(),recovery:None,
             context:ModelContext {run:zhir_core::run::RunContext::new("pressure",0),cancellation:Default::default(),deltas:None},

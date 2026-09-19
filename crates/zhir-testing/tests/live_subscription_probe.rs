@@ -94,7 +94,7 @@ async fn subscription_remaining_probe() {
                 if event["type"] == "session.started" {
                     std::fs::write(dir.join("started.json"),serde_json::to_vec_pretty(&event).unwrap()).unwrap();
                 }
-                if event["type"] == "session.closure.is_some()" { break; }
+                if event["type"] == "session.closed" { break; }
             },
             Some(frame) = peer.audio.recv() => {
                 let transport::AudioPacket {timestamp, sequence, ssrc, payload} = frame.value;

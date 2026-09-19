@@ -27,6 +27,7 @@ pub(super) fn config(url: &str) -> TtsConfig {
 }
 pub(super) fn open() -> SessionOpen {
     SessionOpen {
+        binding: None,
         context_revision: 0,
         input_position: 0,
         profile_revision: 0,

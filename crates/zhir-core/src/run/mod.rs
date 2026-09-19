@@ -192,6 +192,7 @@ pub struct PendingCommand {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionSnapshot {
+    pub binding: Option<crate::model::ModelBinding>,
     pub capabilities: Option<crate::model::CapabilitySet>,
     pub id: String,
     pub generation_id: Option<String>,

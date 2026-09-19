@@ -13,6 +13,32 @@ impl Checkpoint {
             return Err(Error::Invalid("revision and parent disagree".into()));
         }
         self.state.validate()?;
+        if self
+            .active
+            .session
+            .binding
+            .as_ref()
+            .is_some_and(|binding| binding.adapter.is_empty())
+        {
+            return Err(Error::Invalid("empty model binding adapter".into()));
+        }
+        if matches!(self.state, State::Completed { .. })
+            && self
+                .active
+                .session
+                .capabilities
+                .as_ref()
+                .is_some_and(|caps| caps.supports(crate::model::Capability::ResponseEvents))
+            && (self.active.session.response_status
+                != Some(crate::model::ResponseStatus::Completed)
+                || self.active.session.needs_generation
+                || self.active.session.generated_input_position
+                    != self.active.session.input_position)
+        {
+            return Err(Error::Invalid(
+                "completed run lacks current response coverage".into(),
+            ));
+        }
         self.history.validate()?;
         if self.active.session.response_start > self.history.len()
             || self.active.session.run_start > self.history.len()

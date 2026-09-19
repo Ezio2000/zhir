@@ -32,6 +32,9 @@ struct LeasedInput {
     _permit: Arc<OwnedSemaphorePermit>,
 }
 impl SessionSender for LeasedInput {
+    fn binding(&self) -> Option<zhir_core::model::ModelBinding> {
+        self.inner.binding()
+    }
     fn capabilities(&self) -> &CapabilitySet {
         self.inner.capabilities()
     }

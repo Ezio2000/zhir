@@ -87,6 +87,7 @@ pub(super) fn initial(request: &Request) -> (Checkpoint, HistoryDelta) {
             history, options, ..
         } => {
             let session = SessionSnapshot {
+                binding: None,
                 capabilities: None,
                 id: new_id(),
                 generation_id: None,

@@ -476,6 +476,7 @@ async fn fallback_recovery_uses_stable_identity_after_candidate_reordering() {
     };
     let model = FallbackModel::new(candidates()).unwrap();
     let mut open = SessionOpen {
+        binding: None,
         context_revision: 0,
         input_position: 0,
         profile_revision: 0,
@@ -526,6 +527,7 @@ async fn session_concurrency_lease_survives_cloned_command_port() {
     ));
     let model = zhir_models::ConcurrencyLimitedModel::new(inner, 1).unwrap();
     let open = SessionOpen {
+        binding: None,
         context_revision: 0,
         input_position: 0,
         profile_revision: 0,
