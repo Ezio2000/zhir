@@ -169,15 +169,15 @@ async fn websocket_refreshes_one_rejected_handshake_and_preserves_account_header
         settings.connection.heartbeat_interval=Duration::from_millis(20);
         let model=tts::model(settings).unwrap();
         let mut session=model.open_session(open()).await.unwrap();
-        assert!(session.media_input.is_none());
-        assert!(session.media_output.is_some());
+        assert!(session.media.input.is_none());
+        assert!(session.media.output.is_some());
         got_ping.await.unwrap();
-        session.input.send(SessionCommand { id:"close".into(), body:SessionCommandBody::Close }).await.unwrap();
-        let first=next_event(&mut session.output).await.unwrap().unwrap();
+        session.control.submit(SessionCommand { id:"close".into(), body:SessionCommandBody::Close }).await.unwrap();
+        let first=next_event(&mut session.events).await.unwrap().unwrap();
         assert_eq!(first.sequence,2);
         assert!(matches!(first.body,SessionEventBody::Acknowledged { command_id, .. } if command_id=="close"));
-        assert!(matches!(next_event(&mut session.output).await.unwrap().unwrap().body,SessionEventBody::Closed { .. }));
-        assert!(next_event(&mut session.output).await.unwrap().is_none());
+        assert!(matches!(next_event(&mut session.events).await.unwrap().unwrap().body,SessionEventBody::Closed { .. }));
+        assert!(next_event(&mut session.events).await.unwrap().is_none());
         server.await.unwrap();
         assert_eq!(calls.load(Ordering::SeqCst),2);
     }).await.unwrap();
@@ -249,8 +249,8 @@ async fn websocket_cancellation_and_dropped_consumers_release_a_pending_task() {
             let cancellation = open.context.cancellation.clone();
             let mut session = model.open_session(open).await.unwrap();
             session
-                .input
-                .send(SessionCommand {
+                .control
+                .submit(SessionCommand {
                     id: "start".into(),
                     body: SessionCommandBody::Generate {
                         generation_id: "turn".into(),
@@ -265,12 +265,13 @@ async fn websocket_cancellation_and_dropped_consumers_release_a_pending_task() {
             if cancel {
                 cancellation.cancel();
                 assert!(matches!(
-                    next_event(&mut session.output).await,
+                    next_event(&mut session.events).await,
                     Err(Error::Cancelled)
                 ));
                 assert!(
                     session
-                        .media_output
+                        .media
+                        .output
                         .as_mut()
                         .unwrap()
                         .receive()
@@ -280,7 +281,7 @@ async fn websocket_cancellation_and_dropped_consumers_release_a_pending_task() {
                 );
             } else {
                 // Keep the sender alive: dropping the event consumer must still stop the actor.
-                drop(session.output);
+                drop(session.events);
             }
             server.await.unwrap();
         })
@@ -330,8 +331,8 @@ async fn websocket_terminal_error_survives_a_full_event_queue() {
         opening.limits.max_session_events = 1;
         let mut session = model.open_session(opening).await.unwrap();
         session
-            .input
-            .send(SessionCommand {
+            .control
+            .submit(SessionCommand {
                 id: "start".into(),
                 body: SessionCommandBody::Generate {
                     generation_id: "turn".into(),
@@ -345,14 +346,14 @@ async fn websocket_terminal_error_survives_a_full_event_queue() {
         // Delay consumption beyond the previous error-delivery timeout.
         tokio::time::sleep(Duration::from_millis(40)).await;
         assert!(matches!(
-            next_event(&mut session.output).await.unwrap().unwrap().body,
+            next_event(&mut session.events).await.unwrap().unwrap().body,
             SessionEventBody::Acknowledged { .. }
         ));
         assert!(matches!(
-            next_event(&mut session.output).await,
+            next_event(&mut session.events).await,
             Err(Error::Protocol(_))
         ));
-        assert!(next_event(&mut session.output).await.unwrap().is_none());
+        assert!(next_event(&mut session.events).await.unwrap().is_none());
         server.await.unwrap();
     })
     .await
@@ -380,7 +381,7 @@ async fn websocket_rejects_malformed_events_without_guessing_field_types() {
             let model = tts::model(config(&endpoint)).unwrap();
             let mut session = model.open_session(open()).await.unwrap();
             assert!(matches!(
-                next_event(&mut session.output).await,
+                next_event(&mut session.events).await,
                 Err(Error::Protocol(_))
             ));
             server.await.unwrap();
@@ -425,14 +426,14 @@ async fn api_and_token_plan_keys_use_the_same_bearer_handshake() {
             let model = tts::model(settings).unwrap();
             let mut session = model.open_session(open()).await.unwrap();
             session
-                .input
-                .send(SessionCommand {
+                .control
+                .submit(SessionCommand {
                     id: "close".into(),
                     body: SessionCommandBody::Close,
                 })
                 .await
                 .unwrap();
-            while next_event(&mut session.output).await.unwrap().is_some() {}
+            while next_event(&mut session.events).await.unwrap().is_some() {}
             server.await.unwrap();
         })
         .await
@@ -473,8 +474,8 @@ async fn websocket_requires_real_sentence_boundaries_before_completion() {
             let opening = open();
             let mut session = model.open_session(opening).await.unwrap();
             session
-                .input
-                .send(SessionCommand {
+                .control
+                .submit(SessionCommand {
                     id: "start".into(),
                     body: SessionCommandBody::Generate {
                         generation_id: "turn".into(),
@@ -486,24 +487,25 @@ async fn websocket_requires_real_sentence_boundaries_before_completion() {
                 .await
                 .unwrap();
             assert!(matches!(
-                next_event(&mut session.output).await.unwrap().unwrap().body,
+                next_event(&mut session.events).await.unwrap().unwrap().body,
                 SessionEventBody::Acknowledged { .. }
             ));
             session
-                .input
-                .send(SessionCommand {
+                .control
+                .submit(SessionCommand {
                     id: "finish".into(),
                     body: SessionCommandBody::SealUserInput,
                 })
                 .await
                 .unwrap();
             assert!(matches!(
-                next_event(&mut session.output).await,
+                next_event(&mut session.events).await,
                 Err(Error::Protocol(_))
             ));
             assert_eq!(
                 session
-                    .media_output
+                    .media
+                    .output
                     .as_mut()
                     .unwrap()
                     .receive()
@@ -521,7 +523,7 @@ async fn websocket_requires_real_sentence_boundaries_before_completion() {
 }
 
 pub(super) async fn next_event(
-    output: &mut Box<dyn SessionReceiver>,
+    output: &mut Box<dyn SessionEvents>,
 ) -> zhir_core::Result<Option<SessionEvent>> {
     loop {
         let event = output.receive().await?;

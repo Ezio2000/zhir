@@ -94,8 +94,8 @@ impl Model for ResourceModel {
         Box::pin(async move {
             let cancellation = open.context.cancellation.clone();
             let mut session = self.inner.open_session(open).await?;
-            session.output = Box::new(SealedOutput {
-                inner: session.output,
+            session.events = Box::new(SealedEvents {
+                inner: session.events,
                 store: self.store.clone(),
                 cancellation,
                 payloads: Default::default(),
@@ -104,13 +104,13 @@ impl Model for ResourceModel {
         })
     }
 }
-struct SealedOutput {
-    inner: Box<dyn SessionReceiver>,
+struct SealedEvents {
+    inner: Box<dyn SessionEvents>,
     store: Arc<dyn ResourceStore>,
     cancellation: Cancellation,
     payloads: std::collections::BTreeSet<[u8; 32]>,
 }
-impl SessionReceiver for SealedOutput {
+impl SessionEvents for SealedEvents {
     fn receive(&mut self) -> BoxFuture<'_, Result<Option<SessionEvent>>> {
         Box::pin(async move {
             let Some(mut event) = self.inner.receive().await? else {

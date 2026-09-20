@@ -23,8 +23,12 @@ implementations belong to testing modules and are not exported by production cra
 
 ## Sessions and commands
 
-5. Model exposes capabilities, negotiate and open_session. ModelSession has command
-   and event ports plus optional independent media ports. Open seeds context/configuration;
+5. Model exposes capabilities, negotiate and open_session. ModelSession exposes
+   a SessionControl through control, SessionEvents through events, and independently
+   optional media.input/media.output endpoints grouped in MediaPorts. control.submit
+   admits a command; acknowledgement arrives through events.receive. Grouping media
+   adds no buffering, execution or ownership coupling between endpoints.
+   Open seeds context/configuration;
    Ready confirms establishment. Generate freezes generation ID, context/profile revisions
    and input position, not a full request. At most one generation is active.
 6. The kernel commits intent before dispatch and commits sent=true before the
@@ -184,7 +188,7 @@ payload on subsequent turns.
 37. ModelBinding persists adapter selection separately from RecoveryRef. Local
     projection reconstruction must reopen that binding, even after fallback candidates
     recover or change order. Missing or conflicting bindings fail rather than select
-    another model. Transparent sender decorators preserve the binding unchanged.
+    another model. Transparent control decorators preserve the binding unchanged.
 38. Exchange command acknowledgements, generated deltas and final output are polled
     by one scheduler. A blocked emission cannot stop the generation or cancellation
     needed to release its capacity. Control staging is bounded; terminal settlement

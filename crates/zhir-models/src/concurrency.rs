@@ -19,19 +19,19 @@ impl ConcurrencyLimitedModel {
     }
 }
 struct LeasedEvents {
-    inner: Box<dyn SessionReceiver>,
+    inner: Box<dyn SessionEvents>,
     _permit: Arc<OwnedSemaphorePermit>,
 }
-impl SessionReceiver for LeasedEvents {
+impl SessionEvents for LeasedEvents {
     fn receive(&mut self) -> BoxFuture<'_, Result<Option<SessionEvent>>> {
         self.inner.receive()
     }
 }
-struct LeasedInput {
-    inner: Arc<dyn SessionSender>,
+struct LeasedControl {
+    inner: Arc<dyn SessionControl>,
     _permit: Arc<OwnedSemaphorePermit>,
 }
-impl SessionSender for LeasedInput {
+impl SessionControl for LeasedControl {
     fn binding(&self) -> Option<zhir_core::model::ModelBinding> {
         self.inner.binding()
     }
@@ -41,8 +41,8 @@ impl SessionSender for LeasedInput {
     fn negotiate(&self, request: &ModelRequest) -> Result<NegotiatedProfile> {
         self.inner.negotiate(request)
     }
-    fn send(&self, command: SessionCommand) -> BoxFuture<'_, Result<()>> {
-        self.inner.send(command)
+    fn submit(&self, command: SessionCommand) -> BoxFuture<'_, Result<()>> {
+        self.inner.submit(command)
     }
 }
 struct LeasedMediaSender {
@@ -81,24 +81,24 @@ impl Model for ConcurrencyLimitedModel {
             };
             let mut session = self.inner.open_session(open).await?;
             let permit = Arc::new(permit);
-            session.input = Arc::new(LeasedInput {
-                inner: session.input,
+            session.control = Arc::new(LeasedControl {
+                inner: session.control,
                 _permit: permit.clone(),
             });
-            session.media_input = session.media_input.map(|inner| {
+            session.media.input = session.media.input.map(|inner| {
                 Arc::new(LeasedMediaSender {
                     inner,
                     _permit: permit.clone(),
                 }) as Arc<dyn zhir_core::resource::MediaSender>
             });
-            session.media_output = session.media_output.map(|inner| {
+            session.media.output = session.media.output.map(|inner| {
                 Box::new(LeasedMediaReceiver {
                     inner,
                     _permit: permit.clone(),
                 }) as Box<dyn zhir_core::resource::MediaReceiver>
             });
-            session.output = Box::new(LeasedEvents {
-                inner: session.output,
+            session.events = Box::new(LeasedEvents {
+                inner: session.events,
                 _permit: permit,
             });
             Ok(session)

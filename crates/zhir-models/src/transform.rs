@@ -48,14 +48,14 @@ impl TransformModel {
         self
     }
 }
-struct Input {
-    inner: Arc<dyn SessionSender>,
+struct Control {
+    inner: Arc<dyn SessionControl>,
     prepare: Arc<Prepare>,
     config: tokio::sync::Mutex<ModelRequest>,
     context: ModelContext,
     transforms: Vec<Arc<MapCommand>>,
 }
-impl SessionSender for Input {
+impl SessionControl for Control {
     fn binding(&self) -> Option<zhir_core::model::ModelBinding> {
         self.inner.binding()
     }
@@ -65,7 +65,7 @@ impl SessionSender for Input {
     fn negotiate(&self, request: &ModelRequest) -> Result<NegotiatedProfile> {
         self.inner.negotiate(request)
     }
-    fn send(&self, mut command: SessionCommand) -> BoxFuture<'_, Result<()>> {
+    fn submit(&self, mut command: SessionCommand) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
             let mut current_config = self.config.lock().await;
             if let SessionCommandBody::ReplaceContext {
@@ -103,7 +103,7 @@ impl SessionSender for Input {
                 SessionCommandBody::UpdateProfile { profile, .. } => Some(profile.clone()),
                 _ => None,
             };
-            self.inner.send(command).await?;
+            self.inner.submit(command).await?;
             if let Some(profile) = profile {
                 current_config.profile = profile;
             }
@@ -112,11 +112,11 @@ impl SessionSender for Input {
     }
 }
 struct Events {
-    inner: Box<dyn SessionReceiver>,
+    inner: Box<dyn SessionEvents>,
     transforms: Vec<Arc<MapEvent>>,
     context: ModelContext,
 }
-impl SessionReceiver for Events {
+impl SessionEvents for Events {
     fn receive(&mut self) -> BoxFuture<'_, Result<Option<SessionEvent>>> {
         Box::pin(async move {
             let Some(mut event) = self.inner.receive().await? else {
@@ -145,15 +145,15 @@ impl Model for TransformModel {
             let mut config = open.request.clone();
             config.messages.clear();
             let mut session = self.inner.open_session(open).await?;
-            session.input = Arc::new(Input {
-                inner: session.input,
+            session.control = Arc::new(Control {
+                inner: session.control,
                 prepare: self.prepare.clone(),
                 config: tokio::sync::Mutex::new(config),
                 transforms: self.commands.clone(),
                 context: context.clone(),
             });
-            session.output = Box::new(Events {
-                inner: session.output,
+            session.events = Box::new(Events {
+                inner: session.events,
                 transforms: self.events.clone(),
                 context,
             });

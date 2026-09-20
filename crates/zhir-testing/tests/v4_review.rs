@@ -67,7 +67,7 @@ fn generate() -> SessionCommand {
     )
 }
 async fn receive(session: &mut ModelSession) -> SessionEvent {
-    tokio::time::timeout(Duration::from_secs(3), session.output.receive())
+    tokio::time::timeout(Duration::from_secs(3), session.events.receive())
         .await
         .expect("session stalled")
         .expect("session error")
@@ -75,8 +75,8 @@ async fn receive(session: &mut ModelSession) -> SessionEvent {
 }
 async fn finish(session: &mut ModelSession) {
     session
-        .input
-        .send(command("close", SessionCommandBody::Close))
+        .control
+        .submit(command("close", SessionCommandBody::Close))
         .await
         .unwrap();
     while !matches!(receive(session).await.body, SessionEventBody::Closed { .. }) {}
@@ -261,7 +261,7 @@ async fn eager_exchange_deltas_follow_acknowledgement_and_response_start() {
         receive(&mut session).await.body,
         SessionEventBody::Ready { .. }
     ));
-    session.input.send(generate()).await.unwrap();
+    session.control.submit(generate()).await.unwrap();
     let mut events = Vec::new();
     loop {
         let event = receive(&mut session).await;
@@ -317,7 +317,7 @@ async fn bounded_delta_and_command_ack_keep_each_other_runnable() {
         receive(&mut session).await.body,
         SessionEventBody::Ready { .. }
     ));
-    session.input.send(generate()).await.unwrap();
+    session.control.submit(generate()).await.unwrap();
     while !matches!(
         receive(&mut session).await.body,
         SessionEventBody::ResponseStarted { .. }
@@ -326,8 +326,8 @@ async fn bounded_delta_and_command_ack_keep_each_other_runnable() {
         .await
         .unwrap();
     session
-        .input
-        .send(command(
+        .control
+        .submit(command(
             "append",
             SessionCommandBody::Append {
                 entry: HistoryEntry {
@@ -347,8 +347,8 @@ async fn bounded_delta_and_command_ack_keep_each_other_runnable() {
     tokio::time::timeout(
         Duration::from_secs(3),
         session
-            .input
-            .send(command("seal", SessionCommandBody::SealUserInput)),
+            .control
+            .submit(command("seal", SessionCommandBody::SealUserInput)),
     )
     .await
     .unwrap()
@@ -413,7 +413,7 @@ async fn cancellation_settles_even_when_output_is_not_consumed() {
     let cancellation = settings.context.cancellation.clone();
     let mut session = model.open_session(settings).await.unwrap();
     receive(&mut session).await;
-    session.input.send(generate()).await.unwrap();
+    session.control.submit(generate()).await.unwrap();
     while !matches!(
         receive(&mut session).await.body,
         SessionEventBody::ResponseStarted { .. }
@@ -428,7 +428,7 @@ async fn cancellation_settles_even_when_output_is_not_consumed() {
         .unwrap();
     let mut errors = 0;
     loop {
-        match tokio::time::timeout(Duration::from_secs(3), session.output.receive())
+        match tokio::time::timeout(Duration::from_secs(3), session.events.receive())
             .await
             .unwrap()
         {
@@ -590,7 +590,7 @@ async fn local_projection_binding_survives_checkpoint_recovery_and_reordering() 
     resumed.request.messages = conversation(completed.history.entries());
     let before_b = b.opens.load(Ordering::SeqCst);
     let mut session = reordered.open_session(resumed.clone()).await.unwrap();
-    assert_eq!(session.input.binding(), Some(binding));
+    assert_eq!(session.control.binding(), Some(binding));
     assert_eq!(
         b.opens.load(Ordering::SeqCst),
         before_b,

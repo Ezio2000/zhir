@@ -318,8 +318,8 @@ async fn setup_mapping(
 }
 async fn command(session: &ModelSession, id: &str, body: SessionCommandBody) {
     session
-        .input
-        .send(SessionCommand {
+        .control
+        .submit(SessionCommand {
             id: id.into(),
             body,
         })
@@ -328,7 +328,7 @@ async fn command(session: &ModelSession, id: &str, body: SessionCommandBody) {
 }
 async fn receipt(session: &mut ModelSession, expected: &str) {
     assert!(
-        matches!(session.output.receive().await.unwrap().unwrap().body, SessionEventBody::Acknowledged { command_id, .. } if command_id == expected)
+        matches!(session.events.receive().await.unwrap().unwrap().body, SessionEventBody::Acknowledged { command_id, .. } if command_id == expected)
     );
 }
 fn chunk(sequence: u64) -> MediaChunk {
@@ -347,12 +347,12 @@ fn chunk(sequence: u64) -> MediaChunk {
 #[tokio::test]
 async fn adapter_can_connect_initially_without_audio_input() {
     let (mut session, harness, signals) = setup("eager", true, false).await;
-    assert!(session.media_input.is_none());
+    assert!(session.media.input.is_none());
     receipt(&mut session, "ready").await;
     assert_eq!(signals.load(Ordering::SeqCst), 1);
     command(&session, "close", SessionCommandBody::Close).await;
     receipt(&mut session, "close").await;
-    assert!(session.output.receive().await.unwrap().is_none());
+    assert!(session.events.receive().await.unwrap().is_none());
     assert!(harness.state.closed.load(Ordering::SeqCst));
 }
 #[tokio::test]
@@ -390,7 +390,7 @@ async fn commands_before_connect_do_not_require_a_peer() {
     assert_eq!(signals.load(Ordering::SeqCst), 1);
     command(&session, "close", SessionCommandBody::Close).await;
     receipt(&mut session, "close").await;
-    assert!(session.output.receive().await.unwrap().is_none());
+    assert!(session.events.receive().await.unwrap().is_none());
 }
 #[tokio::test]
 async fn draining_keeps_receipts_runnable_and_preserves_write_and_media_order() {
@@ -399,7 +399,8 @@ async fn draining_keeps_receipts_runnable_and_preserves_write_and_media_order() 
         receipt(&mut session, "ready").await;
         for i in 0..3 {
             session
-                .media_input
+                .media
+                .input
                 .as_ref()
                 .unwrap()
                 .send(chunk(i))
@@ -417,7 +418,8 @@ async fn draining_keeps_receipts_runnable_and_preserves_write_and_media_order() 
         receipt(&mut session, "receipt").await;
         assert!(
             session
-                .media_input
+                .media
+                .input
                 .as_ref()
                 .unwrap()
                 .send(chunk(3))
@@ -446,10 +448,10 @@ async fn draining_keeps_receipts_runnable_and_preserves_write_and_media_order() 
         harness.event("done");
         receipt(&mut session, "end").await;
         assert!(matches!(
-            session.output.receive().await.unwrap().unwrap().body,
+            session.events.receive().await.unwrap().unwrap().body,
             SessionEventBody::Closed { .. }
         ));
-        assert!(session.output.receive().await.unwrap().is_none());
+        assert!(session.events.receive().await.unwrap().is_none());
         let budget = harness
             .state
             .config
@@ -460,7 +462,7 @@ async fn draining_keeps_receipts_runnable_and_preserves_write_and_media_order() 
             .media_budget
             .clone();
         assert!(matches!(budget.try_reserve(1), Err(Error::Uncertain(_))));
-        let media = session.media_output.as_mut().unwrap();
+        let media = session.media.output.as_mut().unwrap();
         for i in 0..3 {
             let packet = media.receive().await.unwrap().unwrap();
             assert_eq!(
@@ -488,7 +490,8 @@ async fn input_drain_cannot_hide_confirmation_expiry_behind_a_stalled_write() {
     receipt(&mut session, "ready").await;
     for i in 0..3 {
         session
-            .media_input
+            .media
+            .input
             .as_ref()
             .unwrap()
             .send(chunk(i))
@@ -503,7 +506,7 @@ async fn input_drain_cannot_hide_confirmation_expiry_behind_a_stalled_write() {
     receipt(&mut session, "receipt").await;
     tokio::time::advance(Duration::from_secs(1)).await;
     assert!(
-        matches!(session.output.receive().await, Err(Error::Uncertain(message)) if message.contains("fixture drain"))
+        matches!(session.events.receive().await, Err(Error::Uncertain(message)) if message.contains("fixture drain"))
     );
     assert!(accept.is_closed(), "deadline must cancel the pending write");
     assert!(harness.state.closed.load(Ordering::SeqCst));
@@ -511,14 +514,15 @@ async fn input_drain_cannot_hide_confirmation_expiry_behind_a_stalled_write() {
         harness.writes.try_recv().is_err(),
         "no close or remaining input after expiry"
     );
-    assert!(session.output.receive().await.unwrap().is_none());
+    assert!(session.events.receive().await.unwrap().is_none());
 }
 #[tokio::test]
 async fn rejection_preserves_diagnostic_and_cancels_pending_write() {
     let (mut session, mut harness, _) = setup("rejection", true, true).await;
     receipt(&mut session, "ready").await;
     session
-        .media_input
+        .media
+        .input
         .as_ref()
         .unwrap()
         .send(chunk(0))
@@ -531,10 +535,10 @@ async fn rejection_preserves_diagnostic_and_cancels_pending_write() {
     harness.event("reject");
     receipt(&mut session, "diagnostic").await;
     assert!(
-        matches!(session.output.receive().await, Err(Error::Uncertain(message)) if message == "fixture rejection")
+        matches!(session.events.receive().await, Err(Error::Uncertain(message)) if message == "fixture rejection")
     );
     assert!(accept.is_closed());
-    assert!(session.output.receive().await.unwrap().is_none());
+    assert!(session.events.receive().await.unwrap().is_none());
 }
 
 #[tokio::test(start_paused = true)]
@@ -567,7 +571,7 @@ async fn connection_policy_gates_queued_writes_without_blocking_observations() {
     };
     assert_eq!(second, "second");
     assert!(
-        tokio::time::timeout(Duration::from_millis(10), session.output.receive())
+        tokio::time::timeout(Duration::from_millis(10), session.events.receive())
             .await
             .is_err(),
         "local acknowledgement overtook its write"
@@ -581,7 +585,7 @@ async fn connection_policy_gates_queued_writes_without_blocking_observations() {
     receipt(&mut session, "receipt").await;
     receipt(&mut session, "diagnostic").await;
     assert!(
-        matches!(session.output.receive().await, Err(Error::Uncertain(message)) if message == "fixture rejection")
+        matches!(session.events.receive().await, Err(Error::Uncertain(message)) if message == "fixture rejection")
     );
 }
 
@@ -599,7 +603,7 @@ async fn media_mapping_cannot_exceed_its_ingress_reservation() {
         .media_budget
         .clone();
     harness.audio(0);
-    let error = tokio::time::timeout(Duration::from_secs(2), session.output.receive())
+    let error = tokio::time::timeout(Duration::from_secs(2), session.events.receive())
         .await
         .unwrap()
         .unwrap_err();
@@ -608,7 +612,8 @@ async fn media_mapping_cannot_exceed_its_ingress_reservation() {
     );
     assert!(
         session
-            .media_output
+            .media
+            .output
             .as_mut()
             .unwrap()
             .receive()

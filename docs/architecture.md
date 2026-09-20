@@ -56,8 +56,14 @@ core       -> no other zhir crate
 ## Model session boundary
 
 `Model` exposes `capabilities`, `negotiate` and `open_session`. A `ModelSession`
-contains `SessionSender`, `SessionReceiver` and optional media input/output ports.
-A session sender exposes the capabilities of the bound model, so a fallback's
+exposes `control: Arc<dyn SessionControl>`, `events: Box<dyn SessionEvents>` and
+`media: MediaPorts`. The control handle exposes binding, capabilities, negotiation
+and `submit(SessionCommand)`; successful submission is not provider confirmation.
+Events carry acknowledgements, content deltas, complete outputs and lifecycle facts,
+followed by any terminal error. MediaPorts groups independently optional `input`
+and `output` endpoints without introducing a queue, task or lifecycle of its own.
+All endpoints can be moved independently; the control handle can be shared.
+A session control exposes the capabilities of the bound model, so a fallback's
 aggregate advertisement cannot authorize an unsupported command after selection.
 
 Opening seeds the context and configuration, and emits Ready after establishment.
@@ -334,11 +340,11 @@ and uncertain-command reconciliation must be established before advertising Resu
 ## Binding and completion invariants
 
 `ModelBinding` records stable adapter selection independently of a remote
-`RecoveryRef`. The kernel persists the bound sender identity before consuming
+`RecoveryRef`. The kernel persists the bound control identity before consuming
 session events and supplies it when rebuilding an idle local projection.
 Fallback unwraps each binding layer and reopens only the original candidate;
 reordering, temporary availability changes or missing candidates cannot cause
-silent reselection. Transparent sender decorators forward the binding.
+silent reselection. Transparent control decorators forward the binding.
 
 Response-capable sessions cannot complete over an older input position, whether
 generation is explicit or automatic. Acknowledging Append is not a claim that

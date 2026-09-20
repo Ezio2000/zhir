@@ -114,17 +114,17 @@ async fn provider_settings_and_metadata_keep_their_wire_meaning() {
             let opening = open();
             let cancellation = opening.context.cancellation.clone();
             let mut session = model.open_session(opening).await.unwrap();
-            session.input.send(SessionCommand {id:"start".into(),body:SessionCommandBody::Generate {generation_id:"turn".into(),context_revision:0,input_position:0,profile_revision:0}}).await.unwrap();
-            assert!(matches!(next_event(&mut session.output).await.unwrap().unwrap().body, SessionEventBody::Acknowledged { .. }));
+            session.control.submit(SessionCommand {id:"start".into(),body:SessionCommandBody::Generate {generation_id:"turn".into(),context_revision:0,input_position:0,profile_revision:0}}).await.unwrap();
+            assert!(matches!(next_event(&mut session.events).await.unwrap().unwrap().body, SessionEventBody::Acknowledged { .. }));
             if mismatch {
-                assert!(matches!(next_event(&mut session.output).await,Err(Error::Protocol(message)) if message.contains("audio_format")));
-                assert!(session.media_output.as_mut().unwrap().receive().await.unwrap().is_none());
+                assert!(matches!(next_event(&mut session.events).await,Err(Error::Protocol(message)) if message.contains("audio_format")));
+                assert!(session.media.output.as_mut().unwrap().receive().await.unwrap().is_none());
             } else {
-                let chunk = session.media_output.as_mut().unwrap().receive().await.unwrap().unwrap();
+                let chunk = session.media.output.as_mut().unwrap().receive().await.unwrap().unwrap();
                 assert_eq!(chunk.media_type,"audio/pcm;encoding=s16le;rate=32000;channels=1");
                 assert_eq!(chunk.bytes,vec![1,2]);
                 cancellation.cancel();
-                assert!(matches!(next_event(&mut session.output).await,Err(Error::Cancelled)));
+                assert!(matches!(next_event(&mut session.events).await,Err(Error::Cancelled)));
             }
             server.await.unwrap();
         }
@@ -143,10 +143,10 @@ async fn rejection_keeps_provider_trace_and_original_error_before_termination() 
             let _ = socket.next().await;
         });
         let mut session = model.open_session(open()).await.unwrap();
-        let event = session.output.receive().await.unwrap().unwrap();
+        let event = session.events.receive().await.unwrap().unwrap();
         assert!(matches!(event.body,SessionEventBody::Delta {delta:ModelDelta::ProtocolEvent {data,..},..} if data["trace_id"]=="provider-trace"));
-        assert!(matches!(session.output.receive().await,Err(Error::Model(failure)) if failure.code=="minimax_1000" && failure.message=="specific synthesis failure"));
-        assert!(session.output.receive().await.unwrap().is_none());
+        assert!(matches!(session.events.receive().await,Err(Error::Model(failure)) if failure.code=="minimax_1000" && failure.message=="specific synthesis failure"));
+        assert!(session.events.receive().await.unwrap().is_none());
         server.await.unwrap();
     }).await.unwrap();
 }

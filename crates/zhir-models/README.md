@@ -13,6 +13,11 @@ explicit endpoint profile mappings. ProtocolExtension and ProviderToolAdapter
 implement endpoint-specific requests, outputs and replay. Protocol defaults are not
 live model capability discovery. OAuth login remains the host's responsibility.
 
+Every model opens a ModelSession with a shareable `control` handle, a single-consumer
+`events` stream and independently optional `media.input` / `media.output` ports.
+Use `control.submit(command)` to request operations; confirmations and final session
+errors arrive through `events.receive()`. Decorators preserve each endpoint's ownership.
+
 ## Native protocol adapters
 
 `websocket::{WebSocketAdapter, WebSocketProtocol, Action, WireMessage}` and

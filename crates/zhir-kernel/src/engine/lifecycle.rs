@@ -64,7 +64,7 @@ impl Engine {
                 self.control(control).await?;
             }
             Some(work) = self.work.recv() => { self.handle(work).await?; }
-            Some(packet) = self.media.recv(), if self.model_media.is_some() && !self.input_sending && (!self.media.is_closed() || !self.media.is_empty()) => {
+            Some(packet) = self.media.recv(), if self.model_media_input.is_some() && !self.input_sending && (!self.media.is_closed() || !self.media.is_empty()) => {
                 self.input_media(packet)?;
             }
             _ = tokio::time::sleep(Duration::from_millis(10)) => (),
@@ -255,8 +255,8 @@ pub(crate) async fn execute(
         work_tx,
         work,
         tasks: JoinSet::new(),
-        session: None,
-        model_media: None,
+        session_control: None,
+        model_media_input: None,
         operation_controls: BTreeMap::new(),
         tokens: BTreeMap::new(),
         admitting: BTreeSet::new(),

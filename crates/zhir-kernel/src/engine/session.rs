@@ -2,7 +2,7 @@ use super::*;
 
 impl Engine {
     pub(super) fn session_capabilities(&self) -> &CapabilitySet {
-        self.session.as_ref().map_or_else(
+        self.session_control.as_ref().map_or_else(
             || {
                 self.current
                     .active
@@ -11,16 +11,16 @@ impl Engine {
                     .as_ref()
                     .unwrap_or_else(|| self.config.model.capabilities())
             },
-            |input| input.capabilities(),
+            |control| control.capabilities(),
         )
     }
     pub(super) fn negotiate(
         &self,
         request: &ModelRequest,
     ) -> Result<zhir_core::profile::NegotiatedProfile> {
-        self.session.as_ref().map_or_else(
+        self.session_control.as_ref().map_or_else(
             || self.config.model.negotiate(request),
-            |input| input.negotiate(request),
+            |control| control.negotiate(request),
         )
     }
     pub(super) fn model_request(&self, history_count: usize) -> ModelRequest {
@@ -278,11 +278,11 @@ impl Engine {
                 .session
                 .capabilities
                 .as_ref()
-                .is_some_and(|caps| caps != session.input.capabilities())
+                .is_some_and(|caps| caps != session.control.capabilities())
         {
             return self.suspend(WaitReason::Recovery).await;
         }
-        let binding = session.input.binding();
+        let binding = session.control.binding();
         if next.active.session.binding.is_some() && next.active.session.binding != binding {
             return Err(Error::Protocol(
                 "model binding changed during recovery".into(),
@@ -291,7 +291,7 @@ impl Engine {
         next.active.session.binding = binding;
         if next.options.mode == RunMode::Task
             && !session
-                .input
+                .control
                 .capabilities()
                 .supports(Capability::ResponseEvents)
         {
@@ -299,11 +299,11 @@ impl Engine {
                 "bound model has no verifiable response boundaries".into(),
             ));
         }
-        next.active.session.capabilities = Some(session.input.capabilities().clone());
-        next.active.session.negotiated = session.input.negotiate(&opening_request)?;
+        next.active.session.capabilities = Some(session.control.capabilities().clone());
+        next.active.session.negotiated = session.control.negotiate(&opening_request)?;
         if self.config.history_reducer.is_some()
             && !session
-                .input
+                .control
                 .capabilities()
                 .supports(Capability::ReplaceContext)
         {
@@ -322,20 +322,24 @@ impl Engine {
             HistoryDelta::Unchanged,
         )
         .await?;
-        self.session = Some(session.input);
-        self.model_media = session.media_input;
+        let ModelSession {
+            control,
+            mut events,
+            media: zhir_core::resource::MediaPorts { input, output },
+        } = session;
+        self.session_control = Some(control);
+        self.model_media_input = input;
         let tx = self.work_tx.clone();
-        let mut receiver = session.output;
         self.tasks.spawn(async move {
             loop {
-                let event = receiver.receive().await;
+                let event = events.receive().await;
                 let stop = !matches!(event, Ok(Some(_)));
                 if tx.send(Work::Model(event)).await.is_err() || stop {
                     break;
                 }
             }
         });
-        self.start_media_output(session.media_output)?;
+        self.start_media_output(output)?;
         Ok(())
     }
 }

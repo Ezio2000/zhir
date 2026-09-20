@@ -287,8 +287,8 @@ async fn native_input_and_async_results_resolve_resources_and_seal_operation_out
         .await
         .unwrap();
     session
-        .input
-        .send(SessionCommand {
+        .control
+        .submit(SessionCommand {
             id: "input".into(),
             body: SessionCommandBody::Append {
                 context_revision: 1,
@@ -306,8 +306,8 @@ async fn native_input_and_async_results_resolve_resources_and_seal_operation_out
         .await
         .unwrap();
     session
-        .input
-        .send(SessionCommand {
+        .control
+        .submit(SessionCommand {
             id: "result".into(),
             body: SessionCommandBody::Append {
                 context_revision: 2,
@@ -336,16 +336,16 @@ async fn native_input_and_async_results_resolve_resources_and_seal_operation_out
         .await
         .unwrap();
     assert!(matches!(
-        session.output.receive().await.unwrap().unwrap().body,
+        session.events.receive().await.unwrap().unwrap().body,
         SessionEventBody::Ready { .. }
     ));
     for _ in 0..2 {
         assert!(matches!(
-            session.output.receive().await.unwrap().unwrap().body,
+            session.events.receive().await.unwrap().unwrap().body,
             SessionEventBody::Acknowledged { .. }
         ));
     }
-    let event = session.output.receive().await.unwrap().unwrap();
+    let event = session.events.receive().await.unwrap().unwrap();
     let SessionEventBody::Operation {
         event:
             OperationEvent {

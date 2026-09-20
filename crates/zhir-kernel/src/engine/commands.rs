@@ -74,7 +74,7 @@ impl Engine {
         Ok(id)
     }
     pub(super) async fn dispatch_commands(&mut self) -> Result<()> {
-        let Some(input) = self.session.clone() else {
+        let Some(control) = self.session_control.clone() else {
             return Ok(());
         };
         if self.sending || !self.current.active.session.ready {
@@ -112,10 +112,9 @@ impl Engine {
         self.sent.insert(command.id.clone());
         self.sending = true;
         let tx = self.work_tx.clone();
-        let input = input.clone();
         self.tasks.spawn(async move {
-            let result = input
-                .send(SessionCommand {
+            let result = control
+                .submit(SessionCommand {
                     id: command.id,
                     body,
                 })

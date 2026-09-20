@@ -55,8 +55,13 @@ let completion = invocation.result().await?;
 Ready 表示建立完成。声明 ExplicitGeneration 的模型由 Generate 发起推理；Live 打开后
 直接接收原生事件，不伪造生成请求或生成结束。
 
-ModelSession 的输入/输出端口分别实现 SessionSender/SessionReceiver。输入端口必须
-报告绑定模型的能力和协商结果。会话事件使用单调 sequence；完整 Output 具有独立
+ModelSession 提供 `control`、`events` 和 `media`。`control` 实现 SessionControl，
+通过 `submit(command)` 提交命令，并报告绑定模型身份、能力和协商结果；提交成功不代表
+远端执行完成，确认通过 `events.receive()` 返回。`events` 实现 SessionEvents，交付
+文字增量、完整输出、确认、生命周期事件和终止错误。`media` 是 resource::MediaPorts，
+其 `input`、`output` 分别可选，使用 MediaSender/MediaReceiver 传递 MediaChunk。
+端口可分别移动，控制端和媒体输入可共享；纯文字模型使用 MediaPorts::default()。
+会话事件使用单调 sequence；完整 Output 具有独立
 item、caller 和可选 generation 标识。Operation 事件指向原始 item 的 CallRef。提供可恢复服务的适配器应尽早
 发送 Recovery 或带 recovery 的 Acknowledged，并在重连时确认已经接收的命令。
 
@@ -124,7 +129,8 @@ CredentialProvider 的 audience 是连接 URL；`header:` metadata 用于额外�
 运行中 profile 更新或断线恢复。声音参数通过 TtsConfig 设置；
 不支持的 generation/extension 参数会被拒绝。Input 确认只表示适配器已发送文字，
 flush、取消和任务完成分别等待远端 task_flushed / task_canceled / task_finished。
-协议观察通过原生 SessionReceiver 的 Delta 输出，完成元数据保留最新 extra_info。
+协议观察通过原生 `session.events` 的 Delta 输出，音频通过 `session.media.output`
+交付；完成元数据保留最新 extra_info。
 
 ## 同步与异步工具
 
@@ -290,7 +296,8 @@ Live 输出的 `max_buffered_media_bytes` 按实际负载字节计费，同一�
 接收、待投递输出和媒体端口，消费后释放；输入使用另一份预算。每个方向另有
 4096 块上限，空结束标记只占块数。事件队列容量与最大单块大小不决定音频包数。
 RTP 无法保证向远端施加背压，超出接收预算会以 Uncertain 终止。
-直接使用 ModelSession 时，SealUserInput 同样关闭媒体输入准入并排空已接收包；
+直接使用 ModelSession 时，音频从 `session.media.input` 进入、从 `session.media.output`
+接收；通过 `session.control.submit` 提交 SealUserInput 命令，同样关闭媒体输入准入并排空已接收包；
 排水期间继续处理远端事件、取消和固定确认期限，后续远端关闭动作等待排水完成。
 Close 在收到远端确认、排空接收数据后结束事件端口，无需再次发送 Close。
 

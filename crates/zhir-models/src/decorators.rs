@@ -23,10 +23,10 @@ impl ObservedModel {
     }
 }
 struct ObservedEvents {
-    inner: Box<dyn SessionReceiver>,
+    inner: Box<dyn SessionEvents>,
     observer: Arc<dyn DeltaSink>,
 }
-impl SessionReceiver for ObservedEvents {
+impl SessionEvents for ObservedEvents {
     fn receive(&mut self) -> BoxFuture<'_, Result<Option<SessionEvent>>> {
         Box::pin(async move {
             let event = self.inner.receive().await?;
@@ -53,8 +53,8 @@ impl Model for ObservedModel {
             open.context.cancellation.check()?;
             let observer = (self.factory)(&open.request, &open.context.run)?;
             let mut session = self.inner.open_session(open).await?;
-            session.output = Box::new(ObservedEvents {
-                inner: session.output,
+            session.events = Box::new(ObservedEvents {
+                inner: session.events,
                 observer,
             });
             Ok(session)
@@ -183,11 +183,11 @@ struct FallbackBinding {
     candidate: String,
     inner: Option<ModelBinding>,
 }
-struct BoundInput {
+struct BoundControl {
     candidate: String,
-    inner: Arc<dyn SessionSender>,
+    inner: Arc<dyn SessionControl>,
 }
-impl SessionSender for BoundInput {
+impl SessionControl for BoundControl {
     fn binding(&self) -> Option<ModelBinding> {
         Some(ModelBinding {
             adapter: "zhir.fallback".into(),
@@ -200,15 +200,15 @@ impl SessionSender for BoundInput {
     fn negotiate(&self, request: &ModelRequest) -> Result<NegotiatedProfile> {
         self.inner.negotiate(request)
     }
-    fn send(&self, command: SessionCommand) -> BoxFuture<'_, Result<()>> {
-        self.inner.send(command)
+    fn submit(&self, command: SessionCommand) -> BoxFuture<'_, Result<()>> {
+        self.inner.submit(command)
     }
 }
 struct BoundEvents {
     candidate: String,
-    inner: Box<dyn SessionReceiver>,
+    inner: Box<dyn SessionEvents>,
 }
-impl SessionReceiver for BoundEvents {
+impl SessionEvents for BoundEvents {
     fn receive(&mut self) -> BoxFuture<'_, Result<Option<SessionEvent>>> {
         Box::pin(async move {
             let Some(mut event) = self.inner.receive().await? else {
@@ -237,13 +237,13 @@ impl SessionReceiver for BoundEvents {
     }
 }
 fn bind(mut session: ModelSession, candidate: &str) -> ModelSession {
-    session.input = Arc::new(BoundInput {
+    session.control = Arc::new(BoundControl {
         candidate: candidate.into(),
-        inner: session.input,
+        inner: session.control,
     });
-    session.output = Box::new(BoundEvents {
+    session.events = Box::new(BoundEvents {
         candidate: candidate.into(),
-        inner: session.output,
+        inner: session.events,
     });
     session
 }

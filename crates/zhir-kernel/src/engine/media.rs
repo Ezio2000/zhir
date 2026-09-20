@@ -116,7 +116,7 @@ impl Engine {
             .clone()
             .ok_or_else(|| Error::Invalid("media input requires resource storage".into()))?;
         let input = self
-            .model_media
+            .model_media_input
             .clone()
             .ok_or_else(|| Error::Invalid("model has no media input".into()))?;
         let previous = self

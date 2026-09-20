@@ -8,25 +8,25 @@ pub(crate) type Exchange = dyn Fn(ModelRequest, ModelContext) -> BoxFuture<'stat
     + Sync;
 pub(crate) type Negotiate =
     dyn Fn(&ModelRequest) -> Result<zhir_core::profile::NegotiatedProfile> + Send + Sync;
-struct Sender(mpsc::Sender<SessionCommand>, CapabilitySet, Arc<Negotiate>);
-impl SessionSender for Sender {
+struct Control(mpsc::Sender<SessionCommand>, CapabilitySet, Arc<Negotiate>);
+impl SessionControl for Control {
     fn capabilities(&self) -> &CapabilitySet {
         &self.1
     }
     fn negotiate(&self, request: &ModelRequest) -> Result<zhir_core::profile::NegotiatedProfile> {
         (self.2)(request)
     }
-    fn send(&self, command: SessionCommand) -> BoxFuture<'_, Result<()>> {
+    fn submit(&self, command: SessionCommand) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move { self.0.send(command).await.map_err(|_| Error::Cancelled) })
     }
 }
-struct Receiver {
+struct EventsReceiver {
     events: mpsc::Receiver<SessionEvent>,
     terminal: oneshot::Receiver<Result<()>>,
     stopped: bool,
     error: Option<Error>,
 }
-impl Receiver {
+impl EventsReceiver {
     fn settle(&mut self, result: std::result::Result<Result<()>, oneshot::error::RecvError>) {
         self.stopped = true;
         self.events.close();
@@ -38,7 +38,7 @@ impl Receiver {
         };
     }
 }
-impl SessionReceiver for Receiver {
+impl SessionEvents for EventsReceiver {
     fn receive(&mut self) -> BoxFuture<'_, Result<Option<SessionEvent>>> {
         Box::pin(async move {
             loop {
@@ -161,15 +161,14 @@ pub(crate) fn open(
         let _ = terminal_tx.send(result);
     });
     Ok(ModelSession {
-        input: Arc::new(Sender(tx, capabilities, negotiate)),
-        output: Box::new(Receiver {
+        control: Arc::new(Control(tx, capabilities, negotiate)),
+        events: Box::new(EventsReceiver {
             events: event_rx,
             terminal: terminal_rx,
             stopped: false,
             error: None,
         }),
-        media_input: None,
-        media_output: None,
+        media: zhir_core::resource::MediaPorts::default(),
     })
 }
 
