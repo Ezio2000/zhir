@@ -135,18 +135,18 @@ impl SessionPeer {
         .await
     }
 }
-struct Input {
+struct Control {
     sender: mpsc::Sender<SessionCommand>,
     capabilities: CapabilitySet,
 }
-impl SessionSender for Input {
+impl SessionControl for Control {
     fn capabilities(&self) -> &CapabilitySet {
         &self.capabilities
     }
     fn negotiate(&self, request: &ModelRequest) -> Result<NegotiatedProfile> {
         zhir_policies::negotiation::negotiate(request, &self.capabilities)
     }
-    fn send(&self, command: SessionCommand) -> BoxFuture<'_, Result<()>> {
+    fn submit(&self, command: SessionCommand) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
             self.sender
                 .send(command)
@@ -156,7 +156,7 @@ impl SessionSender for Input {
     }
 }
 struct Events(mpsc::Receiver<Result<SessionEvent>>);
-impl SessionReceiver for Events {
+impl SessionEvents for Events {
     fn receive(&mut self) -> BoxFuture<'_, Result<Option<SessionEvent>>> {
         Box::pin(async move { self.0.recv().await.transpose() })
     }
@@ -225,19 +225,21 @@ impl Model for SessionModel {
             });
             let duplex = self.capabilities.supports(Capability::Duplex);
             Ok(ModelSession {
-                input: Arc::new(Input {
+                control: Arc::new(Control {
                     sender,
                     capabilities: self.capabilities.clone(),
                 }),
-                output: Box::new(Events(receiver)),
-                media_input: duplex.then(|| {
-                    Arc::new(MediaInput {
-                        sender: media_input,
-                        limit,
-                    }) as Arc<dyn MediaSender>
-                }),
-                media_output: duplex
-                    .then(|| Box::new(MediaOutput(media_events)) as Box<dyn MediaReceiver>),
+                events: Box::new(Events(receiver)),
+                media: MediaPorts {
+                    input: duplex.then(|| {
+                        Arc::new(MediaInput {
+                            sender: media_input,
+                            limit,
+                        }) as Arc<dyn MediaSender>
+                    }),
+                    output: duplex
+                        .then(|| Box::new(MediaOutput(media_events)) as Box<dyn MediaReceiver>),
+                },
             })
         })
     }

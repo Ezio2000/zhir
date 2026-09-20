@@ -43,13 +43,13 @@ impl Model for TtsModel {
     fn open_session(&self, open: SessionOpen) -> BoxFuture<'_, Result<ModelSession>> {
         Box::pin(async move {
             let mut session = self.0.open_session(open).await?;
-            session.output = Box::new(Events(session.output, self.1.clone()));
+            session.events = Box::new(Events(session.events, self.1.clone()));
             Ok(session)
         })
     }
 }
-struct Events(Box<dyn SessionReceiver>, watch::Sender<Stats>);
-impl SessionReceiver for Events {
+struct Events(Box<dyn SessionEvents>, watch::Sender<Stats>);
+impl SessionEvents for Events {
     fn receive(&mut self) -> BoxFuture<'_, Result<Option<SessionEvent>>> {
         Box::pin(async move {
             let result = self.0.receive().await;

@@ -24,7 +24,7 @@ the public SDK facade. The kernel owns execution, interrupt epochs, media
 backpressure, resource sealing and checkpoint commits. Only text Input and audio
 output are exposed; microphone input, model tools, profile updates and transport
 recovery are not advertised. The test observer records events without implementing
-any provider protocol, consuming the native SessionReceiver rather than installing a DeltaSink.
+any provider protocol, consuming the native SessionEvents rather than installing a DeltaSink.
 
 Run deterministic local WebSocket tests without credentials:
 

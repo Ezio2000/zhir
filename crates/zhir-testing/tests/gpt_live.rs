@@ -68,8 +68,8 @@ async fn open(model: &zhir_models::WebRtcModel) -> ModelSession {
 }
 async fn send(session: &ModelSession, id: &str, body: SessionCommandBody) {
     session
-        .input
-        .send(SessionCommand {
+        .control
+        .submit(SessionCommand {
             id: id.into(),
             body,
         })
@@ -88,44 +88,44 @@ async fn native_webrtc_preserves_transcripts_delegation_and_audio() {
         assert!(!model.capabilities().supports(Capability::InterruptOutput));
         let mut session=open(&model).await;
 
-        assert!(matches!(session.output.receive().await.unwrap().unwrap().body,SessionEventBody::Ready { .. }));
-        session.media_input.as_ref().unwrap().send(MediaChunk {stream_id:"mic".into(),session_id:"test-live".into(),epoch:0,sequence:0,timestamp_us:0,media_type:AUDIO_TYPE.into(),bytes:vec![0xf8,0xff,0xfe],end:false}).await.unwrap();
+        assert!(matches!(session.events.receive().await.unwrap().unwrap().body,SessionEventBody::Ready { .. }));
+        session.media.input.as_ref().unwrap().send(MediaChunk {stream_id:"mic".into(),session_id:"test-live".into(),epoch:0,sequence:0,timestamp_us:0,media_type:AUDIO_TYPE.into(),bytes:vec![0xf8,0xff,0xfe],end:false}).await.unwrap();
         let mut messages=vec![];
         while messages.len()<2 {
-            if let SessionEventBody::ConversationItem {item_id,message}=session.output.receive().await.unwrap().unwrap().body { messages.push((item_id,message)); }
+            if let SessionEventBody::ConversationItem {item_id,message}=session.events.receive().await.unwrap().unwrap().body { messages.push((item_id,message)); }
         }
         assert_eq!(messages[0],("user-1".into(),Message::user("hello")));
         assert_eq!(messages[1].0,"assistant-1");
         loop {
-            if let SessionEventBody::Output {output:zhir_core::message::Output::Delegation {request},..}=session.output.receive().await.unwrap().unwrap().body { assert_eq!(request.prompt,"inspect files");break; }
+            if let SessionEventBody::Output {output:zhir_core::message::Output::Delegation {request},..}=session.events.receive().await.unwrap().unwrap().body { assert_eq!(request.prompt,"inspect files");break; }
         }
         for enabled in [false, true] {
             send(&session,"audio-gate",SessionCommandBody::SetInputAudio {enabled}).await;
-            assert!(matches!(session.output.receive().await.unwrap().unwrap().body,SessionEventBody::Acknowledged {command_id,..} if command_id=="audio-gate"));
+            assert!(matches!(session.events.receive().await.unwrap().unwrap().body,SessionEventBody::Acknowledged {command_id,..} if command_id=="audio-gate"));
         }
         let origin=zhir_core::operation::CallRef {session_id:"test-live".into(),item_id:"delegate-1".into(), generation_id:None,caller_id:"live".into(),call_id:"delegate-1".into()};
         send(&session,"context",SessionCommandBody::DelegationContext {operation_id:"op".into(),origin:origin.clone(),content:vec![zhir_core::message::Content::text("中".repeat(400))]}).await;
         send(&session,"end",SessionCommandBody::SealUserInput).await;
         send(&session,"result",SessionCommandBody::Append {context_revision:1,input_position:0,source:AppendSource::Submitted,entry:zhir_core::run::HistoryEntry {id:"result".into(),origin:Some(origin),message:Message::DelegationResult {id:"delegate-1".into(),outcome:zhir_core::operation::OperationOutcome::Success {content:vec![zhir_core::message::Content::text("done")],structured:serde_json::Value::Null}}}}).await;
         send(&session,"close",SessionCommandBody::Close).await;
-        let mut audio=session.media_output.take().unwrap();
+        let mut audio=session.media.output.take().unwrap();
         let receive=tokio::spawn(async move {let mut chunks=vec![];while let Some(chunk)=audio.receive().await.unwrap(){chunks.push(chunk);}chunks});
 
         let mut finished=0;
         loop {
-            match session.output.receive().await.unwrap().unwrap().body {
+            match session.events.receive().await.unwrap().unwrap().body {
                 SessionEventBody::ResponseFinished {..}=>finished+=1,
                 SessionEventBody::Closed { .. }=>break,
                 _=>(),
             }
         }
         assert_eq!(finished,0, "Live cannot fabricate generation boundaries");
-        assert!(matches!(session.media_input.as_ref().unwrap().send(MediaChunk {stream_id:"mic".into(),session_id:"test-live".into(),epoch:0,sequence:1,timestamp_us:20000,media_type:AUDIO_TYPE.into(),bytes:vec![],end:true}).await, Err(zhir_core::error::Error::Cancelled)), "SealUserInput must close direct session media admission");
+        assert!(matches!(session.media.input.as_ref().unwrap().send(MediaChunk {stream_id:"mic".into(),session_id:"test-live".into(),epoch:0,sequence:1,timestamp_us:20000,media_type:AUDIO_TYPE.into(),bytes:vec![],end:true}).await, Err(zhir_core::error::Error::Cancelled)), "SealUserInput must close direct session media admission");
         let chunks=receive.await.unwrap();
         assert!(chunks.len()>=2);
         assert_eq!(chunks[0].bytes,vec![0xf8,0xff,0xfe]);
         assert!(chunks.last().unwrap().end);
-        assert!(session.output.receive().await.unwrap().is_none());
+        assert!(session.events.receive().await.unwrap().is_none());
         let evidence=server.await.unwrap();
         assert!(evidence.audio>0,"no native upstream RTP");
         let context:Vec<_>=evidence.commands.iter().filter(|e|e["type"]=="delegation.context.append").collect();
@@ -177,7 +177,7 @@ async fn remote_rejection_preserves_details_without_acknowledging_command() {
 
         loop {
             if matches!(
-                session.output.receive().await.unwrap().unwrap().body,
+                session.events.receive().await.unwrap().unwrap().body,
                 SessionEventBody::Output { .. }
             ) {
                 break;
@@ -191,7 +191,7 @@ async fn remote_rejection_preserves_details_without_acknowledging_command() {
         .await;
         let mut observed_error = false;
         loop {
-            match session.output.receive().await {
+            match session.events.receive().await {
                 Ok(Some(event)) => match event.body {
                     SessionEventBody::Delta {
                         delta: ModelDelta::ProtocolEvent { data, .. },
@@ -234,7 +234,7 @@ async fn abnormal_remote_close_cannot_confirm_successful_drain() {
 
             loop {
                 if matches!(
-                    session.output.receive().await.unwrap().unwrap().body,
+                    session.events.receive().await.unwrap().unwrap().body,
                     SessionEventBody::Output { .. }
                 ) {
                     break;
@@ -242,7 +242,7 @@ async fn abnormal_remote_close_cannot_confirm_successful_drain() {
             }
             send(&session, "close", SessionCommandBody::Close).await;
             assert!(matches!(
-                session.output.receive().await,
+                session.events.receive().await,
                 Err(zhir_core::error::Error::Uncertain(_))
             ));
             server.await.unwrap();
@@ -262,18 +262,18 @@ async fn expiry_while_seal_user_input_waits_for_delegation_is_uncertain() {
         let mut session = open(&model).await;
 
         loop {
-            if matches!(session.output.receive().await.unwrap().unwrap().body, SessionEventBody::Output { .. }) { break; }
+            if matches!(session.events.receive().await.unwrap().unwrap().body, SessionEventBody::Output { .. }) { break; }
         }
         send(&session, "end", SessionCommandBody::SealUserInput).await;
-        assert!(matches!(session.output.receive().await.unwrap().unwrap().body, SessionEventBody::Acknowledged { command_id, .. } if command_id=="end"));
+        assert!(matches!(session.events.receive().await.unwrap().unwrap().body, SessionEventBody::Acknowledged { command_id, .. } if command_id=="end"));
         send(&session, "progress", SessionCommandBody::DelegationContext {
             operation_id: "op".into(),
             origin: zhir_core::operation::CallRef { session_id: "test-live".into(), item_id:"delegate-1".into(), generation_id:None, caller_id:"live".into(), call_id:"delegate-1".into() },
             content: vec![zhir_core::message::Content::text("still working")],
         }).await;
-        assert!(matches!(session.output.receive().await.unwrap().unwrap().body, SessionEventBody::Acknowledged { command_id,.. } if command_id=="progress"));
-        assert!(matches!(session.output.receive().await, Err(zhir_core::error::Error::Uncertain(_))));
-        assert!(session.output.receive().await.unwrap().is_none());
+        assert!(matches!(session.events.receive().await.unwrap().unwrap().body, SessionEventBody::Acknowledged { command_id,.. } if command_id=="progress"));
+        assert!(matches!(session.events.receive().await, Err(zhir_core::error::Error::Uncertain(_))));
+        assert!(session.events.receive().await.unwrap().is_none());
         let evidence = server.await.unwrap();
         assert!(!evidence.commands.iter().any(|event|event["type"]=="session.close"));
     }).await.unwrap();
@@ -578,7 +578,7 @@ async fn credential_resolution_is_cancelled_and_startup_is_bounded() {
             tokio::time::sleep(Duration::from_millis(20)).await;
             cancellation.cancel();
         }
-        let error = tokio::time::timeout(Duration::from_secs(2), session.output.receive())
+        let error = tokio::time::timeout(Duration::from_secs(2), session.events.receive())
             .await
             .unwrap()
             .unwrap_err();
@@ -630,7 +630,7 @@ async fn rejected_signaling_has_one_refresh_attempt_and_preserves_remote_error()
     let model = live::model(config).unwrap();
     let mut session = open(&model).await;
 
-    let error = tokio::time::timeout(Duration::from_secs(3), session.output.receive())
+    let error = tokio::time::timeout(Duration::from_secs(3), session.events.receive())
         .await
         .unwrap()
         .unwrap_err();
@@ -659,22 +659,22 @@ async fn native_controls_progress_while_audio_output_is_full() {
         }).await.unwrap();
 
         loop {
-            if matches!(session.output.receive().await.unwrap().unwrap().body,SessionEventBody::Output {..}) {break;}
+            if matches!(session.events.receive().await.unwrap().unwrap().body,SessionEventBody::Output {..}) {break;}
         }
         // The fixture emits four packets before reading commands; leave media unconsumed.
         for enabled in [false,true] {
             send(&session,"gate",SessionCommandBody::SetInputAudio {enabled}).await;
-            let event=tokio::time::timeout(Duration::from_secs(1),session.output.receive()).await.unwrap().unwrap().unwrap();
+            let event=tokio::time::timeout(Duration::from_secs(1),session.events.receive()).await.unwrap().unwrap().unwrap();
             assert!(matches!(event.body,SessionEventBody::Acknowledged {command_id,..} if command_id=="gate"));
         }
         send(&session,"close",SessionCommandBody::Close).await;
-        let mut media=session.media_output.take().unwrap();
+        let mut media=session.media.output.take().unwrap();
         let reader=tokio::spawn(async move {let mut chunks=vec![];while let Some(chunk)=media.receive().await.unwrap(){chunks.push(chunk);}chunks});
-        loop {if matches!(session.output.receive().await.unwrap().unwrap().body,SessionEventBody::Closed { .. }){break;}}
+        loop {if matches!(session.events.receive().await.unwrap().unwrap().body,SessionEventBody::Closed { .. }){break;}}
         let chunks=reader.await.unwrap();
         assert_eq!(chunks.iter().filter(|c|!c.end).count(),4,"closure lost buffered RTP");
         assert!(chunks.last().unwrap().end);
-        while session.output.receive().await.unwrap().is_some() {}
+        while session.events.receive().await.unwrap().is_some() {}
         server.await.unwrap();
     }).await.expect("control or closure stalled behind media");
 }
@@ -699,11 +699,11 @@ async fn audio_control_needs_a_matching_remote_confirmation() {
             let mut session = open(&model).await;
 
             loop {
-                if matches!(session.output.receive().await.unwrap().unwrap().body, SessionEventBody::Output { .. }) { break; }
+                if matches!(session.events.receive().await.unwrap().unwrap().body, SessionEventBody::Output { .. }) { break; }
             }
             send(&session, "pause", SessionCommandBody::SetInputAudio { enabled: false }).await;
             let error = loop {
-                match session.output.receive().await {
+                match session.events.receive().await {
                     Err(error) => break error,
                     Ok(Some(event)) => assert!(!matches!(event.body, SessionEventBody::Acknowledged { command_id, .. } if command_id == "pause")),
                     Ok(None) => panic!("unconfirmed command was silently settled"),

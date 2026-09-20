@@ -491,10 +491,10 @@ async fn fallback_recovery_uses_stable_identity_after_candidate_reordering() {
     };
     let mut session = model.open_session(open.clone()).await.unwrap();
     assert!(matches!(
-        session.output.receive().await.unwrap().unwrap().body,
+        session.events.receive().await.unwrap().unwrap().body,
         SessionEventBody::Ready { .. }
     ));
-    let event = session.output.receive().await.unwrap().unwrap();
+    let event = session.events.receive().await.unwrap().unwrap();
     let SessionEventBody::Recovery { reference } = event.body else {
         panic!("expected recovery");
     };
@@ -506,7 +506,7 @@ async fn fallback_recovery_uses_stable_identity_after_candidate_reordering() {
     reordered.reverse();
     let recovered = FallbackModel::new(reordered).unwrap();
     let mut session = recovered.open_session(open.clone()).await.unwrap();
-    assert!(session.output.receive().await.unwrap().is_some());
+    assert!(session.events.receive().await.unwrap().is_some());
     assert_eq!(opens.load(Ordering::SeqCst), 2);
     assert_eq!(failed.calls.load(Ordering::SeqCst), 1);
     let missing =
@@ -516,10 +516,12 @@ async fn fallback_recovery_uses_stable_identity_after_candidate_reordering() {
 }
 
 #[tokio::test]
-async fn session_concurrency_lease_survives_cloned_command_port() {
-    use zhir_core::model::SessionOpen;
+async fn session_concurrency_lease_survives_each_retained_endpoint() {
+    use zhir_core::model::{Capability, ModelSession, SessionOpen};
+    let mut capabilities = zhir_testing::model_capabilities();
+    capabilities.features.insert(Capability::Duplex);
     let inner = Arc::new(zhir_testing::SessionModel::new(
-        zhir_testing::model_capabilities(),
+        capabilities,
         |_, mut peer| async move {
             while peer.commands.recv().await.is_some() {}
             Ok(())
@@ -540,19 +542,33 @@ async fn session_concurrency_lease_survives_cloned_command_port() {
         recovery: None,
         context: context(),
     };
-    let session = model.open_session(open.clone()).await.unwrap();
-    let retained = session.input.clone();
-    drop(session);
-    assert!(
-        tokio::time::timeout(Duration::from_millis(30), model.open_session(open.clone()))
-            .await
-            .is_err()
-    );
-    drop(retained);
-    assert!(
-        tokio::time::timeout(Duration::from_secs(1), model.open_session(open))
-            .await
-            .unwrap()
-            .is_ok()
-    );
+    for endpoint in ["control", "events", "media.input", "media.output"] {
+        let retained: Box<dyn std::any::Any> = {
+            let ModelSession {
+                control,
+                events,
+                media,
+            } = model.open_session(open.clone()).await.unwrap();
+            match endpoint {
+                "control" => Box::new(control.clone()),
+                "events" => Box::new(events),
+                "media.input" => Box::new(media.input.unwrap().clone()),
+                "media.output" => Box::new(media.output.unwrap()),
+                _ => unreachable!(),
+            }
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), model.open_session(open.clone()))
+                .await
+                .is_err(),
+            "retained {endpoint} must keep the session concurrency lease"
+        );
+        drop(retained);
+        let reopened =
+            tokio::time::timeout(Duration::from_secs(1), model.open_session(open.clone()))
+                .await
+                .expect("dropping the last endpoint must release the lease")
+                .unwrap();
+        drop(reopened);
+    }
 }

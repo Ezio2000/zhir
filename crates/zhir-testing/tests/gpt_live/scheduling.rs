@@ -35,7 +35,7 @@ async fn configured(
 }
 async fn close(mut session: ModelSession) -> Vec<MediaChunk> {
     send(&session, "close", SessionCommandBody::Close).await;
-    let mut media = session.media_output.take().unwrap();
+    let mut media = session.media.output.take().unwrap();
     let reader = tokio::spawn(async move {
         let mut chunks = vec![];
         while let Some(chunk) = media.receive().await.unwrap() {
@@ -45,7 +45,7 @@ async fn close(mut session: ModelSession) -> Vec<MediaChunk> {
     });
     let mut closed = 0;
     let mut acknowledged = 0;
-    while let Some(event) = session.output.receive().await.unwrap() {
+    while let Some(event) = session.events.receive().await.unwrap() {
         match event.body {
             SessionEventBody::Closed { .. } => closed += 1,
             SessionEventBody::Acknowledged { command_id, .. } if command_id == "close" => {
@@ -69,7 +69,7 @@ async fn confirmed_controls_survive_blocked_event_delivery() {
         limits.max_session_events = 8;
         let (mut session, server) = configured(fixture::Fault::EventPressure, limits).await;
         assert!(matches!(
-            session.output.receive().await.unwrap().unwrap().body,
+            session.events.receive().await.unwrap().unwrap().body,
             SessionEventBody::Ready { .. }
         ));
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -82,7 +82,7 @@ async fn confirmed_controls_survive_blocked_event_delivery() {
         let mut observations = vec![];
         let mut previous_sequence = 0;
         while acknowledged.len() < 2 {
-            let event = session.output.receive().await.unwrap().unwrap();
+            let event = session.events.receive().await.unwrap().unwrap();
             assert!(event.sequence > previous_sequence);
             previous_sequence = event.sequence;
             match event.body {
@@ -124,10 +124,10 @@ async fn small_audio_packets_use_bytes_independently_of_event_capacity() {
         limits.max_media_chunk_bytes = 1024 * 1024;
         limits.max_buffered_media_bytes = 1024 * 1024;
         let (mut session, server) = configured(fixture::Fault::SmallPackets, limits).await;
-        loop { if matches!(session.output.receive().await.unwrap().unwrap().body, SessionEventBody::Output { .. }) { break; } }
+        loop { if matches!(session.events.receive().await.unwrap().unwrap().body, SessionEventBody::Output { .. }) { break; } }
         send(&session, "pause", SessionCommandBody::SetInputAudio { enabled: false }).await;
         // The fixture sends all twelve packets before processing this command.
-        assert!(matches!(session.output.receive().await.unwrap().unwrap().body, SessionEventBody::Acknowledged { command_id, .. } if command_id == "pause"));
+        assert!(matches!(session.events.receive().await.unwrap().unwrap().body, SessionEventBody::Acknowledged { command_id, .. } if command_id == "pause"));
         let chunks = close(session).await;
         assert_eq!(chunks.iter().filter(|c| !c.end).count(), 12);
         assert!(chunks.last().unwrap().end);
@@ -144,12 +144,12 @@ async fn actual_media_budget_exhaustion_is_explicit() {
         limits.max_buffered_media_bytes = 3;
         let (mut session, server) = configured(fixture::Fault::None, limits).await;
         let error = loop {
-            match session.output.receive().await {
+            match session.events.receive().await {
                 Ok(Some(_)) => (), Err(error) => break error, Ok(None) => panic!("overflow became clean EOF"),
             }
         };
         assert!(matches!(error, zhir_core::error::Error::Uncertain(message) if message.contains("media receive budget exceeded")));
-        assert!(session.output.receive().await.unwrap().is_none());
+        assert!(session.events.receive().await.unwrap().is_none());
         server.abort();
     }).await.unwrap();
 }
@@ -170,7 +170,7 @@ async fn malformed_and_out_of_order_events_fail_after_preserving_accepted_histor
             .await;
             let mut items = 0;
             let error = loop {
-                match session.output.receive().await {
+                match session.events.receive().await {
                     Ok(Some(event)) => {
                         if matches!(event.body, SessionEventBody::ConversationItem { .. }) {
                             items += 1;
@@ -185,7 +185,7 @@ async fn malformed_and_out_of_order_events_fail_after_preserving_accepted_histor
                 "{error:?}"
             );
             assert_eq!(items, 2);
-            assert!(session.output.receive().await.unwrap().is_none());
+            assert!(session.events.receive().await.unwrap().is_none());
             server.await.unwrap();
         })
         .await
@@ -199,16 +199,16 @@ async fn provider_rejection_settles_while_public_events_are_blocked() {
         let mut limits = zhir_kernel::defaults::limits();
         limits.max_session_events = 8;
         let (mut session, server) = configured(fixture::Fault::RejectedUnderPressure, limits).await;
-        assert!(matches!(session.output.receive().await.unwrap().unwrap().body, SessionEventBody::Ready { .. }));
+        assert!(matches!(session.events.receive().await.unwrap().unwrap().body, SessionEventBody::Ready { .. }));
         tokio::time::sleep(Duration::from_millis(300)).await;
         send(&session, "pause", SessionCommandBody::SetInputAudio { enabled: false }).await;
         server.await.unwrap();
         tokio::time::sleep(Duration::from_millis(600)).await;
-        assert!(session.input.send(SessionCommand { id: "after-failure".into(), body: SessionCommandBody::Append { entry: zhir_core::run::HistoryEntry { id:"late".into(), origin:None, message:Message::user("late") }, context_revision:1,input_position:1,source:AppendSource::Submitted } }).await.is_err(), "worker must settle without waiting for event consumption");
+        assert!(session.control.submit(SessionCommand { id: "after-failure".into(), body: SessionCommandBody::Append { entry: zhir_core::run::HistoryEntry { id:"late".into(), origin:None, message:Message::user("late") }, context_revision:1,input_position:1,source:AppendSource::Submitted } }).await.is_err(), "worker must settle without waiting for event consumption");
         let mut observations = 0;
         let mut rejection = false;
         let error = loop {
-            match session.output.receive().await {
+            match session.events.receive().await {
                 Ok(Some(event)) => match event.body {
                     SessionEventBody::Delta { delta: ModelDelta::ProtocolEvent { data, .. }, .. } => {
                         if data["type"] == "fixture.observation" { observations += 1; }
@@ -227,6 +227,6 @@ async fn provider_rejection_settles_while_public_events_are_blocked() {
         assert_eq!(observations, 10);
         assert!(rejection);
         assert!(matches!(error, zhir_core::error::Error::Model(failure) if failure.code == "control_rejected"));
-        assert!(session.output.receive().await.unwrap().is_none());
+        assert!(session.events.receive().await.unwrap().is_none());
     }).await.unwrap();
 }

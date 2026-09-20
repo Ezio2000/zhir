@@ -4,7 +4,7 @@ use crate::{
     message::{Message, Output},
     operation::{CallRef, OperationEvent, RecoveryRef},
     profile::{EffectiveProfile, RequestProfile},
-    resource::{MediaReceiver, MediaSender},
+    resource::MediaPorts,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -179,21 +179,26 @@ pub struct SessionEvent {
     pub body: SessionEventBody,
 }
 
-pub trait SessionSender: Send + Sync {
+/// Shareable control handle for the bound model session.
+pub trait SessionControl: Send + Sync {
     /// Identity to persist independently of optional remote recovery credentials.
     fn binding(&self) -> Option<ModelBinding> {
         None
     }
     fn capabilities(&self) -> &super::CapabilitySet;
     fn negotiate(&self, request: &ModelRequest) -> Result<crate::profile::NegotiatedProfile>;
-    fn send(&self, command: SessionCommand) -> BoxFuture<'_, Result<()>>;
+    /// Submit an operation intent. Success does not confirm provider execution;
+    /// the matching acknowledgement arrives through `SessionEvents`.
+    fn submit(&self, command: SessionCommand) -> BoxFuture<'_, Result<()>>;
 }
-pub trait SessionReceiver: Send {
+/// Ordered session events, including content deltas, complete outputs and closure.
+/// Terminal errors are delivered after already admitted events.
+pub trait SessionEvents: Send {
     fn receive(&mut self) -> BoxFuture<'_, Result<Option<SessionEvent>>>;
 }
+/// Independently owned control, event and optional media endpoints.
 pub struct ModelSession {
-    pub input: Arc<dyn SessionSender>,
-    pub output: Box<dyn SessionReceiver>,
-    pub media_input: Option<Arc<dyn MediaSender>>,
-    pub media_output: Option<Box<dyn MediaReceiver>>,
+    pub control: Arc<dyn SessionControl>,
+    pub events: Box<dyn SessionEvents>,
+    pub media: MediaPorts,
 }

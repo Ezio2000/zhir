@@ -133,8 +133,8 @@ async fn setup(mode: u8) -> (ModelSession, zhir_core::Cancellation, JoinHandle<(
         .await
         .unwrap();
     session
-        .input
-        .send(SessionCommand {
+        .control
+        .submit(SessionCommand {
             id: "start".into(),
             body: SessionCommandBody::Generate {
                 generation_id: "turn".into(),
@@ -149,7 +149,7 @@ async fn setup(mode: u8) -> (ModelSession, zhir_core::Cancellation, JoinHandle<(
 }
 async fn ack(session: &mut ModelSession) {
     assert!(
-        matches!(event(&mut session.output).await.unwrap().unwrap().body,
+        matches!(event(&mut session.events).await.unwrap().unwrap().body,
         SessionEventBody::Acknowledged { command_id, .. } if command_id == "start")
     );
 }
@@ -159,7 +159,7 @@ async fn responsive_transport_does_not_extend_protocol_deadline() {
     tokio::time::timeout(Duration::from_secs(3), async {
         let (mut session, cancel, server) = setup(0).await;
         assert!(matches!(
-            tokio::time::timeout(Duration::from_secs(1), event(&mut session.output))
+            tokio::time::timeout(Duration::from_secs(1), event(&mut session.events))
                 .await
                 .unwrap(),
             Err(Error::Uncertain(_))
@@ -176,13 +176,13 @@ async fn whitespace_fragment_is_forwarded_without_closing() {
     tokio::time::timeout(Duration::from_secs(3), async {
         let (mut session, cancel, server) = setup(1).await;
         ack(&mut session).await;
-        session.input.send(SessionCommand {id:"space".into(), body:SessionCommandBody::Append {
+        session.control.submit(SessionCommand {id:"space".into(), body:SessionCommandBody::Append {
             context_revision:1,input_position:1,source:AppendSource::Submitted,
             entry:zhir_core::run::HistoryEntry {id:"space".into(),origin:None,message:Message::user(" ")}
         }}).await.unwrap();
-        assert!(matches!(event(&mut session.output).await.unwrap().unwrap().body, SessionEventBody::Acknowledged {command_id,..} if command_id=="space"));
+        assert!(matches!(event(&mut session.events).await.unwrap().unwrap().body, SessionEventBody::Acknowledged {command_id,..} if command_id=="space"));
         cancel.cancel();
-        assert!(matches!(event(&mut session.output).await, Err(Error::Cancelled)));
+        assert!(matches!(event(&mut session.events).await, Err(Error::Cancelled)));
         server.await.unwrap();
     }).await.unwrap();
 }
@@ -276,8 +276,8 @@ async fn native_events_include_observations_and_provider_metadata() {
         let (mut session, _, server) = setup(2).await;
         ack(&mut session).await;
         session
-            .input
-            .send(SessionCommand {
+            .control
+            .submit(SessionCommand {
                 id: "end".into(),
                 body: SessionCommandBody::SealUserInput,
             })
@@ -285,7 +285,7 @@ async fn native_events_include_observations_and_provider_metadata() {
             .unwrap();
         let mut deltas = 0;
         loop {
-            match session.output.receive().await.unwrap().unwrap().body {
+            match session.events.receive().await.unwrap().unwrap().body {
                 SessionEventBody::Delta { .. } => deltas += 1,
                 SessionEventBody::ResponseFinished { provider_data, .. } => {
                     assert_eq!(provider_data["extra_info"]["usage_characters"], 5);
@@ -338,21 +338,21 @@ async fn interruption_progresses_while_media_consumer_is_blocked() {
             limits, request:request(), recovery:None,
             context:ModelContext {run:zhir_core::run::RunContext::new("probe",0), cancellation:cancellation.clone(), deltas:None},
         }).await.unwrap();
-        session.input.send(SessionCommand {id:"start".into(),body:SessionCommandBody::Generate {generation_id:"turn".into(),context_revision:0,input_position:0,profile_revision:0}}).await.unwrap();
+        session.control.submit(SessionCommand {id:"start".into(),body:SessionCommandBody::Generate {generation_id:"turn".into(),context_revision:0,input_position:0,profile_revision:0}}).await.unwrap();
         ack(&mut session).await;
         filled_rx.await.unwrap();
         tokio::time::sleep(Duration::from_millis(30)).await;
-        session.input.send(SessionCommand {id:"interrupt".into(),body:SessionCommandBody::InterruptOutput {generation_id:"turn".into(),output_epoch:7}}).await.unwrap();
+        session.control.submit(SessionCommand {id:"interrupt".into(),body:SessionCommandBody::InterruptOutput {generation_id:"turn".into(),output_epoch:7}}).await.unwrap();
         tokio::time::timeout(Duration::from_secs(1), &mut seen_rx).await.unwrap().unwrap();
-        assert!(matches!(event(&mut session.output).await.unwrap().unwrap().body, SessionEventBody::Acknowledged {command_id,..} if command_id=="interrupt"));
+        assert!(matches!(event(&mut session.events).await.unwrap().unwrap().body, SessionEventBody::Acknowledged {command_id,..} if command_id=="interrupt"));
         cancellation.cancel();
-        let _ = event(&mut session.output).await;
-        assert!(session.media_output.as_mut().unwrap().receive().await.unwrap().is_none(), "retired media escaped");
+        let _ = event(&mut session.events).await;
+        assert!(session.media.output.as_mut().unwrap().receive().await.unwrap().is_none(), "retired media escaped");
         server.await.unwrap();
     }).await.unwrap();
 }
 
-async fn event(output: &mut Box<dyn SessionReceiver>) -> zhir_core::Result<Option<SessionEvent>> {
+async fn event(output: &mut Box<dyn SessionEvents>) -> zhir_core::Result<Option<SessionEvent>> {
     loop {
         let event = output.receive().await?;
         if !matches!(
@@ -405,17 +405,17 @@ async fn flush_waits_for_remote_receipt_and_allows_more_input() {
             limits:zhir_kernel::defaults::limits(), request:request(), recovery:None,
             context:ModelContext {run:zhir_core::run::RunContext::new("flush",0), cancellation:Default::default(), deltas:None},
         }).await.unwrap();
-        session.input.send(SessionCommand {id:"start".into(),body:SessionCommandBody::Generate {generation_id:"turn".into(),context_revision:0,input_position:0,profile_revision:0}}).await.unwrap();
+        session.control.submit(SessionCommand {id:"start".into(),body:SessionCommandBody::Generate {generation_id:"turn".into(),context_revision:0,input_position:0,profile_revision:0}}).await.unwrap();
         ack(&mut session).await;
-        session.input.send(SessionCommand {id:"flush".into(),body:SessionCommandBody::FlushInput}).await.unwrap();
+        session.control.submit(SessionCommand {id:"flush".into(),body:SessionCommandBody::FlushInput}).await.unwrap();
         received.await.unwrap();
-        assert!(tokio::time::timeout(Duration::from_millis(30),event(&mut session.output)).await.is_err(), "flush acknowledged before the remote barrier");
+        assert!(tokio::time::timeout(Duration::from_millis(30),event(&mut session.events)).await.is_err(), "flush acknowledged before the remote barrier");
         release.send(()).unwrap();
-        assert!(matches!(event(&mut session.output).await.unwrap().unwrap().body,SessionEventBody::Acknowledged {command_id,..} if command_id=="flush"));
-        session.input.send(SessionCommand {id:"more".into(),body:SessionCommandBody::Append {context_revision:1,input_position:1,source:AppendSource::Submitted,entry:zhir_core::run::HistoryEntry {id:"more".into(),origin:None,message:Message::user("after flush")}}}).await.unwrap();
-        session.input.send(SessionCommand {id:"end".into(),body:SessionCommandBody::SealUserInput}).await.unwrap();
+        assert!(matches!(event(&mut session.events).await.unwrap().unwrap().body,SessionEventBody::Acknowledged {command_id,..} if command_id=="flush"));
+        session.control.submit(SessionCommand {id:"more".into(),body:SessionCommandBody::Append {context_revision:1,input_position:1,source:AppendSource::Submitted,entry:zhir_core::run::HistoryEntry {id:"more".into(),origin:None,message:Message::user("after flush")}}}).await.unwrap();
+        session.control.submit(SessionCommand {id:"end".into(),body:SessionCommandBody::SealUserInput}).await.unwrap();
         loop {
-            if matches!(event(&mut session.output).await.unwrap().unwrap().body,SessionEventBody::ResponseFinished {..}) {break;}
+            if matches!(event(&mut session.events).await.unwrap().unwrap().body,SessionEventBody::ResponseFinished {..}) {break;}
         }
         server.await.unwrap();
     }).await.unwrap();
@@ -425,7 +425,7 @@ async fn flush_waits_for_remote_receipt_and_allows_more_input() {
 async fn final_audio_payload_can_fill_the_media_byte_budget() {
     tokio::time::timeout(Duration::from_secs(3), async {
         let (mut session, _, server) = setup(3).await;
-        let mut media = session.media_output.take().unwrap();
+        let mut media = session.media.output.take().unwrap();
         let reader = tokio::spawn(async move {
             let mut chunks = vec![];
             while let Some(chunk) = media.receive().await.unwrap() {
@@ -435,8 +435,8 @@ async fn final_audio_payload_can_fill_the_media_byte_budget() {
         });
         ack(&mut session).await;
         session
-            .input
-            .send(SessionCommand {
+            .control
+            .submit(SessionCommand {
                 id: "finish".into(),
                 body: SessionCommandBody::SealUserInput,
             })
@@ -444,7 +444,7 @@ async fn final_audio_payload_can_fill_the_media_byte_budget() {
             .unwrap();
         loop {
             if matches!(
-                event(&mut session.output).await.unwrap().unwrap().body,
+                event(&mut session.events).await.unwrap().unwrap().body,
                 SessionEventBody::ResponseFinished { .. }
             ) {
                 break;

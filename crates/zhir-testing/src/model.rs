@@ -260,12 +260,12 @@ impl RecordingModel {
         self.records.lock().expect("records").clone()
     }
 }
-struct RecordedInput {
-    inner: Arc<dyn zhir_core::model::SessionSender>,
+struct RecordedControl {
+    inner: Arc<dyn zhir_core::model::SessionControl>,
     records: Arc<Mutex<Vec<SessionRecord>>>,
     index: usize,
 }
-impl zhir_core::model::SessionSender for RecordedInput {
+impl zhir_core::model::SessionControl for RecordedControl {
     fn binding(&self) -> Option<zhir_core::model::ModelBinding> {
         self.inner.binding()
     }
@@ -275,21 +275,21 @@ impl zhir_core::model::SessionSender for RecordedInput {
     fn negotiate(&self, request: &ModelRequest) -> Result<zhir_core::profile::NegotiatedProfile> {
         self.inner.negotiate(request)
     }
-    fn send(&self, command: zhir_core::model::SessionCommand) -> BoxFuture<'_, Result<()>> {
+    fn submit(&self, command: zhir_core::model::SessionCommand) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
             self.records.lock().expect("records")[self.index]
                 .commands
                 .push(command.clone());
-            self.inner.send(command).await
+            self.inner.submit(command).await
         })
     }
 }
 struct RecordedEvents {
-    inner: Box<dyn zhir_core::model::SessionReceiver>,
+    inner: Box<dyn zhir_core::model::SessionEvents>,
     records: Arc<Mutex<Vec<SessionRecord>>>,
     index: usize,
 }
-impl zhir_core::model::SessionReceiver for RecordedEvents {
+impl zhir_core::model::SessionEvents for RecordedEvents {
     fn receive(&mut self) -> BoxFuture<'_, Result<Option<zhir_core::model::SessionEvent>>> {
         Box::pin(async move {
             let event = match self.inner.receive().await {
@@ -336,13 +336,13 @@ impl Model for RecordingModel {
                 index
             };
             let mut session = self.inner.open_session(open).await?;
-            session.input = Arc::new(RecordedInput {
-                inner: session.input,
+            session.control = Arc::new(RecordedControl {
+                inner: session.control,
                 records: self.records.clone(),
                 index,
             });
-            session.output = Box::new(RecordedEvents {
-                inner: session.output,
+            session.events = Box::new(RecordedEvents {
+                inner: session.events,
                 records: self.records.clone(),
                 index,
             });
@@ -377,8 +377,8 @@ pub trait ModelTestExt: Model {
                 })
                 .await?;
             session
-                .input
-                .send(SessionCommand {
+                .control
+                .submit(SessionCommand {
                     id: "test-command".into(),
                     body: SessionCommandBody::Generate {
                         generation_id: "test-turn".into(),
@@ -390,7 +390,7 @@ pub trait ModelTestExt: Model {
                 .await?;
             let mut result = GenerationOutput::text("");
             result.output.clear();
-            while let Some(event) = session.output.receive().await? {
+            while let Some(event) = session.events.receive().await? {
                 match event.body {
                     SessionEventBody::Output { output, .. } => result.output.push(output),
                     SessionEventBody::ResponseFinished {

@@ -119,6 +119,14 @@ pub trait MediaReceiver: Send {
     fn receive(&mut self) -> BoxFuture<'_, Result<Option<MediaChunk>>>;
 }
 
+/// Independently optional media endpoints, with directions relative to the model.
+/// This value groups ownership only; it adds no buffering or lifecycle behavior.
+#[derive(Default)]
+pub struct MediaPorts {
+    pub input: Option<std::sync::Arc<dyn MediaSender>>,
+    pub output: Option<Box<dyn MediaReceiver>>,
+}
+
 /// One immutable node in a sealed media stream. `previous` links to another node,
 /// keeping checkpoint size independent of the stream duration.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

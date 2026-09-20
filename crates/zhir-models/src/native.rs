@@ -17,7 +17,7 @@ use zhir_core::{
     error::Error,
     model::*,
     profile::NegotiatedProfile,
-    resource::{MediaChunk, MediaReceiver, MediaSender},
+    resource::{MediaChunk, MediaPorts, MediaReceiver, MediaSender},
     run::Limits,
 };
 
@@ -48,24 +48,26 @@ pub(crate) fn ports(
     let min_epoch = Arc::new(AtomicU64::new(epoch));
     (
         ModelSession {
-            input: Arc::new(Input { model, sender }),
-            output: Box::new(Events {
+            control: Arc::new(Control { model, sender }),
+            events: Box::new(Events {
                 receiver,
                 terminal: Some(result),
                 remaining: VecDeque::new(),
                 result: None,
             }),
-            media_input: audio_input.then(|| {
-                Arc::new(AudioInput {
-                    sender: input,
-                    limit: limits.max_media_chunk_bytes,
-                    budget: MediaBudget::new(limits.max_buffered_media_bytes),
-                }) as Arc<dyn MediaSender>
-            }),
-            media_output: Some(Box::new(AudioOutput {
-                receiver: media_receiver,
-                min_epoch: min_epoch.clone(),
-            })),
+            media: MediaPorts {
+                input: audio_input.then(|| {
+                    Arc::new(AudioInput {
+                        sender: input,
+                        limit: limits.max_media_chunk_bytes,
+                        budget: MediaBudget::new(limits.max_buffered_media_bytes),
+                    }) as Arc<dyn MediaSender>
+                }),
+                output: Some(Box::new(AudioOutput {
+                    receiver: media_receiver,
+                    min_epoch: min_epoch.clone(),
+                })),
+            },
         },
         Ports {
             commands,
@@ -91,18 +93,18 @@ pub(crate) fn ports(
         },
     )
 }
-struct Input {
+struct Control {
     model: Arc<dyn Model>,
     sender: mpsc::Sender<SessionCommand>,
 }
-impl SessionSender for Input {
+impl SessionControl for Control {
     fn capabilities(&self) -> &CapabilitySet {
         self.model.capabilities()
     }
     fn negotiate(&self, request: &ModelRequest) -> Result<NegotiatedProfile> {
         self.model.negotiate(request)
     }
-    fn send(&self, command: SessionCommand) -> BoxFuture<'_, Result<()>> {
+    fn submit(&self, command: SessionCommand) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
             self.sender
                 .send(command)
@@ -117,7 +119,7 @@ struct Events {
     remaining: VecDeque<SessionEvent>,
     result: Option<Result<()>>,
 }
-impl SessionReceiver for Events {
+impl SessionEvents for Events {
     fn receive(&mut self) -> BoxFuture<'_, Result<Option<SessionEvent>>> {
         Box::pin(async move {
             if self.terminal.is_some() {
