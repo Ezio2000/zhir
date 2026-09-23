@@ -1,6 +1,6 @@
 # 研发接入 API
 
-0.3.0 统一使用会话、operation 和资源契约。完整可运行示例位于
+0.4.0 统一使用会话、operation 和资源契约。完整可运行示例位于
 [custom_tool.rs](../crates/zhir/examples/custom_tool.rs)、
 [resume.rs](../crates/zhir/examples/resume.rs) 和
 [chat.rs](../crates/zhir/examples/chat.rs)。仓库验收用模型、记录器与消费者测试统一位于不发布的 `zhir-testing`；发布的 SDK 不依赖它。
@@ -169,7 +169,7 @@ let tool = TypedTool::<EchoArgs, String>::new(
 ## 恢复与子 Agent
 
 RunCompletion 可提取不可变 checkpoint。`wire::encode_checkpoint/decode_checkpoint`
-使用 v4。持久化运行可生成 SuspensionTicket，通过
+使用 v5。持久化运行可生成 SuspensionTicket，通过
 `ResumeRequest::from_ticket` 校验 run、revision、checkpoint 与 suspension。
 
 用 `ResumeRequest::resolve` 为未完成操作提供明确处置：

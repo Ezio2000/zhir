@@ -2,7 +2,7 @@
 
 zhir is a Rust SDK with one execution state machine. Public contracts describe
 sessions, operations and resources independently of an endpoint, executor or product.
-The 0.3.0 API and v4 wire/storage formats are the only supported contracts.
+The 0.4.0 API and v5 wire/storage formats are the only supported contracts.
 
 ## Ownership
 
@@ -196,9 +196,9 @@ The explicit MiniMax live test separately checks TTS drain, flush/continue and i
 it does not establish video support, audio input, transport recovery or load guarantees.
 
 A language binding wraps core values and the SDK invocation/control interfaces. It
-must use v4 DTOs and preserve identities, revisions, cancellation and backpressure.
+must use v5 DTOs and preserve identities, revisions, cancellation and backpressure.
 There is no Python wire compatibility layer, alternate scheduler or migration reader.
-SQL stores require format 4 in a new database; Redis requires a new format-4 namespace.
+SQL stores require format 5 in a new database; Redis requires a new format-5 namespace.
 Filesystem resources use their current format in a new directory. Older layouts are
 rejected rather than translated.
 

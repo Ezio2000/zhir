@@ -101,7 +101,7 @@ async fn encoded_checkpoint_matches_published_schema_and_rejects_old_versions() 
     let bytes = zhir_core::wire::encode_checkpoint(&checkpoint).unwrap();
     let mut value: Value = serde_json::from_slice(&bytes).unwrap();
     let schema: Value = serde_json::from_str(include_str!(
-        "../../../contracts/v4/schemas/checkpoint.schema.json"
+        "../../../contracts/v5/schemas/checkpoint.schema.json"
     ))
     .unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
@@ -109,7 +109,7 @@ async fn encoded_checkpoint_matches_published_schema_and_rejects_old_versions() 
     validator.validate(&value).unwrap();
     let restored = zhir_core::wire::decode_checkpoint(&bytes).unwrap();
     assert_eq!(restored.history.digest(), checkpoint.history.digest());
-    for version in [0, 3, 5] {
+    for version in [0, 4, 6] {
         value["version"] = json!(version);
         assert!(!validator.is_valid(&value));
         assert!(zhir_core::wire::decode_checkpoint(&serde_json::to_vec(&value).unwrap()).is_err());

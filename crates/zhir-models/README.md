@@ -49,4 +49,4 @@ commits. External integrations may instead implement core's Model contract direc
 Features have no provider dependencies. Enabling WebSocket does not enable HTTP or
 WebRTC, and enabling WebRTC does not enable a service's signaling client.
 
-Part of the zhir workspace, version 0.3.0.
+Part of the zhir workspace, version 0.4.0.

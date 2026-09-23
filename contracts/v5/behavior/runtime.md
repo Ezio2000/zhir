@@ -1,6 +1,6 @@
-# zhir v4 runtime behavior
+# zhir v5 runtime behavior
 
-These rules describe the current Rust values, kernel and v4 schemas. Acceptance
+These rules describe the current Rust values, kernel and v5 schemas. Acceptance
 implementations belong to testing modules and are not exported by production crates.
 
 ## State and identity
@@ -130,7 +130,7 @@ implementations belong to testing modules and are not exported by production cra
     to adapters. Credential resolution/refresh is injected, not implemented by kernel.
 26. Run stores use one Commit validator, optimistic revisions and immutable history
     deltas. Same checkpoint ID/digest is idempotent; conflicting identity/revision is
-    rejected. Wire envelope version is exactly 4. SQL, Redis and resource format markers are 4;
+    rejected. Wire envelope version is exactly 5. SQL, Redis and resource format markers are 5;
     unversioned or other-version layouts require a fresh database/namespace. There
     are no old aliases, old-format readers, migration paths, transitional fields or
     compatibility execution modes. API, callers, tests, schemas and docs change together.

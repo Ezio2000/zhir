@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "name": "reject_state_runtime_tools_pending",
   "kind": "value",
   "schema": "state",

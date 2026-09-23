@@ -58,7 +58,7 @@ impl SqlStore {
             .await
             .map_err(storage_error)?;
             let inserted = sqlx::query(
-                "INSERT INTO zhir_format(id,version) SELECT 1,4 \
+                "INSERT INTO zhir_format(id,version) SELECT 1,5 \
                  WHERE NOT EXISTS (SELECT 1 FROM zhir_format WHERE id=1)",
             )
             .execute(&pool)
@@ -68,7 +68,7 @@ impl SqlStore {
                     .fetch_one(&pool)
                     .await
                     .map_err(storage_error)?;
-                if version != 4 {
+                if version != 5 {
                     return Err(Error::Storage("unsupported storage format".into()));
                 }
             }
@@ -77,7 +77,7 @@ impl SqlStore {
             .fetch_one(&pool)
             .await
             .map_err(storage_error)?;
-        if version != 4 {
+        if version != 5 {
             return Err(Error::Storage(
                 "unsupported storage format; use a fresh database".into(),
             ));

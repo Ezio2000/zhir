@@ -19,7 +19,7 @@ cargo run -p zhir-conformance --bin schemas --locked -- --check
 ```
 
 修改公开 DTO 后先执行 `cargo run -p zhir-conformance --bin schemas`，提交生成的
-`contracts/v4/schemas/`，再运行 check。契约 runner 包含 41 个当前 v4 JSON 案例，
+`contracts/v5/schemas/`，再运行 check。契约 runner 包含 41 个当前 v5 JSON 案例，
 覆盖状态、资源、profile、工具结算和运行限制。原生会话时序及故障验收由 Rust 测试覆盖，
 不能用 JSON 案例数量或通过率代替这部分证据。
 
@@ -34,7 +34,7 @@ cargo run -p zhir-conformance --bin schemas --locked -- --check
 | `minimax_tts`（feature `minimax`） | 生产 WebSocket TTS：分句封存、中断、尾音、背压、凭据刷新与连接生命周期；ignored 测试访问真实服务 |
 | `webrtc_driver`（feature `webrtc`） | 生产骨架配确定性传输与非 Live 适配器：无 Peer 命令、主动建连、排水期间确认与期限、发送顺序、媒体预算与关闭边界 |
 | `models_*` | 请求与流协议、Unicode/分片、回放、装饰器、资源预算、会话资源输入 |
-| `v4_review` | v4 检查点 schema、最新输入完成条件、恢复绑定、小栈历史结算，以及 exchange 回调即时发出 delta 时的确认/开始顺序和有界队列取消 |
+| `contract_review` | 检查点 schema、最新输入完成条件、恢复绑定、小栈历史结算，以及 exchange 回调即时发出 delta 时的确认/开始顺序和有界队列取消 |
 | `models_decorators` | 会话包装器转发与绑定；独立保留 control、events、media.input 或 media.output 时，会话并发额度持续占用，最后一个端口释放后才允许新会话 |
 | `profiles_credentials` | required/preferred、fast/original 映射、Unknown、401 刷新与账号头 |
 | `tools_*`、`policies_*` | 工具 Schema、Active 最终校验、重试/熔断与历史策略 |

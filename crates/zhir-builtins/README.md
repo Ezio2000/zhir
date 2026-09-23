@@ -10,4 +10,4 @@ admission, persistent recovery and cancellation. Parent detach suspends the chil
 There is no independent child runtime or job-state store. Acceptance code lives in
 crates/zhir-testing/tests/builtins_*.rs.
 
-Part of the zhir workspace, version 0.3.0.
+Part of the zhir workspace, version 0.4.0.

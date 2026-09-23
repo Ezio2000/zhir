@@ -281,7 +281,7 @@ async fn redis() {
 
 #[tokio::test]
 async fn sqlite_refuses_unversioned_and_other_version_layouts() {
-    for version in [None, Some(1), Some(2), Some(3), Some(5)] {
+    for version in [None, Some(1), Some(2), Some(3), Some(4)] {
         let directory = tempfile::tempdir().unwrap();
         let url = format!(
             "sqlite://{}?mode=rwc",

@@ -294,7 +294,7 @@ mod filesystem {
                     let id = format!("{:x}", Sha256::digest(key.as_bytes()));
                     let mut temp = tempfile::NamedTempFile::new_in(&root).map_err(io)?;
                     let header = serde_json::to_vec(
-                        &serde_json::json!({"version": 4,"media_type":media_type}),
+                        &serde_json::json!({"version": 5,"media_type":media_type}),
                     )
                     .map_err(io)?;
                     temp.write_all(&(header.len() as u64).to_le_bytes())
@@ -340,7 +340,7 @@ mod filesystem {
                     let mut header = vec![0; length as usize];
                     file.read_exact(&mut header).map_err(io)?;
                     let header: serde_json::Value = serde_json::from_slice(&header).map_err(io)?;
-                    if header["version"] != 4
+                    if header["version"] != 5
                         || header["media_type"].as_str() != Some(&reference.media_type)
                     {
                         return Err(Error::Invalid(
