@@ -71,3 +71,43 @@ impl RunStore for RecordingStore {
         self.inner.load_head(run_id)
     }
 }
+
+/// Keeps every commit up to and including the first one `crash` matches, then rejects
+/// later commits as a stopped process would. The durable head is the crash point.
+pub struct CrashingStore {
+    inner: Arc<dyn RunStore>,
+    crash: Box<dyn Fn(&Checkpoint) -> bool + Send + Sync>,
+    crashed: std::sync::atomic::AtomicBool,
+}
+impl CrashingStore {
+    pub fn new(
+        inner: Arc<dyn RunStore>,
+        crash: impl Fn(&Checkpoint) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            inner,
+            crash: Box::new(crash),
+            crashed: Default::default(),
+        }
+    }
+    pub fn crashed(&self) -> bool {
+        self.crashed.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+impl RunStore for CrashingStore {
+    fn commit(&self, commit: Commit) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            if self.crashed() {
+                return Err(Error::Storage("process stopped".into()));
+            }
+            let crash = (self.crash)(&commit.checkpoint);
+            self.inner.commit(commit).await?;
+            self.crashed
+                .store(crash, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        })
+    }
+    fn load_head(&self, run_id: &str) -> BoxFuture<'_, Result<Option<Arc<Checkpoint>>>> {
+        self.inner.load_head(run_id)
+    }
+}

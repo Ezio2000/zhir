@@ -59,6 +59,16 @@ pub fn verify_trace(checkpoints: &[Arc<Checkpoint>]) -> Result<()> {
             {
                 return Err(Error::Protocol("session fact and cursor disagree".into()));
             }
+            Fact::GenerationAbandoned { generation_id, .. }
+                if (after.active.session.generation_id.as_ref() != Some(generation_id)
+                    || after.active.session.response_status
+                        != Some(zhir_core::model::ResponseStatus::Incomplete)
+                    || !after.active.session.needs_generation) =>
+            {
+                return Err(Error::Protocol(
+                    "generation abandonment and session disagree".into(),
+                ));
+            }
             Fact::Control { action } => {
                 let valid = matches!(
                     (action, &after.state),

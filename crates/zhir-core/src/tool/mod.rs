@@ -100,6 +100,9 @@ pub trait RuntimeTool: Send + Sync {
         call: RuntimeToolCall,
         context: RuntimeToolContext,
     ) -> BoxFuture<'_, Result<crate::operation::ToolExecution>>;
+    /// Attaches to work started earlier. Its event stream may replay from sequence 0:
+    /// events before the recorded `last_sequence` are ignored, the recorded sequence must
+    /// repeat the recorded update, and later sequences continue the operation.
     fn recover(
         &self,
         _record: crate::operation::OperationRecord,
@@ -118,6 +121,9 @@ pub trait RuntimeToolBinding: Send + Sync {
         &self,
         context: RuntimeToolContext,
     ) -> BoxFuture<'_, Result<crate::operation::ToolExecution>>;
+    /// Attaches to work started earlier. Its event stream may replay from sequence 0:
+    /// events before the recorded `last_sequence` are ignored, the recorded sequence must
+    /// repeat the recorded update, and later sequences continue the operation.
     fn recover(
         &self,
         record: crate::operation::OperationRecord,

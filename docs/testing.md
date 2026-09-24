@@ -28,13 +28,13 @@ cargo run -p zhir-conformance --bin schemas --locked -- --check
 | `conformance/tests/dependencies.rs` | 生产依赖图、feature 边界、验收代码位置 |
 | `core_values`、`core_boundaries` | 值、history、wire、运行参数、目录与绑定 |
 | `session_runtime` | 原生会话早发工具、provider 任务、等待恢复、媒体封存 |
-| `session_recovery` | 未确认 outbox 不重发、竞争恢复 CAS、跨轮 provider 完成、重复/冲突完成、双向流、中断及 SealUserInput |
+| `session_recovery` | 未确认 outbox 不重发、竞争恢复 CAS、跨轮 provider 完成、重复/冲突完成、双向流、中断及 SealUserInput；本地投影在建立中或 Generate 发出前崩溃后可续跑，已发出的生成需 AbandonGeneration，处置不符即失败，连接被拒以 `http_connect` 失败 |
 | `runtime_deadlines` | catalog/model 建立阶段截止时间、未确认 commit 超时；虚拟时钟下空闲运行零轮询、取消无需推进时间即结算、截止时间由定时器触发 |
-| `runtime_operations` | 工具按发出顺序准入、串行屏障与并行分组、审批期间不再准入、start 错误结算、取消运行中工具、OperationChanged 完整序列 |
+| `runtime_operations` | 工具按发出顺序准入、串行屏障与并行分组、审批期间不再准入、start 错误结算、取消运行中工具、OperationChanged 完整序列、恢复后工具从序号 0 重放与同序号冲突 |
 | `refactoring` | provider operation 结算后的跨轮 replay 与 wire 往返、4096 项历史合并顺序、虚拟时钟下有界并发取消及统一退出预算 |
 | `minimax_tts`（feature `minimax`） | 生产 WebSocket TTS：分句封存、中断、尾音、背压、凭据刷新与连接生命周期；ignored 测试访问真实服务 |
 | `webrtc_driver`（feature `webrtc`） | 生产骨架配确定性传输与非 Live 适配器：无 Peer 命令、主动建连、排水期间确认与期限、发送顺序、媒体预算与关闭边界 |
-| `models_*` | 请求与流协议、Unicode/分片、回放、装饰器、资源预算、会话资源输入 |
+| `models_*` | 请求与流协议、Unicode/分片、回放、装饰器、资源预算、会话资源输入；HTTP 429 + Retry-After 重试、400 不重试、5xx 耗尽、响应体开始后不重试、连接被拒、截止时间约束与共享请求限流 |
 | `contract_review` | 检查点 schema、最新输入完成条件、恢复绑定、小栈历史结算，以及 exchange 回调即时发出 delta 时的确认/开始顺序和有界队列取消 |
 | `models_decorators` | 会话包装器转发与绑定；独立保留 control、events、media.input 或 media.output 时，会话并发额度持续占用，最后一个端口释放后才允许新会话 |
 | `profiles_credentials` | required/preferred、fast/original 映射、Unknown、401 刷新与账号头 |

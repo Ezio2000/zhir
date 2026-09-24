@@ -434,3 +434,217 @@ async fn duplex_seal_user_input_drains_buffered_media_and_interrupt_commits_with
     assert!(completion.active.session.media_archive.is_some());
     store.verify_traces().unwrap();
 }
+
+struct Crash {
+    calls: Arc<AtomicUsize>,
+    store: Arc<RecordingStore>,
+    runtime: Runtime,
+    head: Arc<Checkpoint>,
+}
+fn counting_model(calls: Arc<AtomicUsize>) -> Arc<zhir_models::FunctionModel> {
+    Arc::new(zhir_models::FunctionModel::new(
+        zhir_testing::model_capabilities(),
+        move |_, _| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(zhir_core::model::GenerationOutput::text("done")) }
+        },
+    ))
+}
+/// Runs a local projection until the crash predicate matches and returns the durable
+/// head left behind, with a fresh runtime over the same store.
+async fn crash_at(crash: impl Fn(&Checkpoint) -> bool + Send + Sync + 'static) -> Crash {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let store = Arc::new(RecordingStore::new(Arc::new(
+        zhir_storage::MemoryRunStore::new(),
+    )));
+    let crashing = Arc::new(zhir_testing::CrashingStore::new(store.clone(), crash));
+    let context = zhir_kernel::defaults::context();
+    let run_id = context.run_id.clone();
+    let mut invocation = Runtime::builder(counting_model(calls.clone()))
+        .store(crashing)
+        .build()
+        .unwrap()
+        .start(RunRequest::new(vec![Message::user("start")]).context(context))
+        .unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(3), invocation.result())
+        .await
+        .expect("runtime stalled")
+        .unwrap_err();
+    assert!(matches!(error.error, Error::Storage(_)));
+    let head = zhir_core::storage::RunStore::load_head(store.as_ref(), &run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let runtime = Runtime::builder(counting_model(calls.clone()))
+        .store(store.clone())
+        .build()
+        .unwrap();
+    Crash {
+        calls,
+        store,
+        runtime,
+        head,
+    }
+}
+fn generate_command(checkpoint: &Checkpoint) -> Option<&zhir_core::run::PendingCommand> {
+    checkpoint
+        .active
+        .commands
+        .iter()
+        .find(|c| matches!(c.intent, zhir_core::run::CommandIntent::Generate { .. }))
+}
+async fn suspended_after_sent_generation() -> (Crash, Arc<Checkpoint>) {
+    let crash = crash_at(|checkpoint| generate_command(checkpoint).is_some_and(|c| c.sent)).await;
+    // Appends of a local projection never persist a send boundary.
+    assert!(
+        crash
+            .head
+            .active
+            .commands
+            .iter()
+            .all(|c| c.sent == matches!(c.intent, zhir_core::run::CommandIntent::Generate { .. }))
+    );
+    let suspended = settle(crash.runtime.continue_from(crash.head.clone()).unwrap()).await;
+    assert!(matches!(suspended.state, State::Suspended { .. }));
+    (crash, suspended)
+}
+fn abandon(generation_id: &str) -> zhir_core::operation::RecoveryResolution {
+    zhir_core::operation::RecoveryResolution::AbandonGeneration {
+        generation_id: generation_id.into(),
+        reason: "provider request was not billed".into(),
+    }
+}
+#[tokio::test]
+async fn local_projection_runs_continue_after_a_crash_before_the_generation_is_sent() {
+    for opening in [true, false] {
+        let crash = crash_at(move |checkpoint| {
+            if opening {
+                checkpoint.active.session.establishment
+                    == zhir_core::run::SessionEstablishment::Opening
+            } else {
+                generate_command(checkpoint).is_some_and(|c| !c.sent)
+            }
+        })
+        .await;
+        assert_eq!(crash.calls.load(Ordering::SeqCst), 0);
+        let checkpoint = settle(crash.runtime.continue_from(crash.head).unwrap()).await;
+        assert!(
+            matches!(checkpoint.state, State::Completed { .. }),
+            "{:?}",
+            checkpoint.state
+        );
+        assert_eq!(crash.calls.load(Ordering::SeqCst), 1);
+        crash.store.verify_traces().unwrap();
+    }
+}
+#[tokio::test]
+async fn an_abandoned_local_generation_is_generated_again() {
+    let (crash, suspended) = suspended_after_sent_generation().await;
+    let generation_id = suspended.active.session.generation_id.clone().unwrap();
+    let before = crash.calls.load(Ordering::SeqCst);
+    let checkpoint = settle(
+        crash
+            .runtime
+            .resume(ResumeRequest::from_checkpoint(suspended).resolve(abandon(&generation_id)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        matches!(checkpoint.state, State::Completed { .. }),
+        "{:?}",
+        checkpoint.state
+    );
+    assert_eq!(crash.calls.load(Ordering::SeqCst), before + 1);
+    assert_ne!(
+        checkpoint.active.session.generation_id,
+        Some(generation_id.clone())
+    );
+    assert!(crash.store.commits().iter().any(|c| matches!(
+        &c.checkpoint.fact,
+        zhir_core::run::Fact::GenerationAbandoned { generation_id: id, .. } if *id == generation_id
+    )));
+    crash.store.verify_traces().unwrap();
+}
+#[tokio::test]
+async fn generation_abandonment_requires_the_matching_local_generation() {
+    let (crash, suspended) = suspended_after_sent_generation().await;
+    let before = crash.calls.load(Ordering::SeqCst);
+    let failed = settle(
+        crash
+            .runtime
+            .resume(ResumeRequest::from_checkpoint(suspended).resolve(abandon("other")))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        matches!(&failed.state, State::Failed { error } if error.message.contains("no matching unfinished generation")),
+        "{:?}",
+        failed.state
+    );
+    assert_eq!(crash.calls.load(Ordering::SeqCst), before);
+
+    // A remote session can only be reconciled through its recovery reference.
+    let model = Arc::new(SessionModel::new(
+        zhir_testing::model_capabilities(),
+        |_, mut peer| async move {
+            peer.command().await?;
+            Err(Error::Uncertain("connection lost after send".into()))
+        },
+    ));
+    let runtime = Runtime::builder(model).build().unwrap();
+    let suspended = settle(
+        runtime
+            .start(RunRequest::new(vec![Message::user("start")]))
+            .unwrap(),
+    )
+    .await;
+    assert!(matches!(suspended.state, State::Suspended { .. }));
+    let generation_id = suspended.active.session.generation_id.clone().unwrap();
+    let failed = settle(
+        runtime
+            .resume(ResumeRequest::from_checkpoint(suspended).resolve(abandon(&generation_id)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        matches!(&failed.state, State::Failed { error } if error.message.contains("only a local projection")),
+        "{:?}",
+        failed.state
+    );
+}
+#[cfg(feature = "openai-chat")]
+#[tokio::test]
+async fn refused_http_connections_fail_the_run_instead_of_suspending() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    drop(listener);
+    let model = zhir_models::openai::chat::model(zhir_models::ModelConfig::new(
+        url,
+        Arc::new(zhir_models::credentials::StaticCredential::new(
+            "Bearer", "test",
+        )),
+        "fixture",
+    ))
+    .unwrap()
+    .with_retry(
+        zhir_policies::RetryPolicy::new(2)
+            .unwrap()
+            .backoff(zhir_policies::Backoff::fixed(Duration::ZERO)),
+    );
+    let checkpoint = settle(
+        Runtime::builder(Arc::new(model))
+            .build()
+            .unwrap()
+            .start(RunRequest::new(vec![Message::user("start")]))
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        matches!(&checkpoint.state, State::Failed { error } if error.code == "http_connect"),
+        "{:?}",
+        checkpoint.state
+    );
+}

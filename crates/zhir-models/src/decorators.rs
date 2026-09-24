@@ -62,16 +62,16 @@ impl Model for ObservedModel {
     }
 }
 /// Retries session establishment only. A sent command is never transparently replayed.
-pub struct RetryingModel {
+pub struct EstablishmentRetryModel {
     inner: Arc<dyn Model>,
     policy: zhir_policies::RetryPolicy,
 }
-impl RetryingModel {
+impl EstablishmentRetryModel {
     pub fn new(inner: Arc<dyn Model>, policy: zhir_policies::RetryPolicy) -> Result<Self> {
         Ok(Self { inner, policy })
     }
 }
-impl Model for RetryingModel {
+impl Model for EstablishmentRetryModel {
     fn capabilities(&self) -> &CapabilitySet {
         self.inner.capabilities()
     }

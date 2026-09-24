@@ -17,7 +17,7 @@ use zhir::{
     model::{CapabilitySet, GenerationOutput, ModelContext, ModelDelta, ModelRequest},
     models::{
         FunctionDeltaSink, FunctionModel, TransformModel,
-        decorators::{ObservedModel, RetryingModel},
+        decorators::{EstablishmentRetryModel, ObservedModel},
     },
     run::{EventData, State},
     runs::{DriveError, drive},
@@ -229,7 +229,7 @@ async fn scripted_failures_sink_failures_and_exhaustion_remain_explicit() {
             first,
             ScriptStep::response(GenerationOutput::text("done")),
         ]));
-        let model = RetryingModel::new(
+        let model = EstablishmentRetryModel::new(
             scripted.clone(),
             zhir_policies::RetryPolicy::new(3)
                 .unwrap()
@@ -267,7 +267,7 @@ async fn scripted_failures_sink_failures_and_exhaustion_remain_explicit() {
     let mut ctx = context();
     ctx.deltas = Some(sink.clone());
     assert!(
-        RetryingModel::new(
+        EstablishmentRetryModel::new(
             scripted.clone(),
             zhir_policies::RetryPolicy::new(3)
                 .unwrap()

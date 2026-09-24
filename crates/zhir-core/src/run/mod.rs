@@ -376,6 +376,10 @@ pub enum Fact {
         stream_id: String,
         sequence: u64,
     },
+    GenerationAbandoned {
+        generation_id: String,
+        reason: String,
+    },
 }
 impl Fact {
     pub fn kind(&self) -> &'static str {
@@ -389,6 +393,7 @@ impl Fact {
             Self::HistoryRewrite { .. } => "history_rewrite",
             Self::Control { .. } => "control",
             Self::Media { .. } => "media",
+            Self::GenerationAbandoned { .. } => "generation_abandoned",
         }
     }
 }

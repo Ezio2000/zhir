@@ -1,7 +1,50 @@
-//! Shared bounded admission for the lifetime of model sessions.
-use std::sync::Arc;
+//! Shared bounded admission for model sessions and individual model requests.
+use std::{sync::Arc, time::Instant};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use zhir_core::{BoxFuture, Result, error::Error, model::*, profile::NegotiatedProfile};
+use zhir_core::{
+    BoxFuture, Cancellation, Result, error::Error, model::*, profile::NegotiatedProfile,
+};
+fn semaphore(limit: usize, name: &str) -> Result<Arc<Semaphore>> {
+    if limit == 0 || limit > Semaphore::MAX_PERMITS {
+        return Err(Error::Invalid(format!("invalid {name} concurrency limit")));
+    }
+    Ok(Arc::new(Semaphore::new(limit)))
+}
+async fn acquire(
+    permits: &Arc<Semaphore>,
+    cancellation: &Cancellation,
+    deadline: Option<Instant>,
+) -> Result<OwnedSemaphorePermit> {
+    zhir_policies::timing::check(cancellation, deadline)?;
+    tokio::select! {
+        biased;
+        result = permits.clone().acquire_owned() => result.map_err(|_| Error::Cancelled),
+        error = zhir_policies::timing::interrupted(cancellation, deadline, |at| tokio::time::sleep_until(at.into())) => Err(error),
+    }
+}
+/// A shared bound on concurrent model requests. A permit covers one whole request,
+/// including retries and reading its response stream.
+#[derive(Clone)]
+pub struct RequestLimit(Arc<Semaphore>);
+impl RequestLimit {
+    pub fn new(limit: usize) -> Result<Self> {
+        semaphore(limit, "request").map(Self)
+    }
+    /// Waits for a permit, returning early with the cancellation or deadline error.
+    pub async fn acquire(
+        &self,
+        cancellation: &Cancellation,
+        deadline: Option<Instant>,
+    ) -> Result<RequestPermit> {
+        acquire(&self.0, cancellation, deadline)
+            .await
+            .map(|_permit| RequestPermit { _permit })
+    }
+}
+/// Holds one [`RequestLimit`] slot until dropped.
+pub struct RequestPermit {
+    _permit: OwnedSemaphorePermit,
+}
 #[derive(Clone)]
 pub struct ConcurrencyLimitedModel {
     inner: Arc<dyn Model>,
@@ -9,12 +52,9 @@ pub struct ConcurrencyLimitedModel {
 }
 impl ConcurrencyLimitedModel {
     pub fn new(inner: Arc<dyn Model>, limit: usize) -> Result<Self> {
-        if limit == 0 || limit > Semaphore::MAX_PERMITS {
-            return Err(Error::Invalid("invalid session concurrency limit".into()));
-        }
         Ok(Self {
             inner,
-            permits: Arc::new(Semaphore::new(limit)),
+            permits: semaphore(limit, "session")?,
         })
     }
 }
@@ -73,12 +113,7 @@ impl Model for ConcurrencyLimitedModel {
     fn open_session(&self, open: SessionOpen) -> BoxFuture<'_, Result<ModelSession>> {
         Box::pin(async move {
             let deadline = zhir_policies::timing::deadline(&open.context.run)?;
-            zhir_policies::timing::check(&open.context.cancellation, deadline)?;
-            let permit = tokio::select! {
-                biased;
-                result = self.permits.clone().acquire_owned() => result.map_err(|_| Error::Cancelled)?,
-                error = zhir_policies::timing::interrupted(&open.context.cancellation, deadline, |at| tokio::time::sleep_until(at.into())) => return Err(error),
-            };
+            let permit = acquire(&self.permits, &open.context.cancellation, deadline).await?;
             let mut session = self.inner.open_session(open).await?;
             let permit = Arc::new(permit);
             session.control = Arc::new(LeasedControl {

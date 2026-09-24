@@ -40,6 +40,43 @@ impl Engine {
                 )
                 .await
             }
+            RecoveryResolution::AbandonGeneration {
+                generation_id,
+                reason,
+            } => {
+                let session = &self.current.active.session;
+                if !session
+                    .capabilities
+                    .as_ref()
+                    .is_some_and(|caps| caps.supports(Capability::LocalProjection))
+                {
+                    return Err(Error::Invalid(
+                        "only a local projection session can abandon a generation".into(),
+                    ));
+                }
+                if session.generation_id.as_ref() != Some(&generation_id)
+                    || session.response_status.is_some()
+                {
+                    return Err(Error::Invalid(
+                        "generation resolution has no matching unfinished generation".into(),
+                    ));
+                }
+                let mut next = self.current.as_ref().clone();
+                next.active.commands.retain(|command| {
+                    !matches!(&command.intent, CommandIntent::Generate { generation_id: id, .. } if *id == generation_id)
+                });
+                next.active.session.response_status = Some(ResponseStatus::Incomplete);
+                next.active.session.needs_generation = true;
+                self.commit(
+                    next,
+                    Fact::GenerationAbandoned {
+                        generation_id,
+                        reason,
+                    },
+                    HistoryDelta::Unchanged,
+                )
+                .await
+            }
         }
     }
     pub(super) async fn insert(&mut self, message: Message, source: String) -> Result<String> {
@@ -190,28 +227,25 @@ impl Engine {
             {
                 return self.suspend(WaitReason::Recovery).await;
             }
+            if self.current.active.session.recovery.is_some() {
+                return Ok(());
+            }
+            // A local projection is rebuilt from committed history; only a generation
+            // that may have reached the service is uncertain.
+            let local = self
+                .session_capabilities()
+                .supports(Capability::LocalProjection);
+            let unsent_generation = self.current.active.commands.iter().any(|command| {
+                !command.sent && matches!(command.intent, CommandIntent::Generate { .. })
+            });
             let in_generation = self.current.active.session.generation_id.is_some()
-                && self.current.active.session.response_status.is_none();
-            if (in_generation || self.current.active.commands.iter().any(|c| c.sent))
-                && self.current.active.session.recovery.is_none()
-            {
-                return self.suspend(WaitReason::Recovery).await;
-            }
-            if !self.current.active.media.is_empty()
-                && self.current.active.session.recovery.is_none()
-            {
-                return self.suspend(WaitReason::Recovery).await;
-            }
-            if self.current.active.session.establishment == SessionEstablishment::Opening
-                && self.current.active.session.recovery.is_none()
-            {
-                return self.suspend(WaitReason::Recovery).await;
-            }
-            if self.current.active.session.establishment == SessionEstablishment::Established
-                && self.current.active.session.recovery.is_none()
-                && !self
-                    .session_capabilities()
-                    .supports(Capability::LocalProjection)
+                && self.current.active.session.response_status.is_none()
+                && !(local && unsent_generation);
+            if in_generation
+                || self.current.active.commands.iter().any(|c| c.sent)
+                || !self.current.active.media.is_empty()
+                || (self.current.active.session.establishment != SessionEstablishment::New
+                    && !local)
             {
                 return self.suspend(WaitReason::Recovery).await;
             }

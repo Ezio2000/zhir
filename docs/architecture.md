@@ -100,7 +100,7 @@ Session IDs and sideband attachments alone do not
 satisfy recovery: an adapter must also restore media and reconcile pending commands.
 HTTP-only codec/streaming helpers remain feature-isolated. No second `invoke` or stream runtime is retained.
 
-RetryingModel retries establishment only. FallbackModel negotiates candidates
+EstablishmentRetryModel retries establishment only. FallbackModel negotiates candidates
 independently, binds the selected session and wraps recovery references with a
 stable candidate ID. Recovery works after candidate reordering and fails explicitly
 if that candidate is missing. A sent command never switches models or transparently
@@ -132,8 +132,12 @@ output includes assistant content from the run. Both retain full committed histo
 
 The establishment state and all decisions about context, input coverage and generation
 are persisted. An uncertain open or send cannot be retried as a fresh remote session.
-Local projection reconstruction requires the bound LocalProjection capability and a safe boundary; otherwise recovery
-must prove attachment. `max_generation_requests` counts explicit host requests;
+Local projection reconstruction requires the bound LocalProjection capability. Such a
+session persists a send boundary only for Generate and replays its other commands into
+the rebuilt projection. A sent or started generation without a response stays uncertain
+until the host abandons it with `AbandonGeneration` or recovery proves attachment.
+HttpModel retries retryable rejections (connection failure, 429, 5xx) before reading a
+response body, within the run deadline; a shared `RequestLimit` bounds whole requests. `max_generation_requests` counts explicit host requests;
 `observed_responses` is unknown until real response events are received.
 
 History uses immutable chunks and incremental digests. Storage persists a compact
@@ -345,7 +349,7 @@ and uncertain-command reconciliation must be established before advertising Resu
 
 `ModelBinding` records stable adapter selection independently of a remote
 `RecoveryRef`. The kernel persists the bound control identity before consuming
-session events and supplies it when rebuilding an idle local projection.
+session events and supplies it when rebuilding a local projection.
 Fallback unwraps each binding layer and reopens only the original candidate;
 reordering, temporary availability changes or missing candidates cannot cause
 silent reselection. Transparent control decorators forward the binding.

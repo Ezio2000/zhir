@@ -74,6 +74,14 @@ HTTP feature 为 `openai-chat`、`openai-responses`、`anthropic`。ModelConfig 
 base URL、CredentialProvider 和模型 ID；客户端与超时可由调用方配置。默认
 CapabilitySet 只描述协议默认能力，实际端点能力应显式提供。核心包不硬编码模型列表。
 
+HttpModel 在读取响应体之前重试可重试的拒绝：连接失败（`http_connect`）、429 与 5xx。
+默认最多 3 次尝试，退避从 500ms 指数增长到 8s；服务端给出更长的 `Retry-After` 秒数时
+按它等待。等待受运行截止时间与取消约束，截止时间前无法开始的重试直接返回原拒绝。
+其他请求错误（例如超时或读取响应时断开）可能已被服务处理，记为 Uncertain，不重试。
+`with_retry(RetryPolicy)` 替换策略，`RetryPolicy::new(1)` 关闭重试。
+`RequestLimit::new(n)` 是可在多个模型间共享的请求级并发上限，经
+`with_request_limit` 安装；许可覆盖整个请求，包括重试等待与流式读取，并可被取消。
+
 `ProtocolExtension` 由工厂为每次交换创建，负责请求扩展、输出解析与回放；
 `ExtensionChain` 组合多个扩展。服务端工具通过 ProviderToolAdapter 绑定具体协议项，
 声明识别、状态、输出与原生回放位置。未知的原生工具项必须有明确归属。
@@ -177,6 +185,8 @@ let tool = TypedTool::<EchoArgs, String>::new(
 
 `ToolReply::content` 可以指定资源或文本展示。无类型 JSON 结果使用
 `runtime_tools::reply::json`；复杂异步生命周期直接实现 RuntimeTool。
+`recover` 返回的事件流可以从序号 0 重放：早于已记录 `last_sequence` 的事件视为已应用而被忽略，
+与记录序号相同的事件必须重复记录的更新，更大的序号继续推进操作。
 重试装饰器只按显式执行事实重试，不能把 Active 工作视为失败后重新发起。
 
 ## 恢复与子 Agent
@@ -192,11 +202,32 @@ RunCompletion 可提取不可变 checkpoint。`wire::encode_checkpoint/decode_ch
 | `Attach { operation_id, reference }` | 提供适配器恢复引用，附着到已有工作 |
 | `Complete { operation_id, outcome }` | 提交外部已经核实的最终结果 |
 | `Abandon { operation_id, reason }` | 明确放弃，产生取消结果 |
+| `AbandonGeneration { generation_id, reason }` | 放弃本地投影会话中不确定的生成，重新生成 |
 
 `resume` 只接受 Suspended；进程中断留下的 Running checkpoint 使用 `continue_from`。
 两者在打开适配器和恢复工具前提交 Attached CAS。运行不会重发已标记 sent 的命令。
-没有可用会话恢复引用的未确认请求会保持 RecoveryRequired，普通 HTTP 轮次服务无法
-凭空恢复远端请求。提供具备恢复能力的会话适配器，或在产品层完成外部核对与处置。
+
+LocalProjection 会话（HttpModel、FunctionModel）从已提交历史重建投影：建立中断、
+未发送的 Generate 与 Append 等本地命令在恢复后照常派发，只有 Generate 持久化 sent 边界。
+已发送或已开始、但响应未结束的生成可能已到达服务，恢复时以 RecoveryRequired 挂起。
+宿主核对后可用 `AbandonGeneration` 放弃它：内核移除该 Generate，把响应记为
+Incomplete 并重新生成；已提交的输出保留在历史中。处置要求持久化能力包含
+LocalProjection 且 `generation_id` 与进行中的生成一致，否则运行以 Failed 结束。
+
+```rust
+let generation_id = checkpoint.active.session.generation_id.clone().unwrap();
+runtime
+    .resume(ResumeRequest::from_checkpoint(checkpoint).resolve(
+        RecoveryResolution::AbandonGeneration {
+            generation_id,
+            reason: "provider reports no billed request".into(),
+        },
+    ))
+    .await?;
+```
+
+远端会话没有可用恢复引用时同样保持 RecoveryRequired，只能凭 RecoveryRef 附着恢复；
+提供具备恢复能力的会话适配器，或在产品层完成外部核对与处置。
 
 内置 `ask_question` 产生 Waiting operation。
 `builtins::interaction::response(checkpoint, operation_id, answers)` 校验答案并创建
@@ -225,7 +256,7 @@ Preferred 只允许使用调用方列出的替代值，未满足项记录原因�
 服务端信息或已验证证据填入确认；不能复制请求值假装服务已执行。原始图像、服务
 等级与推理选项仍需要具体账号/模型/端点支持。
 
-RetryingModel 仅重试尚未发送命令的会话建立。FallbackModel 接收
+EstablishmentRetryModel 仅重试尚未发送命令的会话建立。FallbackModel 接收
 `FallbackCandidate::new(stable_id, model)` 列表，各候选独立协商；恢复绑定原 ID，
 顺序变化不会把任务迁移到另一服务。ConcurrencyLimitedModel 的共享许可覆盖会话寿命。
 TransformModel 的 prepare 处理打开上下文和 ReplaceContext；命令与事件可以单独变换。

@@ -21,7 +21,7 @@ use zhir::{
     },
     message::{Message, Output},
     model::{CapabilitySet, GenerationOutput, Model, ModelContext, ModelRequest},
-    models::{FunctionModel, TransformModel, decorators::RetryingModel},
+    models::{FunctionModel, TransformModel, decorators::EstablishmentRetryModel},
     policies::{Backoff, RetryPolicy},
     run::{ContextKey, Limits, State},
     runtime_tools::{
@@ -536,7 +536,7 @@ async fn model_and_tool_backoff_are_cancelled_and_deadline_bounded() {
             calls: counted,
             entered: signal,
         };
-        let model = RetryingModel::new(
+        let model = EstablishmentRetryModel::new(
             Arc::new(model),
             RetryPolicy::new(4)
                 .unwrap()
@@ -629,7 +629,9 @@ async fn matching_retry_cases_have_independent_attempts_and_strict_verification(
         }))
         .unwrap(),
     );
-    let model = Arc::new(RetryingModel::new(script.clone(), RetryPolicy::new(2).unwrap()).unwrap());
+    let model = Arc::new(
+        EstablishmentRetryModel::new(script.clone(), RetryPolicy::new(2).unwrap()).unwrap(),
+    );
     let mut tasks = vec![];
     for n in 0..32 {
         let model = model.clone();

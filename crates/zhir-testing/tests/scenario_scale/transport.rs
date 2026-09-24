@@ -13,7 +13,7 @@ use zhir::{
     model::{DeltaSink, GenerationOutput, Model, ModelDelta, ModelRequest},
     models::{
         Protocol, ProtocolExtension,
-        decorators::{FallbackModel, ObservedModel, RetryingModel},
+        decorators::{EstablishmentRetryModel, FallbackModel, ObservedModel},
         transport::SseEvent,
     },
     run::{EventData, Limits, State},
@@ -372,8 +372,13 @@ async fn wire_case(
         }],
     };
     let server = server(response).await;
-    let mut model: Arc<dyn Model> =
-        Arc::new(http(protocol, &server.url, "fixture", "primary").unwrap());
+    // Isolate the decorators from request retry: they must never replay a generation.
+    let single = |name| {
+        http(protocol, &server.url, "fixture", name)
+            .unwrap()
+            .with_retry(zhir_policies::RetryPolicy::new(1).unwrap())
+    };
+    let mut model: Arc<dyn Model> = Arc::new(single("primary"));
     if family == "custom_events" {
         model = Arc::new(
             http(protocol, &server.url, "fixture", "primary")
@@ -397,7 +402,7 @@ async fn wire_case(
         "no_replay_429" | "permanent_400" | "visible_error_no_retry" | "observer_failure"
     ) {
         model = Arc::new(
-            RetryingModel::new(
+            EstablishmentRetryModel::new(
                 model,
                 zhir_policies::RetryPolicy::new(3)
                     .unwrap()
@@ -412,7 +417,7 @@ async fn wire_case(
                 zhir_models::decorators::FallbackCandidate::new("primary", model),
                 zhir_models::decorators::FallbackCandidate::new(
                     "backup",
-                    Arc::new(http(protocol, &server.url, "fixture", "backup").unwrap()),
+                    Arc::new(single("backup")),
                 ),
             ])
             .unwrap(),

@@ -35,7 +35,10 @@ implementations belong to testing modules and are not exported by production cra
    external send. An acknowledgement retires the matching command. Recovery does
    not resend an entry marked sent; the adapter must reconcile it using its recovery
    reference. Loss of a session before completion, or an uncertain external result,
-   suspends with RecoveryRequired when its outcome cannot be established.
+   suspends with RecoveryRequired when its outcome cannot be established. A
+   LocalProjection session is rebuilt from committed history, so only Generate
+   persists sent=true; its other commands are dispatched again into the rebuilt
+   projection.
 7. Complete output items are durable immediately; deltas are observations. The
    kernel may dispatch local tools before ResponseFinished. Append carries submitted inputs,
    host results or kernel-accepted canonical outputs. Ordinary adapters maintain their own
@@ -68,7 +71,8 @@ implementations belong to testing modules and are not exported by production cra
 13. A local final result, its terminal operation state and delivery command share one
     commit. Output schema failure becomes a final invalid_tool_output failure. An
     identical completion is idempotent; conflicting completion or reuse of an adapter
-    event sequence with another update fails. The persisted sequence/update pair is
+    event sequence with another update fails; an earlier sequence is an already applied
+    replay and is ignored. The persisted sequence/update pair is
     not advanced by kernel-local control transitions. Every committed operation state
     change is observed once as OperationChanged after its checkpoint.
 14. Catalog binding, input validation and approval precede external start. Scheduling
@@ -86,6 +90,9 @@ implementations belong to testing modules and are not exported by production cra
     an operation event or explicit recovery resolution. Reply records an uncertain
     boundary before the external call. Attach, Complete and Abandon are explicit
     recovery resolutions; Unknown is never silently converted into a new start.
+    AbandonGeneration gives up the unfinished generation of a persisted
+    LocalProjection session: its Generate command is removed, the response is
+    Incomplete and generation is required again, committed as GenerationAbandoned.
 17. Task runs suspend when all unfinished operations are Waiting/Unknown and the
     response has yielded and pending deliveries are acknowledged. Native async sessions
     can continue while work remains. Completed requires the mode's response/input boundary,
@@ -131,7 +138,9 @@ implementations belong to testing modules and are not exported by production cra
     choose only explicit alternatives; unmet preferences remain visible. Negotiated
     and effective profiles are distinct. Effective values are Provider/Verified or
     Unknown; absence of confirmation never becomes inferred success.
-25. Model retry/fallback applies only to establishment before command dispatch.
+25. Model retry/fallback decorators apply only to establishment before command dispatch.
+    An HTTP adapter retries a generation request only for a retryable rejection received
+    before its response body: connection failure, 429 or 5xx, within the deadline.
     Fallback recovery binds a stable candidate identity and the original recovery
     reference. Endpoint capabilities, account credentials and profile mappings belong
     to adapters. Credential resolution/refresh is injected, not implemented by kernel.
@@ -179,9 +188,11 @@ payload on subsequent turns.
     and its outbox intent. It cannot cross active generation, operations, media or commands.
     Unsupported live replacement/history reduction fails before external establishment.
     No close/reopen simulation is permitted.
-34. Opening is a durable uncertain boundary. Recovery never replays uncertain remote
-    creation or commands. Only an idle local projection can be reconstructed without a
-    recovery attachment. Retry/fallback is restricted to certain establishment rejection.
+34. Opening is a durable uncertain boundary for remote sessions. Recovery never replays
+    uncertain remote creation or commands. A local projection is reconstructed without a
+    recovery attachment unless a sent or started generation has no response; that
+    generation needs AbandonGeneration or an attachment. Retry/fallback is restricted to
+    certain establishment rejection.
 35. MiniMax Task explicitly generates, seals its input after ResponseStarted, waits for
     task_finished, then closes and drains. Interactive synthesis waits for SealUserInput.
     Live opens directly, reports independent conversation/delegation items, and closes

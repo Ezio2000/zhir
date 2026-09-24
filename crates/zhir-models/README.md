@@ -7,8 +7,9 @@ Service endpoints, model/voice defaults and provider task semantics belong to in
 integration crates: [zhir-minimax](../zhir-minimax/README.md) and
 [zhir-openai](../zhir-openai/README.md).
 
-Includes TransformModel, ResourceModel, session concurrency, establishment-only
-retry, stable-ID fallback recovery, static/refreshing credential providers and
+Includes TransformModel, ResourceModel, session and request concurrency limits,
+EstablishmentRetryModel, HTTP request retry before the response body, stable-ID
+fallback recovery, static/refreshing credential providers and
 explicit endpoint profile mappings. ProtocolExtension and ProviderToolAdapter
 implement endpoint-specific requests, outputs and replay. Protocol defaults are not
 live model capability discovery. OAuth login remains the host's responsibility.

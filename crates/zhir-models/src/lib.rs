@@ -24,7 +24,7 @@ pub mod resources;
 mod session;
 pub use resources::ResourceModel;
 pub mod concurrency;
-pub use concurrency::ConcurrencyLimitedModel;
+pub use concurrency::{ConcurrencyLimitedModel, RequestLimit};
 mod extension;
 pub mod function;
 pub mod provider_tools;

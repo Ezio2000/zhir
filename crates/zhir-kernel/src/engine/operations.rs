@@ -15,8 +15,9 @@ impl Engine {
                 ));
             }
             if let Some(previous) = record.last_sequence {
+                // An earlier sequence is a replay of an update that was already applied.
                 if event.sequence < previous {
-                    return Err(Error::Protocol("delegation sequence regressed".into()));
+                    return Ok(());
                 }
                 if event.sequence == previous {
                     return if record.last_update.as_ref() == Some(&event.update) {
@@ -68,10 +69,9 @@ impl Engine {
                     ))
                 };
             }
+            // An earlier sequence is a replay of an update that was already applied.
             if event.sequence < sequence {
-                return Err(Error::Protocol(
-                    "operation event sequence moved backwards".into(),
-                ));
+                return Ok(());
             }
         }
         if let OperationUpdate::Finished { outcome } = &event.update {

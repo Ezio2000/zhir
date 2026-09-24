@@ -457,3 +457,156 @@ async fn binding_failures_found_during_admission_are_delivered() {
         OperationOutcome::Failure { .. }
     ));
 }
+
+type Script = Vec<(u64, zhir_core::operation::OperationUpdate)>;
+/// Emits a start script, and on recovery a replay script, then stays open.
+struct Replaying {
+    spec: RuntimeToolSpec,
+    start: Script,
+    recover: Script,
+}
+struct ScriptEvents(std::vec::IntoIter<(u64, zhir_core::operation::OperationUpdate)>);
+impl zhir_core::operation::OperationEvents for ScriptEvents {
+    fn receive(&mut self) -> BoxFuture<'_, Result<Option<zhir_core::operation::OperationEvent>>> {
+        let next = self.0.next();
+        Box::pin(async move {
+            match next {
+                Some((sequence, update)) => Ok(Some(zhir_core::operation::OperationEvent {
+                    sequence,
+                    update,
+                })),
+                None => std::future::pending().await,
+            }
+        })
+    }
+}
+struct Inert;
+impl zhir_core::operation::OperationControl for Inert {
+    fn cancel(&self) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+    fn reply(&self, _: serde_json::Value) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+fn active(script: &Script) -> zhir_core::operation::ToolExecution {
+    zhir_core::operation::ToolExecution::Active(zhir_core::operation::OperationHandle {
+        recovery: None,
+        control: Arc::new(Inert),
+        events: Box::new(ScriptEvents(script.clone().into_iter())),
+    })
+}
+impl RuntimeTool for Replaying {
+    fn spec(&self) -> &RuntimeToolSpec {
+        &self.spec
+    }
+    fn start(
+        &self,
+        _: RuntimeToolCall,
+        _: zhir_core::tool::RuntimeToolContext,
+    ) -> BoxFuture<'_, Result<zhir_core::operation::ToolExecution>> {
+        Box::pin(async { Ok(active(&self.start)) })
+    }
+    fn recover(
+        &self,
+        _: zhir_core::operation::OperationRecord,
+        _: zhir_core::tool::RuntimeToolContext,
+    ) -> BoxFuture<'_, Result<zhir_core::operation::ToolExecution>> {
+        Box::pin(async { Ok(active(&self.recover)) })
+    }
+}
+#[tokio::test]
+async fn recovered_tools_may_replay_their_events_from_the_beginning() {
+    use zhir_core::operation::OperationUpdate;
+    let running = |step: &str| OperationUpdate::Running {
+        recovery: Some(zhir_core::operation::RecoveryRef {
+            adapter: "remote".into(),
+            data: json!(step),
+        }),
+    };
+    let finished = OperationUpdate::Finished {
+        outcome: OperationOutcome::Success {
+            content: vec![],
+            structured: json!("resumed"),
+        },
+    };
+    for conflicting in [false, true] {
+        let mut recover = vec![
+            (0, running("queued")),
+            (1, running(if conflicting { "other" } else { "working" })),
+        ];
+        if !conflicting {
+            recover.push((2, finished.clone()));
+        }
+        let tool: Arc<dyn RuntimeTool> = Arc::new(Replaying {
+            spec: RuntimeToolSpec {
+                name: "remote".into(),
+                description: "remote job".into(),
+                input: InputSpec::Structured {
+                    schema: json!({"type":"object","properties":{"n":{"type":"integer"}},"required":["n"],"additionalProperties":false}),
+                },
+                output_schema: None,
+                execution: SERIAL,
+            },
+            start: vec![(0, running("queued")), (1, running("working"))],
+            recover,
+        });
+        let store = Arc::new(RecordingStore::new(Arc::new(
+            zhir_storage::MemoryRunStore::new(),
+        )));
+        // The process stops once the second update is durable.
+        let crashing = Arc::new(zhir_testing::CrashingStore::new(store.clone(), |c| {
+            c.active
+                .operations
+                .values()
+                .any(|o| o.last_sequence == Some(1))
+        }));
+        let context = zhir_kernel::defaults::context();
+        let run_id = context.run_id.clone();
+        let mut invocation = Harness::new(vec![tool.clone()])
+            .runtime(calls(&["remote"]), crashing.clone())
+            .start(RunRequest::new(vec![Message::user("go")]).context(context))
+            .unwrap();
+        invocation.start();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !crashing.crashed() {
+            assert!(
+                Instant::now() < deadline,
+                "run never reached the crash point"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        invocation.control().cancel();
+        assert!(matches!(
+            invocation.result().await.unwrap_err().error,
+            Error::Storage(_)
+        ));
+        let head = store.load_head(&run_id).await.unwrap().unwrap();
+        let resumed = tokio::time::timeout(
+            Duration::from_secs(10),
+            Harness::new(vec![tool])
+                .runtime(GenerationOutput::text("done"), store.clone())
+                .continue_from(head)
+                .unwrap()
+                .result(),
+        )
+        .await
+        .expect("run stalled")
+        .unwrap()
+        .into_checkpoint();
+        if conflicting {
+            assert!(
+                matches!(&resumed.state, State::Failed { error } if error.message.contains("conflicting operation event sequence")),
+                "{:?}",
+                resumed.state
+            );
+        } else {
+            assert!(
+                matches!(resumed.state, State::Completed { .. }),
+                "{:?}",
+                resumed.state
+            );
+        }
+        store.verify_traces().unwrap();
+    }
+}

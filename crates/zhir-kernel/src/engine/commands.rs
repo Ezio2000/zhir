@@ -91,23 +91,29 @@ impl Engine {
         else {
             return Ok(());
         };
+        // A local projection is rebuilt from committed history after a crash, so only a
+        // generation request can have reached a service and needs a durable send boundary.
+        let durable = matches!(command.intent, CommandIntent::Generate { .. })
+            || !control.capabilities().supports(Capability::LocalProjection);
         let body = self.command_body(command.intent)?;
-        // A crash after this commit is an explicitly uncertain send, never an implicit retry.
-        let mut next = self.current.as_ref().clone();
-        next.active
-            .commands
-            .iter_mut()
-            .find(|c| c.id == command.id)
-            .expect("pending command")
-            .sent = true;
-        self.commit(
-            next,
-            Fact::Command {
-                command_id: command.id.clone(),
-            },
-            HistoryDelta::Unchanged,
-        )
-        .await?;
+        if durable {
+            // A crash after this commit is an explicitly uncertain send, never an implicit retry.
+            let mut next = self.current.as_ref().clone();
+            next.active
+                .commands
+                .iter_mut()
+                .find(|c| c.id == command.id)
+                .expect("pending command")
+                .sent = true;
+            self.commit(
+                next,
+                Fact::Command {
+                    command_id: command.id.clone(),
+                },
+                HistoryDelta::Unchanged,
+            )
+            .await?;
+        }
         self.check()?;
         self.sent.insert(command.id.clone());
         self.sending = true;
