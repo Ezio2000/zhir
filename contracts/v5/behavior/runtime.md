@@ -47,6 +47,10 @@ implementations belong to testing modules and are not exported by production cra
    ignored. Unknown acknowledgements, conflicting output identities and duplicate or
    foreign response completions are protocol errors. Each output requires a nonempty
    item/caller identity. Provider continuation preserves the initiating call identity.
+   Session events already queued behind one another, up to `max_session_events`, are
+   applied in order and committed as one `Session` fact carrying the last applied
+   sequence. Deltas, provider operation events, input sealing, suspension, provider
+   tool output and non-running states end a batch; their effects follow its commit.
 9. ResponseFinished records typed status, verified covered input position, usage,
    metadata and profile confirmations. Failed, Cancelled and Incomplete are not successful
    run completion. A response started before a later input cannot claim to cover it without
@@ -150,6 +154,12 @@ implementations belong to testing modules and are not exported by production cra
     unversioned or other-version layouts require a fresh database/namespace. There
     are no old aliases, old-format readers, migration paths, transitional fields or
     compatibility execution modes. API, callers, tests, schemas and docs change together.
+    A history rewrite removes the replaced generation in the same commit, so stores keep
+    only the current history. `RunStore::delete` removes a run and
+    `ResourceStore::delete` removes a resource; unknown targets succeed. Stores never
+    delete on their own; `resources::reachable` lists what a checkpoint still references.
+    The commit deadline bounds SQL connection acquisition and is checked on the local
+    monotonic clock before a Redis write; server clocks do not decide it.
 
 
 Provider operation completion preserves `ProviderToolCall.data` exactly. The kernel

@@ -158,7 +158,7 @@ async fn independent_conversation_and_durable_delegation_share_one_execution() {
         store
             .commits()
             .iter()
-            .any(|c| c.checkpoint.active.commands.iter().any(|c| matches!(
+            .any(|c| c.checkpoint().active.commands.iter().any(|c| matches!(
                 c.intent,
                 zhir_core::run::CommandIntent::DelegationContext { .. }
             )))

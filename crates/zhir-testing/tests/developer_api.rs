@@ -703,17 +703,19 @@ async fn run_requests_isolate_all_options_and_persist_effective_values_across_96
     assert_eq!(store.verify_traces().unwrap(), store.commits().len());
     let commits = store.commits();
     let first = &commits[0];
-    let mut next = commits
+    let second = commits
         .iter()
-        .find(|c| c.checkpoint.parent_id.as_ref() == Some(&first.checkpoint.id))
-        .unwrap()
-        .clone();
-    Arc::make_mut(&mut next.checkpoint).options.stream = !first.checkpoint.options.stream;
+        .find(|c| c.checkpoint().parent_id.as_ref() == Some(&first.checkpoint().id))
+        .unwrap();
+    let mut changed = second.checkpoint().as_ref().clone();
+    changed.options.stream = !first.checkpoint().options.stream;
+    let next = zhir::storage::Commit::new(Arc::new(changed), second.history().clone());
     assert!(
-        zhir_testing::verify_trace(&[first.checkpoint.clone(), next.checkpoint.clone()]).is_err()
+        zhir_testing::verify_trace(&[first.checkpoint().clone(), next.checkpoint().clone()])
+            .is_err()
     );
     assert!(
-        matches!(next.validate_against(Some(&first.core())),Err(Error::Storage(e)) if e.contains("options changed"))
+        matches!(next.validate_against(Some(first.core())),Err(Error::Storage(e)) if e.contains("options changed"))
     );
 }
 

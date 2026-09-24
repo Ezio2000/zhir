@@ -140,8 +140,12 @@ HttpModel retries retryable rejections (connection failure, 429, 5xx) before rea
 response body, within the run deadline; a shared `RequestLimit` bounds whole requests. `max_generation_requests` counts explicit host requests;
 `observed_responses` is unknown until real response events are received.
 
-History uses immutable chunks and incremental digests. Storage persists a compact
-CheckpointCore plus a history delta. Rewrites are allowed only without active
+History uses immutable chunks and incremental digests. Chunks share their entries, so appending
+or cloning a history never copies existing entries. Storage persists a compact
+CheckpointCore plus a history delta. A Commit derives that core and its digest once;
+validation and every store reuse them. Session events queued behind one another
+share one checkpoint, so a text turn commits a bounded number of checkpoints rather
+than one per event. Rewrites are allowed only without active
 operations, pending commands or media cursors. Commit validation enforces revision,
 parent, frozen options, immutable context, history integrity and active-state bounds.
 A commit timeout returns the last known checkpoint and requires a durable-head reload;
@@ -179,7 +183,9 @@ second independent epoch. Late rejected media cannot mutate the current manifest
 closes admission and drains accepted input before sending the endpoint command.
 Older output epochs cannot advance a stream; input epoch is zero. Checkpoints keep the latest sealed reference,
 not an ever-growing media transcript. Resource retention/collection belongs to the
-host; the SDK does not delete resources automatically.
+host; the SDK does not delete resources automatically. `resources::reachable` walks a
+checkpoint, its active cursors and the archive chain to list every stored resource it
+still references.
 
 CredentialProvider is injected into adapters. StaticCredential and
 RefreshingCredential implement static values and refresh with generation-aware
@@ -206,6 +212,13 @@ A language binding wraps core values and the SDK invocation/control interfaces. 
 must use v5 DTOs and preserve identities, revisions, cancellation and backpressure.
 There is no Python wire compatibility layer, alternate scheduler or migration reader.
 SQL stores require format 5 in a new database; Redis requires a new format-5 namespace.
+SQLite uses one writer connection with WAL and a busy timeout; MySQL uses a pool
+(8 connections by default, `MysqlRunStore::connect_with` to choose) whose acquisition is
+bounded by the commit deadline. Redis shares one multiplexed connection and reconnects
+after an error; a failed commit remains uncertain and is not replayed. A history rewrite
+removes the previous generation in the same write. `RunStore::delete`,
+`ResourceStore::delete` and `zhir_storage::resources::reachable` let the host implement
+retention; nothing is collected automatically.
 Filesystem resources use their current format in a new directory. Older layouts are
 rejected rather than translated.
 

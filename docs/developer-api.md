@@ -28,6 +28,12 @@ let completion = invocation.result().await?;
 都属于已结算状态。存储错误和 CAS 冲突返回携带最后已知 checkpoint 的 RunError。
 丢弃 Invocation 或未读完的 EventStream 会取消运行；单纯读取结果无需消费观察事件。
 
+RunStore 只保存当前一代历史：历史重写在同一次提交中删除旧一代。`RunStore::delete(run_id)`
+删除运行的全部记录，未知运行也返回成功；存储本身从不自动删除。`SqliteRunStore::connect`
+使用单写连接（WAL 与 busy timeout），`MysqlRunStore::connect` 默认 8 个连接，
+`MysqlRunStore::connect_with(url, max_connections)` 指定连接数；获取连接受提交截止时间约束。
+RedisRunStore 复用一条多路复用连接，出错后下次调用重连，失败的提交仍视为结果不确定。
+
 `RunMode::Task` 在当前轮结束且操作已完成时结算；`Interactive` 等待追加输入，
 调用 `seal_user_input` 后才允许正常完成。运行中的控制接口包括：
 
@@ -273,7 +279,9 @@ Content::resource 接收 ResourceRef，或用 ResourceInput 同时指定 Resourc
 ResourceStore::create 返回分块 writer，append 接收顺序号，finish 封存不可变引用。
 ResourceStore::open 返回 reader，每次 read 指定最大字节数。MemoryResourceStore 总是
 可用；FilesystemResourceStore 需要 `resources-filesystem`。同 key 相同数据幂等，
-不同数据明确冲突。
+不同数据明确冲突。`ResourceStore::delete` 删除已存储资源，未知资源也返回成功。
+`zhir_storage::resources::reachable(&checkpoint, &store)` 列出 checkpoint 仍引用的全部存储
+资源：历史与完成内容、待投递上下文、活动媒体游标及归档链。哪些资源可以回收由宿主决定。
 
 `ResourceModel::new(model, store, max_input_bytes)` 在打开上下文、ReplaceContext 和
 Append（包括工具结果及确认输出）中解析资源。一个请求/命令内按实际物化字节消耗总预算；原生回放中同一
@@ -307,7 +315,7 @@ provider operation 或媒体流。供应商任务 ID、轮询/推送、取消和
 ## 历史、输出与观察
 
 HistoryEntry 保存稳定 ID、CallRef 与 Message。History::messages 是到达顺序视图；
-`model::conversation(history.entries())` 才是新一轮模型的逻辑会话投影。后者合并同轮
+`model::conversation(history.iter())` 才是新一轮模型的逻辑会话投影，按引用读取条目。后者合并同轮
 assistant 输出与完成信息，把异步 provider 更新归回原始调用。用持久化 checkpoint
 分析因果，不要用观察事件重建事实。
 

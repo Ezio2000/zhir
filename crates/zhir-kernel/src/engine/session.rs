@@ -24,13 +24,8 @@ impl Engine {
         )
     }
     pub(super) fn model_request(&self, history_count: usize) -> ModelRequest {
-        let messages = zhir_core::model::conversation(
-            self.current
-                .history
-                .entries()
-                .into_iter()
-                .take(history_count),
-        );
+        let messages =
+            zhir_core::model::conversation(self.current.history.iter().take(history_count));
         ModelRequest {
             messages,
             runtime_tools: self.catalog.specs(),
@@ -76,15 +71,14 @@ impl Engine {
             let produced: std::collections::BTreeSet<_> = self
                 .current
                 .history
-                .entries()
-                .into_iter()
+                .iter()
                 .skip(self.current.active.session.run_start)
-                .map(|entry| entry.id)
+                .map(|entry| entry.id.as_str())
                 .collect();
             next.active.session.run_start = rewrite
                 .entries
                 .iter()
-                .take_while(|entry| !produced.contains(&entry.id))
+                .take_while(|entry| !produced.contains(entry.id.as_str()))
                 .count();
             next.history = History::from_entries(rewrite.entries.clone())?;
             next.active.session.response_start = next.history.len();

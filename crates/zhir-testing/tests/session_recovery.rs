@@ -91,10 +91,10 @@ async fn provider_continuation_reuses_operation_and_includes_its_final_output() 
     let ids: std::collections::BTreeSet<_> = store
         .commits()
         .iter()
-        .flat_map(|c| c.checkpoint.active.operations.keys().cloned())
+        .flat_map(|c| c.checkpoint().active.operations.keys().cloned())
         .collect();
     assert_eq!(ids.len(), 1);
-    let projected = zhir_core::model::conversation(final_state.history.entries());
+    let projected = zhir_core::model::conversation(final_state.history.iter());
     let calls: Vec<_> = projected
         .iter()
         .filter_map(|m| {
@@ -408,11 +408,11 @@ async fn duplex_seal_user_input_drains_buffered_media_and_interrupt_commits_with
     let commits = store.commits();
     let interrupted = commits
         .iter()
-        .find(|c| c.checkpoint.active.session.output_epoch == 1)
+        .find(|c| c.checkpoint().active.session.output_epoch == 1)
         .unwrap();
     assert!(
         interrupted
-            .checkpoint
+            .checkpoint()
             .active
             .commands
             .iter()
@@ -420,11 +420,11 @@ async fn duplex_seal_user_input_drains_buffered_media_and_interrupt_commits_with
     );
     let ended = commits
         .iter()
-        .find(|c| c.checkpoint.active.session.input_closed)
+        .find(|c| c.checkpoint().active.session.input_closed)
         .unwrap();
     assert!(
         ended
-            .checkpoint
+            .checkpoint()
             .active
             .commands
             .iter()
@@ -561,7 +561,7 @@ async fn an_abandoned_local_generation_is_generated_again() {
         Some(generation_id.clone())
     );
     assert!(crash.store.commits().iter().any(|c| matches!(
-        &c.checkpoint.fact,
+        &c.checkpoint().fact,
         zhir_core::run::Fact::GenerationAbandoned { generation_id: id, .. } if *id == generation_id
     )));
     crash.store.verify_traces().unwrap();

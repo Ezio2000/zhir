@@ -74,7 +74,7 @@ impl SessionControl for Control {
             } = &mut command.body
             {
                 let mut request = current_config.clone();
-                request.messages = conversation(entries.clone());
+                request.messages = conversation(entries.iter());
                 let prepared = (self.prepare)(request, self.context.clone()).await?;
                 let mut config = prepared.clone();
                 config.messages = current_config.messages.clone();

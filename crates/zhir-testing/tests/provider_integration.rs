@@ -333,6 +333,14 @@ impl ResourceStore for Files {
             .await
         })
     }
+    fn delete(&self, reference: ResourceRef) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            zhir_storage::FilesystemResourceStore::open(&self.root)
+                .await?
+                .delete(reference)
+                .await
+        })
+    }
 }
 fn resource_url(media_type: &str, url: String) -> Content {
     Content::resource(ResourceRef {
@@ -415,7 +423,7 @@ async fn resources_are_durable_before_commit_and_replay_after_reconstruction() {
     )
     .unwrap();
     let mut next = request(false);
-    next.messages = zhir::model::conversation(restored.history.entries());
+    next.messages = zhir::model::conversation(restored.history.iter());
     next.messages.push(Message::user("continue"));
     model
         .generate(next, context(Arc::new(Deltas::default())))

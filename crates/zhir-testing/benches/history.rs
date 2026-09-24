@@ -4,7 +4,8 @@ use zhir_core::{
     message::Message,
     run::{History, HistoryEntry},
 };
-fn run(count: usize) -> std::time::Duration {
+fn run(count: usize, entry_bytes: usize) -> std::time::Duration {
+    let text = "x".repeat(entry_bytes);
     let started = Instant::now();
     let mut history = History::new(vec![Message::user("initial")]).unwrap();
     let first = history.clone();
@@ -13,7 +14,7 @@ fn run(count: usize) -> std::time::Duration {
             .append(vec![HistoryEntry {
                 id: format!("external:{i}"),
                 origin: None,
-                message: Message::external("fixed size message"),
+                message: Message::external(text.as_str()),
             }])
             .unwrap();
         std::hint::black_box(&history);
@@ -25,12 +26,15 @@ fn run(count: usize) -> std::time::Duration {
     elapsed
 }
 fn main() {
-    let a = run(10_000);
-    let b = run(20_000);
-    println!(
-        "history append: 10000={a:?}, 20000={b:?}, ratio={:.2}",
-        b.as_secs_f64() / a.as_secs_f64()
-    );
+    // Appending shares existing entries; per-append cost is hashing the new entry.
+    for entry_bytes in [16, 4096] {
+        let a = run(10_000, entry_bytes);
+        let b = run(20_000, entry_bytes);
+        println!(
+            "{}",
+            serde_json::json!({"case":"history_append","entry_bytes":entry_bytes,"ms_10000":a.as_secs_f64() * 1000.0,"ms_20000":b.as_secs_f64() * 1000.0,"ratio":b.as_secs_f64() / a.as_secs_f64()})
+        );
+    }
     for count in [1000, 2000, 4000] {
         let mut samples: Vec<_> = (0..3)
             .map(|_| pending_serial(count).as_secs_f64() * 1000.0)

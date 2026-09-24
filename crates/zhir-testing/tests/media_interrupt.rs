@@ -65,20 +65,20 @@ async fn probe(late_after_new: bool) {
         let mut output = invocation.media_output().unwrap();
         invocation.start();
         loop {
-            if store.commits().iter().any(|c| c.checkpoint.active.media.values()
+            if store.commits().iter().any(|c| c.checkpoint().active.media.values()
                 .any(|cursor| cursor.sequence == 1)) { break; }
             tokio::task::yield_now().await;
         }
         let receipt = invocation.control().interrupt_output().await.unwrap();
-        assert!(store.commits().iter().any(|c| c.checkpoint.revision == receipt.revision
-            && c.checkpoint.active.session.output_epoch == 1));
+        assert!(store.commits().iter().any(|c| c.checkpoint().revision == receipt.revision
+            && c.checkpoint().active.session.output_epoch == 1));
         let chunk = output.receive().await.unwrap().unwrap();
         assert_eq!(chunk.epoch, 1, "buffered or late old output was delivered");
         assert_eq!(chunk.sequence, 0);
         if late_after_new {
             let second = output.receive().await.unwrap().unwrap();
             assert_eq!((second.epoch, second.sequence), (1, 1));
-            let reference = store.commits().last().unwrap().checkpoint.active.media["output:voice:1"].sealed.clone();
+            let reference = store.commits().last().unwrap().checkpoint().active.media["output:voice:1"].sealed.clone();
             let mut reader = resources.open(reference).await.unwrap();
             let mut bytes = Vec::new();
             loop {

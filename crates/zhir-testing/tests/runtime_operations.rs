@@ -150,12 +150,12 @@ fn running_order(store: &RecordingStore) -> Vec<usize> {
     store
         .commits()
         .iter()
-        .filter_map(|commit| match &commit.checkpoint.fact {
+        .filter_map(|commit| match &commit.checkpoint().fact {
             Fact::Operation {
                 operation_id,
                 state: OperationState::Running,
             } => {
-                let call = &commit.checkpoint.active.operations[operation_id]
+                let call = &commit.checkpoint().active.operations[operation_id]
                     .origin
                     .call_id;
                 Some(call.trim_start_matches("call-").parse().unwrap())
@@ -609,4 +609,22 @@ async fn recovered_tools_may_replay_their_events_from_the_beginning() {
         }
         store.verify_traces().unwrap();
     }
+}
+
+/// Session events queued behind one another share a checkpoint. Without batching these
+/// runs commit 16 and 27 checkpoints.
+#[tokio::test]
+async fn turns_commit_a_bounded_number_of_checkpoints() {
+    let (text, store) = Harness::new(vec![])
+        .run(GenerationOutput::text("hello"))
+        .await;
+    assert!(matches!(text.state, State::Completed { .. }));
+    store.verify_traces().unwrap();
+    assert!(store.commits().len() <= 12, "{}", store.commits().len());
+    let (tool, store) = Harness::new(vec![probe("serial", SERIAL, Log::default())])
+        .run(calls(&["serial"]))
+        .await;
+    assert!(matches!(tool.state, State::Completed { .. }));
+    store.verify_traces().unwrap();
+    assert!(store.commits().len() <= 20, "{}", store.commits().len());
 }

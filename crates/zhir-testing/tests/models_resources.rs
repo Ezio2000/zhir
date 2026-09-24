@@ -47,6 +47,9 @@ impl ResourceStore for BrokenStore {
     fn create(&self, _: String, _: String) -> BoxFuture<'_, Result<Box<dyn ResourceWriter>>> {
         Box::pin(async { Ok(Box::new(BrokenWriter) as Box<dyn ResourceWriter>) })
     }
+    fn delete(&self, _: ResourceRef) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async { Err(Error::Storage("fixture delete failed".into())) })
+    }
 }
 struct BrokenWriter;
 impl ResourceWriter for BrokenWriter {

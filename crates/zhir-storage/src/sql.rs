@@ -1,5 +1,5 @@
 use crate::codec::storage_error;
-use sqlx::{AnyPool, Column, Row, any::AnyPoolOptions};
+use sqlx::{AnyPool, Column, Row, ValueRef, any::AnyPoolOptions};
 use std::sync::Arc;
 use zhir_core::{
     Result,
@@ -14,15 +14,35 @@ pub(crate) struct SqlStore {
     pool: AnyPool,
 }
 impl SqlStore {
-    pub async fn connect(url: &str) -> Result<Self> {
+    pub async fn connect(url: &str, max_connections: u32) -> Result<Self> {
+        if max_connections == 0 {
+            return Err(Error::Invalid(
+                "a SQL store requires at least one connection".into(),
+            ));
+        }
         sqlx::any::install_default_drivers();
+        let sqlite = url.starts_with("sqlite:");
         let pool = AnyPoolOptions::new()
-            .max_connections(1)
+            .max_connections(max_connections)
             .acquire_timeout(std::time::Duration::from_secs(10))
+            .after_connect(move |connection, _| {
+                Box::pin(async move {
+                    if sqlite {
+                        // Readers in other processes proceed during a write, and a locked
+                        // database is waited on instead of failing immediately.
+                        sqlx::query("PRAGMA journal_mode=WAL")
+                            .execute(&mut *connection)
+                            .await?;
+                        sqlx::query("PRAGMA busy_timeout=5000")
+                            .execute(&mut *connection)
+                            .await?;
+                    }
+                    Ok(())
+                })
+            })
             .connect(url)
             .await
             .map_err(storage_error)?;
-        let sqlite = url.starts_with("sqlite:");
         let format_query = if sqlite {
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='zhir_format'"
         } else {
@@ -111,30 +131,44 @@ impl SqlStore {
             .map_err(storage_error)?
     }
     async fn commit_inner(&self, commit: Commit) -> Result<()> {
-        let run = &commit.checkpoint.context.run_id;
-        let id = &commit.checkpoint.id;
+        let run = &commit.checkpoint().context.run_id;
+        let id = &commit.checkpoint().id;
         let digest = commit.digest()?;
-        let revision = i64::try_from(commit.checkpoint.revision).map_err(storage_error)?;
-        let mut tx = self.pool.begin().await.map_err(storage_error)?;
-        if let Some(row) =
-            sqlx::query("SELECT digest FROM zhir_commits WHERE run_id=? AND checkpoint_id=?")
-                .bind(run)
-                .bind(id)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(storage_error)?
+        let revision = i64::try_from(commit.checkpoint().revision).map_err(storage_error)?;
+        // Waiting for a pooled connection is part of the commit budget.
+        let begin = self.pool.begin();
+        let mut tx = match commit.deadline {
+            Some(deadline) => {
+                tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), begin)
+                    .await
+                    .map_err(|_| Error::Deadline)?
+            }
+            None => begin.await,
+        }
+        .map_err(storage_error)?;
+        // A commit identity exists only while its run head does.
+        let previous = sqlx::query(
+            "SELECT h.core,h.generation,(SELECT c.digest FROM zhir_commits c \
+             WHERE c.run_id=h.run_id AND c.checkpoint_id=?) AS digest \
+             FROM zhir_run_heads h WHERE h.run_id=?",
+        )
+        .bind(id)
+        .bind(run)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage_error)?;
+        if let Some(existing) = previous
+            .as_ref()
+            .map(|row| read_optional_text(row, "digest"))
+            .transpose()?
+            .flatten()
         {
-            return if read_text(&row, "digest")? == digest {
+            return if existing == digest {
                 Ok(())
             } else {
                 Err(Error::Storage("checkpoint id reused".into()))
             };
         }
-        let previous = sqlx::query("SELECT core,generation FROM zhir_run_heads WHERE run_id=?")
-            .bind(run)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(storage_error)?;
         let previous_core: Option<CheckpointCore> = previous
             .as_ref()
             .map(|r| -> Result<_> {
@@ -145,7 +179,7 @@ impl SqlStore {
         commit.check_deadline(std::time::Instant::now())?;
         commit.validate_against(previous_core.as_ref())?;
         let generation = if matches!(
-            commit.history,
+            commit.history(),
             HistoryDelta::Initial(_) | HistoryDelta::Replace(_)
         ) {
             revision
@@ -201,7 +235,7 @@ impl SqlStore {
         .execute(&mut *tx)
         .await
         .map_err(storage_error)?;
-        let messages = match &commit.history {
+        let messages = match commit.history() {
             HistoryDelta::Initial(m) | HistoryDelta::Append(m) | HistoryDelta::Replace(m) => {
                 Some(m)
             }
@@ -220,8 +254,41 @@ impl SqlStore {
             .await
             .map_err(storage_error)?;
         }
+        if matches!(
+            commit.history(),
+            HistoryDelta::Initial(_) | HistoryDelta::Replace(_)
+        ) {
+            // Only the current generation is reachable from the head.
+            sqlx::query("DELETE FROM zhir_history WHERE run_id=? AND generation<?")
+                .bind(run)
+                .bind(generation)
+                .execute(&mut *tx)
+                .await
+                .map_err(storage_error)?;
+        }
         commit.check_deadline(std::time::Instant::now())?;
         tx.commit().await.map_err(storage_error)
+    }
+    pub async fn delete(&self, run: &str) -> Result<()> {
+        let this = self.clone();
+        let run = run.to_owned();
+        tokio::spawn(async move {
+            let mut tx = this.pool.begin().await.map_err(storage_error)?;
+            for statement in [
+                "DELETE FROM zhir_history WHERE run_id=?",
+                "DELETE FROM zhir_commits WHERE run_id=?",
+                "DELETE FROM zhir_run_heads WHERE run_id=?",
+            ] {
+                sqlx::query(statement)
+                    .bind(&run)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(storage_error)?;
+            }
+            tx.commit().await.map_err(storage_error)
+        })
+        .await
+        .map_err(storage_error)?
     }
     pub async fn load_head(&self, run: &str) -> Result<Option<Arc<Checkpoint>>> {
         let mut tx = self.pool.begin().await.map_err(storage_error)?;
@@ -265,5 +332,12 @@ fn read_text(row: &sqlx::any::AnyRow, column: &str) -> Result<String> {
                 .map_err(storage_error)
         }
         _ => row.try_get(column).map_err(storage_error),
+    }
+}
+fn read_optional_text(row: &sqlx::any::AnyRow, column: &str) -> Result<Option<String>> {
+    if row.try_get_raw(column).map_err(storage_error)?.is_null() {
+        Ok(None)
+    } else {
+        read_text(row, column).map(Some)
     }
 }

@@ -1,6 +1,9 @@
 use crate::codec::storage_error;
-use redis::AsyncCommands;
-use std::{collections::HashMap, sync::Arc};
+use redis::{AsyncCommands, aio::MultiplexedConnection};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 use zhir_core::{
     BoxFuture, Result,
     error::Error,
@@ -8,6 +11,8 @@ use zhir_core::{
     storage::{Commit, HistoryDelta, RunStore},
     wire::CheckpointCore,
 };
+// An initial or rewritten history deletes the previous generation in the same script, so
+// only the current generation is stored.
 const COMMIT: &str = r#"
 local old=redis.call('HGET',KEYS[2],ARGV[1])
 if old then
@@ -15,9 +20,9 @@ if old then
 end
 local revision=redis.call('HGET',KEYS[1],'revision')
 if (revision or '')~=ARGV[3] then return 'revision_conflict' end
-if ARGV[8]~='0' then local now=redis.call('TIME'); if tonumber(now[1])*1000+math.floor(tonumber(now[2])/1000)>=tonumber(ARGV[8]) then return 'deadline' end end
 redis.call('HSET',KEYS[1],'revision',ARGV[4],'core',ARGV[5],'generation',ARGV[6])
 redis.call('HSET',KEYS[2],ARGV[1],ARGV[2])
+if ARGV[8]=='1' then redis.call('DEL',KEYS[3]) end
 if ARGV[7]~='' then redis.call('HSET',KEYS[3],ARGV[6]..':'..ARGV[4],ARGV[7]) end
 return 'ok'
 "#;
@@ -30,6 +35,9 @@ return {core,redis.call('HGET',KEYS[1],'generation'),redis.call('HGETALL',KEYS[2
 pub struct RedisRunStore {
     client: redis::Client,
     namespace: String,
+    /// One multiplexed connection shared by every call, dropped after a Redis error and
+    /// reopened by the next call.
+    connection: Arc<Mutex<Option<MultiplexedConnection>>>,
 }
 impl RedisRunStore {
     pub async fn connect(url: &str, namespace: &str) -> Result<Self> {
@@ -76,6 +84,7 @@ return '5'
         Ok(Self {
             client,
             namespace: namespace.into(),
+            connection: Arc::new(Mutex::new(Some(connection))),
         })
     }
     fn keys(&self, run: &str) -> [String; 3] {
@@ -90,18 +99,40 @@ return '5'
             format!("{}:{{{tag}}}:history", self.namespace),
         ]
     }
-    async fn commit_inner(&self, commit: Commit) -> Result<()> {
-        let keys = self.keys(&commit.checkpoint.context.run_id);
-        let mut conn = self
+    async fn connection(&self) -> Result<MultiplexedConnection> {
+        if let Some(connection) = self
+            .connection
+            .lock()
+            .expect("redis connection lock")
+            .clone()
+        {
+            return Ok(connection);
+        }
+        let connection = self
             .client
             .get_multiplexed_async_connection()
             .await
             .map_err(storage_error)?;
+        *self.connection.lock().expect("redis connection lock") = Some(connection.clone());
+        Ok(connection)
+    }
+    /// A failed command may have broken the shared connection; the next call reconnects.
+    /// A failed commit stays uncertain and is never replayed here.
+    fn failed(&self, error: redis::RedisError) -> Error {
+        self.connection
+            .lock()
+            .expect("redis connection lock")
+            .take();
+        storage_error(error)
+    }
+    async fn commit_inner(&self, commit: Commit) -> Result<()> {
+        let keys = self.keys(&commit.checkpoint().context.run_id);
+        let mut conn = self.connection().await?;
         let digest = commit.digest()?;
         let existing: Option<String> = conn
-            .hget(&keys[1], &commit.checkpoint.id)
+            .hget(&keys[1], &commit.checkpoint().id)
             .await
-            .map_err(storage_error)?;
+            .map_err(|e| self.failed(e))?;
         if let Some(old) = existing {
             return if old == digest {
                 Ok(())
@@ -109,45 +140,41 @@ return '5'
                 Err(Error::Storage("checkpoint id reused".into()))
             };
         }
-        let head: HashMap<String, String> = conn.hgetall(&keys[0]).await.map_err(storage_error)?;
+        let head: HashMap<String, String> =
+            conn.hgetall(&keys[0]).await.map_err(|e| self.failed(e))?;
         let previous: Option<CheckpointCore> = head
             .get("core")
             .map(|s| serde_json::from_str(s).map_err(storage_error))
             .transpose()?;
         commit.check_deadline(std::time::Instant::now())?;
         commit.validate_against(previous.as_ref())?;
-        let revision = commit.checkpoint.revision.to_string();
-        let generation = if matches!(
-            commit.history,
+        let revision = commit.checkpoint().revision.to_string();
+        let rewrite = matches!(
+            commit.history(),
             HistoryDelta::Initial(_) | HistoryDelta::Replace(_)
-        ) {
+        );
+        let generation = if rewrite {
             revision.clone()
         } else {
             head.get("generation")
                 .cloned()
                 .ok_or_else(|| Error::Storage("missing history generation".into()))?
         };
-        let payload = match &commit.history {
+        let payload = match commit.history() {
             HistoryDelta::Initial(m) | HistoryDelta::Append(m) | HistoryDelta::Replace(m) => {
                 serde_json::to_string(m).map_err(storage_error)?
             }
             HistoryDelta::Unchanged => String::new(),
         };
-        let core = serde_json::to_string(&commit.core()).map_err(storage_error)?;
-        let deadline = commit
-            .deadline
-            .map(|d| {
-                now_ms().saturating_add(
-                    d.saturating_duration_since(std::time::Instant::now())
-                        .as_millis() as u64,
-                )
-            })
-            .unwrap_or(0);
+        let core = serde_json::to_string(commit.core()).map_err(storage_error)?;
+        // The script runs without a server clock check; the deadline is checked locally
+        // before the write is sent.
+        commit.check_deadline(std::time::Instant::now())?;
         let result: String = redis::Script::new(COMMIT)
             .key(&keys[0])
             .key(&keys[1])
             .key(&keys[2])
-            .arg(&commit.checkpoint.id)
+            .arg(&commit.checkpoint().id)
             .arg(digest)
             .arg(
                 commit
@@ -159,13 +186,12 @@ return '5'
             .arg(core)
             .arg(generation)
             .arg(payload)
-            .arg(deadline)
+            .arg(if rewrite { "1" } else { "0" })
             .invoke_async(&mut conn)
             .await
-            .map_err(storage_error)?;
+            .map_err(|e| self.failed(e))?;
         match result.as_str() {
             "ok" => Ok(()),
-            "deadline" => Err(Error::Deadline),
             "revision_conflict" => Err(Error::Conflict {
                 expected: commit.expected_revision(),
                 actual: None,
@@ -186,17 +212,13 @@ impl RunStore for RedisRunStore {
     fn load_head(&self, run_id: &str) -> BoxFuture<'_, Result<Option<Arc<Checkpoint>>>> {
         let keys = self.keys(run_id);
         Box::pin(async move {
-            let mut conn = self
-                .client
-                .get_multiplexed_async_connection()
-                .await
-                .map_err(storage_error)?;
+            let mut conn = self.connection().await?;
             let value: redis::Value = redis::Script::new(LOAD)
                 .key(&keys[0])
                 .key(&keys[2])
                 .invoke_async(&mut conn)
                 .await
-                .map_err(storage_error)?;
+                .map_err(|e| self.failed(e))?;
             if let redis::Value::Array(v) = &value
                 && v.is_empty()
             {
@@ -224,12 +246,11 @@ impl RunStore for RedisRunStore {
             Ok(Some(Arc::new(core.with_history(history)?)))
         })
     }
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .min(u64::MAX as u128) as u64
+    fn delete(&self, run_id: &str) -> BoxFuture<'_, Result<()>> {
+        let keys = self.keys(run_id);
+        Box::pin(async move {
+            let mut conn = self.connection().await?;
+            conn.del::<_, ()>(&keys).await.map_err(|e| self.failed(e))
+        })
+    }
 }

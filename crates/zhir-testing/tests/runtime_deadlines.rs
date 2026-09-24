@@ -39,6 +39,9 @@ impl RunStore for HangingStore {
     fn load_head(&self, _: &str) -> BoxFuture<'_, Result<Option<Arc<Checkpoint>>>> {
         Box::pin(async { Ok(None) })
     }
+    fn delete(&self, _: &str) -> BoxFuture<'_, Result<()>> {
+        Box::pin(std::future::pending())
+    }
 }
 #[tokio::test]
 async fn execution_deadline_covers_catalog_and_model_session_establishment() {

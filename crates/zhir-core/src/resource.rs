@@ -80,6 +80,9 @@ pub trait ResourceStore: Send + Sync {
         media_type: String,
     ) -> BoxFuture<'_, Result<Box<dyn ResourceWriter>>>;
     fn open(&self, reference: ResourceRef) -> BoxFuture<'_, Result<Box<dyn ResourceReader>>>;
+    /// Removes a stored resource. Deleting an unknown resource succeeds; the host decides
+    /// which resources are no longer reachable.
+    fn delete(&self, reference: ResourceRef) -> BoxFuture<'_, Result<()>>;
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

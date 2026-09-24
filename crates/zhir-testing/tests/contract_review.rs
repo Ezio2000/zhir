@@ -507,7 +507,7 @@ async fn local_projection_binding_survives_checkpoint_recovery_and_reordering() 
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let idle = store.commits().last().is_some_and(|commit| {
-                let c = &commit.checkpoint;
+                let c = &commit.checkpoint();
                 c.active.session.response_status == Some(ResponseStatus::Completed)
                     && c.active.commands.is_empty()
             });
@@ -556,8 +556,8 @@ async fn local_projection_binding_survives_checkpoint_recovery_and_reordering() 
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             if store.commits().last().is_some_and(|commit| {
-                commit.checkpoint.metrics.observed_responses == Some(2)
-                    && commit.checkpoint.active.commands.is_empty()
+                commit.checkpoint().metrics.observed_responses == Some(2)
+                    && commit.checkpoint().active.commands.is_empty()
             }) {
                 break;
             }
@@ -587,7 +587,7 @@ async fn local_projection_binding_survives_checkpoint_recovery_and_reordering() 
     .unwrap();
     let mut resumed = open();
     resumed.binding = Some(binding.clone());
-    resumed.request.messages = conversation(completed.history.entries());
+    resumed.request.messages = conversation(completed.history.iter());
     let before_b = b.opens.load(Ordering::SeqCst);
     let mut session = reordered.open_session(resumed.clone()).await.unwrap();
     assert_eq!(session.control.binding(), Some(binding));

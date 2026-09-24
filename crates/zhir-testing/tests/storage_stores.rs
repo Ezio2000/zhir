@@ -21,7 +21,7 @@ fn append(previous: &Commit, text: &str) -> Commit {
         origin: None,
         message: Message::external(text),
     }];
-    let mut next = previous.checkpoint.as_ref().clone();
+    let mut next = previous.checkpoint().as_ref().clone();
     next.parent_id = Some(next.id.clone());
     next.id = uuid::Uuid::new_v4().to_string();
     next.revision += 1;
@@ -31,42 +31,52 @@ fn append(previous: &Commit, text: &str) -> Commit {
     };
     Commit::new(Arc::new(next), HistoryDelta::Append(messages))
 }
-async fn exercise(store: Arc<dyn RunStore>) {
+/// The same write with a changed checkpoint.
+fn altered(commit: &Commit, change: impl FnOnce(&mut zhir_core::run::Checkpoint)) -> Commit {
+    let mut checkpoint = commit.checkpoint().as_ref().clone();
+    change(&mut checkpoint);
+    Commit::new(Arc::new(checkpoint), commit.history().clone())
+}
+/// Returns the exercised run, whose history was rewritten once.
+async fn exercise(store: Arc<dyn RunStore>) -> String {
     let first = initial();
-    let run = &first.checkpoint.context.run_id;
+    let run = &first.checkpoint().context.run_id.clone();
     assert!(store.load_head(run).await.unwrap().is_none());
     store.commit(first.clone()).await.unwrap();
     store.commit(first.clone()).await.unwrap();
-    let mut changed = append(&first, "changed options");
-    Arc::make_mut(&mut changed.checkpoint).options.stream = false;
+    let changed = altered(&append(&first, "changed options"), |c| {
+        c.options.stream = false
+    });
     assert!(
         matches!(store.commit(changed).await, Err(zhir_core::error::Error::Storage(e)) if e.contains("options changed"))
     );
     assert_eq!(
         store.load_head(run).await.unwrap().unwrap().id,
-        first.checkpoint.id
+        first.checkpoint().id
     );
     for fault in ["parent", "delta", "empty_append", "initial_again"] {
-        let mut invalid = append(&first, "invalid");
-        match fault {
-            "parent" => Arc::make_mut(&mut invalid.checkpoint).parent_id = Some("wrong".into()),
-            "delta" => {
-                invalid.history = HistoryDelta::Append(vec![HistoryEntry {
+        let valid = append(&first, "invalid");
+        let invalid = match fault {
+            "parent" => altered(&valid, |c| c.parent_id = Some("wrong".into())),
+            "delta" => Commit::new(
+                valid.checkpoint().clone(),
+                HistoryDelta::Append(vec![HistoryEntry {
                     id: "different".into(),
                     origin: None,
                     message: Message::external("different"),
-                }])
-            }
-            "empty_append" => invalid.history = HistoryDelta::Append(vec![]),
-            "initial_again" => {
-                invalid.history = HistoryDelta::Initial(invalid.checkpoint.history.entries())
-            }
+                }]),
+            ),
+            "empty_append" => Commit::new(valid.checkpoint().clone(), HistoryDelta::Append(vec![])),
+            "initial_again" => Commit::new(
+                valid.checkpoint().clone(),
+                HistoryDelta::Initial(valid.checkpoint().history.entries()),
+            ),
             _ => unreachable!(),
-        }
+        };
         assert!(store.commit(invalid).await.is_err(), "accepted {fault}");
         assert_eq!(
             store.load_head(run).await.unwrap().unwrap().id,
-            first.checkpoint.id
+            first.checkpoint().id
         );
     }
     let second = append(&first, "second");
@@ -74,19 +84,18 @@ async fn exercise(store: Arc<dyn RunStore>) {
     store.commit(first.clone()).await.unwrap();
     let conflict = append(&first, "stale");
     assert!(store.commit(conflict).await.is_err());
-    let mut reused = second.clone();
-    let mut altered = reused.checkpoint.as_ref().clone();
-    altered.state = State::Failed {
-        error: zhir_core::error::Failure::new("changed", "changed"),
-    };
-    reused.checkpoint = Arc::new(altered);
+    let reused = altered(&second, |c| {
+        c.state = State::Failed {
+            error: zhir_core::error::Failure::new("changed", "changed"),
+        }
+    });
     assert!(store.commit(reused).await.is_err());
     let recovered = store.load_head(run).await.unwrap().unwrap();
-    assert_eq!(recovered.id, second.checkpoint.id);
-    assert_eq!(recovered.options, first.checkpoint.options);
+    assert_eq!(recovered.id, second.checkpoint().id);
+    assert_eq!(recovered.options, first.checkpoint().options);
     assert_eq!(
         recovered.history.messages(),
-        second.checkpoint.history.messages()
+        second.checkpoint().history.messages()
     );
     let json = wire::encode_checkpoint(&recovered).unwrap();
     assert_eq!(
@@ -122,6 +131,20 @@ async fn exercise(store: Arc<dyn RunStore>) {
     assert!(store.commit(expired).await.is_err());
     assert_eq!(store.load_head(run).await.unwrap().unwrap().revision, 3);
     pending_recovery(store).await;
+    run.clone()
+}
+/// Deleting a run removes it entirely; deleting it again succeeds.
+async fn delete(store: &dyn RunStore, run: &str) {
+    assert!(store.load_head(run).await.unwrap().is_some());
+    store.delete(run).await.unwrap();
+    assert!(store.load_head(run).await.unwrap().is_none());
+    store.delete(run).await.unwrap();
+    let fresh = initial();
+    store.commit(fresh.clone()).await.unwrap();
+    store
+        .delete(&fresh.checkpoint().context.run_id)
+        .await
+        .unwrap();
 }
 async fn pending_recovery(store: Arc<dyn RunStore>) {
     use zhir_core::{
@@ -236,7 +259,9 @@ async fn pending_recovery(store: Arc<dyn RunStore>) {
 }
 #[tokio::test]
 async fn memory() {
-    exercise(Arc::new(zhir_storage::MemoryRunStore::new())).await;
+    let store = Arc::new(zhir_storage::MemoryRunStore::new());
+    let run = exercise(store.clone()).await;
+    delete(store.as_ref(), &run).await;
 }
 #[cfg(feature = "sqlite")]
 #[tokio::test]
@@ -249,7 +274,33 @@ async fn sqlite() {
     let store = zhir_storage::sqlite::SqliteRunStore::connect(&url)
         .await
         .unwrap();
-    exercise(Arc::new(store.clone())).await;
+    let run = exercise(Arc::new(store.clone())).await;
+    let pool = sqlx::SqlitePool::connect(&url).await.unwrap();
+    let rows = |table: &'static str| {
+        let pool = pool.clone();
+        let run = run.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(&format!("SELECT COUNT(*) FROM {table} WHERE run_id=?"))
+                .bind(run)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    // The rewrite removed the rows of the earlier generation.
+    let generations: Vec<i64> =
+        sqlx::query_scalar("SELECT DISTINCT generation FROM zhir_history WHERE run_id=?")
+            .bind(&run)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(generations.len(), 1);
+    assert_eq!(rows("zhir_history").await, 2);
+    delete(&store, &run).await;
+    for table in ["zhir_history", "zhir_commits", "zhir_run_heads"] {
+        assert_eq!(rows(table).await, 0, "{table}");
+    }
+    pool.close().await;
     store.close().await;
 }
 #[cfg(feature = "mysql")]
@@ -260,7 +311,8 @@ async fn mysql() {
     let store = zhir_storage::mysql::MysqlRunStore::connect(&url)
         .await
         .unwrap();
-    exercise(Arc::new(store.clone())).await;
+    let run = exercise(Arc::new(store.clone())).await;
+    delete(&store, &run).await;
     store.close().await;
 }
 #[cfg(feature = "redis")]
@@ -268,15 +320,28 @@ async fn mysql() {
 #[ignore = "requires ZHIR_TEST_REDIS_URL"]
 async fn redis() {
     let url = std::env::var("ZHIR_TEST_REDIS_URL").expect("ZHIR_TEST_REDIS_URL");
-    exercise(Arc::new(
-        zhir_storage::redis::RedisRunStore::connect(
-            &url,
-            &format!("zhir-test-{}", uuid::Uuid::new_v4()),
-        )
+    let namespace = format!("zhir-test-{}", uuid::Uuid::new_v4());
+    let store = zhir_storage::redis::RedisRunStore::connect(&url, &namespace)
         .await
-        .unwrap(),
-    ))
-    .await;
+        .unwrap();
+    let run = exercise(Arc::new(store.clone())).await;
+    let tag: String = run.bytes().map(|b| format!("{b:02x}")).collect();
+    let history = format!("{namespace}:{{{tag}}}:history");
+    let mut conn = redis::Client::open(url.as_str())
+        .unwrap()
+        .get_multiplexed_async_connection()
+        .await
+        .unwrap();
+    // The rewrite removed the fields of the earlier generation.
+    let fields: usize = redis::AsyncCommands::hlen(&mut conn, &history)
+        .await
+        .unwrap();
+    assert_eq!(fields, 2);
+    delete(&store, &run).await;
+    let exists: bool = redis::AsyncCommands::exists(&mut conn, &history)
+        .await
+        .unwrap();
+    assert!(!exists);
 }
 
 #[tokio::test]
@@ -313,4 +378,168 @@ async fn sqlite_refuses_unversioned_and_other_version_layouts() {
                 .is_err()
         );
     }
+}
+#[tokio::test]
+async fn reachable_lists_the_stored_resources_a_checkpoint_references() {
+    use zhir_core::{
+        message::{Content, Output},
+        resource::{ArchivedMedia, ResourceRef, ResourceSource, ResourceStore, SealedMedia},
+        run::StreamCursor,
+    };
+    use zhir_storage::MemoryResourceStore;
+    async fn put(
+        store: &MemoryResourceStore,
+        key: &str,
+        media_type: &str,
+        bytes: Vec<u8>,
+    ) -> ResourceRef {
+        let mut writer = store.create(key.into(), media_type.into()).await.unwrap();
+        writer.append(0, bytes).await.unwrap();
+        writer.finish().await.unwrap()
+    }
+    async fn sealed(
+        store: &MemoryResourceStore,
+        key: &str,
+        previous: Option<ResourceRef>,
+    ) -> ResourceRef {
+        let resource = put(store, &format!("{key}-data"), "audio/pcm", vec![0; 4]).await;
+        let node = SealedMedia {
+            stream_id: key.into(),
+            session_id: "session".into(),
+            epoch: 0,
+            sequence: 0,
+            timestamp_us: 0,
+            end: false,
+            resource,
+            previous,
+        };
+        put(
+            store,
+            key,
+            "application/vnd.zhir.sealed-media+json",
+            serde_json::to_vec(&node).unwrap(),
+        )
+        .await
+    }
+    let store = MemoryResourceStore::new();
+    let user = put(&store, "user", "image/png", b"user".to_vec()).await;
+    let output = put(&store, "output", "text/plain", b"output".to_vec()).await;
+    let delegated = put(&store, "delegated", "text/plain", b"delegated".to_vec()).await;
+    let completed = put(&store, "completed", "text/plain", b"completed".to_vec()).await;
+    put(
+        &store,
+        "unreferenced",
+        "text/plain",
+        b"unreferenced".to_vec(),
+    )
+    .await;
+    let inline = ResourceRef {
+        id: "inline".into(),
+        media_type: "text/plain".into(),
+        name: None,
+        source: ResourceSource::Inline {
+            bytes: b"inline".to_vec(),
+        },
+        metadata: Default::default(),
+    };
+    let active = sealed(&store, "active-0", None).await;
+    let active = sealed(&store, "active-1", Some(active)).await;
+    let mut archive = None;
+    for index in 0..2 {
+        let node = ArchivedMedia {
+            stream_key: format!("archived-{index}"),
+            sealed: sealed(&store, &format!("archived-{index}"), None).await,
+            complete: true,
+            previous: archive,
+        };
+        archive = Some(
+            put(
+                &store,
+                &format!("archive-{index}"),
+                "application/vnd.zhir.archived-media+json",
+                serde_json::to_vec(&node).unwrap(),
+            )
+            .await,
+        );
+    }
+    let mut checkpoint = zhir_testing::checkpoint(vec![
+        Message::User {
+            content: vec![Content::resource(user.clone()), Content::resource(inline)],
+        },
+        Message::Assistant {
+            output: vec![Output::Content {
+                content: Content::resource(output),
+            }],
+            provider_data: serde_json::Value::Null,
+        },
+        Message::DelegationResult {
+            id: "delegation".into(),
+            outcome: OperationOutcome::Success {
+                content: vec![Content::resource(delegated), Content::resource(user)],
+                structured: serde_json::Value::Null,
+            },
+        },
+    ]);
+    checkpoint.state = State::Completed {
+        content: vec![Content::resource(completed)],
+    };
+    checkpoint.active.media.insert(
+        "active".into(),
+        StreamCursor {
+            sequence: 1,
+            epoch: 0,
+            sealed: active,
+        },
+    );
+    checkpoint.active.session.media_archive = archive;
+    let keys = |resources: Vec<ResourceRef>| {
+        let mut keys: Vec<_> = resources
+            .into_iter()
+            .map(|r| match r.source {
+                ResourceSource::Stored { key } => key,
+                _ => unreachable!(),
+            })
+            .collect();
+        keys.sort();
+        keys
+    };
+    let found = zhir_storage::resources::reachable(&checkpoint, &store)
+        .await
+        .unwrap();
+    assert_eq!(
+        keys(found),
+        [
+            "active-0",
+            "active-0-data",
+            "active-1",
+            "active-1-data",
+            "archive-0",
+            "archive-1",
+            "archived-0",
+            "archived-0-data",
+            "archived-1",
+            "archived-1-data",
+            "completed",
+            "delegated",
+            "output",
+            "user",
+        ]
+    );
+    // A missing media node cannot be walked past, so the listing fails instead of
+    // omitting the resources behind it.
+    let missing = ResourceRef {
+        id: "active-0".into(),
+        media_type: "application/vnd.zhir.sealed-media+json".into(),
+        name: None,
+        source: ResourceSource::Stored {
+            key: "active-0".into(),
+        },
+        metadata: Default::default(),
+    };
+    store.delete(missing).await.unwrap();
+    assert!(
+        zhir_storage::resources::reachable(&checkpoint, &store)
+            .await
+            .is_err()
+    );
 }

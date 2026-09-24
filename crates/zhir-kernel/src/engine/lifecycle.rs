@@ -61,6 +61,9 @@ impl Engine {
     }
 
     async fn receive_work(&mut self) -> Result<()> {
+        if let Some(work) = self.stash().take() {
+            return self.handle(work).await;
+        }
         tokio::select! { biased;
             Some(control) = self.controls.recv(), if !self.controls.is_closed() || !self.controls.is_empty() => {
                 self.control(control).await?;
@@ -147,7 +150,7 @@ impl Engine {
         if self.media_pending || self.input_sending {
             return Ok(false);
         }
-        let content = conversation(self.current.history.entries().into_iter().skip(
+        let content = conversation(self.current.history.iter().skip(
             if self.current.options.mode == RunMode::Interactive {
                 self.current.active.session.run_start
             } else {
@@ -257,6 +260,7 @@ pub(crate) async fn execute(
         media_output,
         work_tx,
         work,
+        stashed: Default::default(),
         tasks: JoinSet::new(),
         session_control: None,
         model_media_input: None,

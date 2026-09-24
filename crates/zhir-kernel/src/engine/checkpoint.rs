@@ -85,7 +85,7 @@ pub(super) async fn persist(
     let timeout = Duration::from_millis(next.options.limits.commit_timeout_ms);
     let mut commit = Commit::new(Arc::new(next), history);
     commit.deadline = Some(std::time::Instant::now() + timeout);
-    let checkpoint = commit.checkpoint.clone();
+    let checkpoint = commit.checkpoint().clone();
     tokio::time::timeout(timeout, store.commit(commit))
         .await
         .map_err(|_| {

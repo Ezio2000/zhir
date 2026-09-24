@@ -5,13 +5,17 @@ use crate::{
     run::{Checkpoint, append_history_digest},
     wire::CheckpointCore,
 };
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
+/// One checkpoint write. The durable core and its digest are derived once and shared by
+/// validation and every store.
 #[derive(Debug, Clone)]
 pub struct Commit {
-    pub checkpoint: Arc<Checkpoint>,
-    pub history: HistoryDelta,
+    checkpoint: Arc<Checkpoint>,
+    history: HistoryDelta,
     pub deadline: Option<std::time::Instant>,
+    core: OnceLock<CheckpointCore>,
+    digest: OnceLock<String>,
 }
 impl Commit {
     pub fn new(checkpoint: Arc<Checkpoint>, history: HistoryDelta) -> Self {
@@ -19,7 +23,18 @@ impl Commit {
             checkpoint,
             history,
             deadline: None,
+            core: OnceLock::new(),
+            digest: OnceLock::new(),
         }
+    }
+    pub fn checkpoint(&self) -> &Arc<Checkpoint> {
+        &self.checkpoint
+    }
+    pub fn history(&self) -> &HistoryDelta {
+        &self.history
+    }
+    pub fn into_checkpoint(self) -> Arc<Checkpoint> {
+        self.checkpoint
     }
     pub fn check_deadline(&self, now: std::time::Instant) -> Result<()> {
         if self.deadline.is_some_and(|d| now >= d) {
@@ -31,11 +46,16 @@ impl Commit {
     pub fn expected_revision(&self) -> Option<u64> {
         self.checkpoint.revision.checked_sub(1)
     }
-    pub fn core(&self) -> CheckpointCore {
-        CheckpointCore::from(self.checkpoint.as_ref())
+    pub fn core(&self) -> &CheckpointCore {
+        self.core
+            .get_or_init(|| CheckpointCore::from(self.checkpoint.as_ref()))
     }
     pub fn digest(&self) -> Result<String> {
-        self.core().digest()
+        if let Some(digest) = self.digest.get() {
+            return Ok(digest.clone());
+        }
+        let digest = self.core().digest()?;
+        Ok(self.digest.get_or_init(|| digest).clone())
     }
     pub fn validate_against(&self, previous: Option<&CheckpointCore>) -> Result<()> {
         let next = self.core();

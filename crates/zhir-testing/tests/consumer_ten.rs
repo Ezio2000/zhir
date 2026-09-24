@@ -712,6 +712,18 @@ async fn check_resources(store: Arc<dyn ResourceStore>) -> ResourceRef {
             .await
             .is_err()
     );
+    let mut writer = store
+        .create("consumer/deleted".into(), "text/plain".into())
+        .await
+        .unwrap();
+    writer.append(0, b"gone".to_vec()).await.unwrap();
+    let deleted = writer.finish().await.unwrap();
+    store.delete(deleted.clone()).await.unwrap();
+    assert!(matches!(
+        store.open(deleted.clone()).await,
+        Err(Error::Resource(ResourceError::NotFound { .. }))
+    ));
+    store.delete(deleted).await.unwrap();
     refs[0].clone()
 }
 #[tokio::test]
@@ -811,7 +823,7 @@ async fn filesystem_resource_model_commits_references_and_rehydrates_history() {
     let checkpoint =
         zhir::wire::decode_checkpoint(&zhir::wire::encode_checkpoint(run.checkpoint()).unwrap())
             .unwrap();
-    let mut messages = zhir::model::conversation(checkpoint.history.entries());
+    let mut messages = zhir::model::conversation(checkpoint.history.iter());
     messages.push(Message::user("read"));
     let inner = FunctionModel::new(capabilities, move |request, _| {
         let inline = inline.clone();

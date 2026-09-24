@@ -9,7 +9,11 @@ Wire and run-storage formats are v5. Use fresh SQL databases and Redis namespace
 unversioned/other-format layouts are rejected without translation. Redis connect
 requires an explicit namespace. FilesystemResourceStore publishes immutable chunk
 resources with atomic finish, explicit same-key conflicts and reconstruction reads.
-Resource retention/collection is host-owned. Integration acceptance lives in
-crates/zhir-testing/tests/storage_stores.rs.
+History rewrites drop the previous generation in the same write. `RunStore::delete`
+and `ResourceStore::delete` remove a run or resource; `resources::reachable` lists the
+stored resources a checkpoint references. Retention/collection policy is host-owned.
+SQLite uses one WAL writer connection; `MysqlRunStore::connect_with` sets the pool size
+(default 8); Redis reuses one multiplexed connection and reconnects after errors.
+Integration acceptance lives in crates/zhir-testing/tests/storage_stores.rs.
 
 Part of the zhir workspace, version 0.4.0.

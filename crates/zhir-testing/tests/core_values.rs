@@ -78,6 +78,26 @@ fn history_snapshots_remain_immutable_and_large_drops_do_not_recurse() {
     assert_eq!(&history.last().unwrap().message, &Message::external("next"));
 }
 #[test]
+fn appended_histories_share_existing_entries() {
+    let before = History::new(vec![Message::user("begin"), Message::user("again")]).unwrap();
+    let after = before
+        .append(vec![entry("added", Message::external("next"))])
+        .unwrap();
+    for index in 0..before.len() {
+        assert!(std::ptr::eq(
+            before.get(index).unwrap(),
+            after.get(index).unwrap()
+        ));
+    }
+    assert_eq!(
+        after
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<_>>(),
+        ["input:0", "input:1", "added"]
+    );
+}
+#[test]
 fn wire_rejects_version_drift_unknown_fields_and_corrupt_history() {
     let checkpoint = zhir_testing::checkpoint(vec![Message::user("hello")]);
     let bytes = wire::encode_checkpoint(&checkpoint).unwrap();
@@ -226,9 +246,12 @@ fn commit_consistency_is_pure_and_deadline_checks_use_explicit_time() {
         commit.check_deadline(at + Duration::from_millis(1)),
         Err(Error::Deadline)
     ));
-    commit.history = HistoryDelta::Initial(vec![entry("wrong", Message::user("wrong"))]);
+    let wrong = Commit::new(
+        commit.checkpoint().clone(),
+        HistoryDelta::Initial(vec![entry("wrong", Message::user("wrong"))]),
+    );
     assert!(matches!(
-        commit.validate_against(None),
+        wrong.validate_against(None),
         Err(Error::Storage(_))
     ));
 }

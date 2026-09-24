@@ -26,13 +26,13 @@ cargo run -p zhir-conformance --bin schemas --locked -- --check
 | 测试入口（均位于测试模块） | 验收重点 |
 | --- | --- |
 | `conformance/tests/dependencies.rs` | 生产依赖图、feature 边界、验收代码位置 |
-| `core_values`、`core_boundaries` | 值、history、wire、运行参数、目录与绑定 |
+| `core_values`、`core_boundaries` | 值、history（追加后共享已有条目）、wire、运行参数、目录与绑定 |
 | `session_runtime` | 原生会话早发工具、provider 任务、等待恢复、媒体封存 |
 | `session_recovery` | 未确认 outbox 不重发、竞争恢复 CAS、跨轮 provider 完成、重复/冲突完成、双向流、中断及 SealUserInput；本地投影在建立中或 Generate 发出前崩溃后可续跑，已发出的生成需 AbandonGeneration，处置不符即失败，连接被拒以 `http_connect` 失败 |
 | `runtime_deadlines` | catalog/model 建立阶段截止时间、未确认 commit 超时；虚拟时钟下空闲运行零轮询、取消无需推进时间即结算、截止时间由定时器触发 |
-| `runtime_operations` | 工具按发出顺序准入、串行屏障与并行分组、审批期间不再准入、start 错误结算、取消运行中工具、OperationChanged 完整序列、恢复后工具从序号 0 重放与同序号冲突 |
+| `runtime_operations` | 工具按发出顺序准入、纯文本一轮与一次工具调用一轮的提交次数上限、串行屏障与并行分组、审批期间不再准入、start 错误结算、取消运行中工具、OperationChanged 完整序列、恢复后工具从序号 0 重放与同序号冲突 |
 | `refactoring` | provider operation 结算后的跨轮 replay 与 wire 往返、4096 项历史合并顺序、虚拟时钟下有界并发取消及统一退出预算 |
-| `minimax_tts`（feature `minimax`） | 生产 WebSocket TTS：分句封存、中断、尾音、背压、凭据刷新与连接生命周期；ignored 测试访问真实服务 |
+| `minimax_tts`（feature `minimax`） | 生产 WebSocket TTS：分句封存、中断、尾音、背压、凭据刷新与连接生命周期、运行写入的全部资源都能从最终 checkpoint 到达；ignored 测试访问真实服务 |
 | `webrtc_driver`（feature `webrtc`） | 生产骨架配确定性传输与非 Live 适配器：无 Peer 命令、主动建连、排水期间确认与期限、发送顺序、媒体预算与关闭边界 |
 | `models_*` | 请求与流协议、Unicode/分片、回放、装饰器、资源预算、会话资源输入；HTTP 429 + Retry-After 重试、400 不重试、5xx 耗尽、响应体开始后不重试、连接被拒、截止时间约束与共享请求限流 |
 | `contract_review` | 检查点 schema、最新输入完成条件、恢复绑定、小栈历史结算，以及 exchange 回调即时发出 delta 时的确认/开始顺序和有界队列取消 |
@@ -41,9 +41,9 @@ cargo run -p zhir-conformance --bin schemas --locked -- --check
 | `tools_*`、`policies_*` | 工具 Schema、Active 最终校验、重试/熔断与历史策略 |
 | `builtins_*` | 文件、Shell（逃逸子进程的输出宽限）、交互、输入错误码、子任务并发/限流/恢复/脱离/持久化取消 |
 | `provider_integration` | 自定义 provider 执行归属、媒体绑定、原生回放与并发隔离 |
-| `developer_api`、`consumer_six`、`consumer_ten`、`convenience` | 消费者组合、票据、参数隔离、选择、强类型上下文与输出 |
+| `developer_api`、`consumer_six`、`consumer_ten`、`convenience` | 消费者组合、票据、参数隔离、选择、强类型上下文与输出、资源删除 |
 | `scenario_scale`、`http_fixture` | 本地并发 HTTP/SSE、密集事件、RPC 工作流及传输故障 |
-| `storage_stores` | 四种存储共享的原子提交、冲突、截止时间、历史与 96 个等待操作恢复 |
+| `storage_stores` | 四种存储共享的原子提交、冲突、截止时间、历史与 96 个等待操作恢复；重写后只留当前一代历史、删除运行后无残留、`reachable` 覆盖历史/完成内容/活动游标/归档链并在节点缺失时失败 |
 
 ## 独立 feature、示例与发布包
 
@@ -87,7 +87,7 @@ cargo bench -p zhir-testing --bench trace
 cargo test -p zhir-testing --all-features --release --test models_streaming stream_append_scale -- --ignored --nocapture
 ```
 
-这些入口观察 history 增长、trace 校验与流式组装成本，打印规模/耗时，不用脆弱的耗时
+这些入口观察 history 增长（条数与单条大小两个维度）、trace 校验与流式组装成本，打印规模/耗时，不用脆弱的耗时
 阈值作为普通回归断言。基准数据不是吞吐量或延迟保证。
 
 ## 真实存储集成
@@ -102,7 +102,8 @@ cargo test -p zhir-testing --all-features --test storage_stores -- --ignored
 ```
 
 CI 使用 MySQL 8.4 与 Redis 7。测试生成独立 run ID 和 Redis namespace，校验历史
-追加/替换、幂等写、错误 parent/delta/options、过期写、读取重建与原生 operation 恢复。
+追加/替换、替换后旧一代清除、幂等写、错误 parent/delta/options、过期写、读取重建、
+删除运行与原生 operation 恢复。
 SQL 数据库必须是当前格式或空库，Redis namespace 必须是当前格式或空 namespace。
 这不等于数据库故障切换、网络分区、跨区域复制或长期运行压测。
 

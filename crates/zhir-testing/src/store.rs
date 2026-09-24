@@ -33,10 +33,10 @@ impl RecordingStore {
         }
         for commit in commits {
             let revisions = runs
-                .entry(commit.checkpoint.context.run_id.clone())
+                .entry(commit.checkpoint().context.run_id.clone())
                 .or_default();
-            if let Some(previous) = revisions.get(&commit.checkpoint.revision) {
-                if previous.checkpoint.id != commit.checkpoint.id
+            if let Some(previous) = revisions.get(&commit.checkpoint().revision) {
+                if previous.checkpoint().id != commit.checkpoint().id
                     || previous.digest()? != commit.digest()?
                 {
                     return Err(Error::Protocol(
@@ -44,12 +44,15 @@ impl RecordingStore {
                     ));
                 }
             } else {
-                revisions.insert(commit.checkpoint.revision, commit);
+                revisions.insert(commit.checkpoint().revision, commit);
             }
         }
         let mut count = 0;
         for revisions in runs.into_values() {
-            let checkpoints: Vec<_> = revisions.into_values().map(|c| c.checkpoint).collect();
+            let checkpoints: Vec<_> = revisions
+                .into_values()
+                .map(Commit::into_checkpoint)
+                .collect();
             crate::verify_trace(&checkpoints)?;
             count += checkpoints.len();
         }
@@ -69,6 +72,9 @@ impl RunStore for RecordingStore {
     }
     fn load_head(&self, run_id: &str) -> BoxFuture<'_, Result<Option<Arc<Checkpoint>>>> {
         self.inner.load_head(run_id)
+    }
+    fn delete(&self, run_id: &str) -> BoxFuture<'_, Result<()>> {
+        self.inner.delete(run_id)
     }
 }
 
@@ -100,7 +106,7 @@ impl RunStore for CrashingStore {
             if self.crashed() {
                 return Err(Error::Storage("process stopped".into()));
             }
-            let crash = (self.crash)(&commit.checkpoint);
+            let crash = (self.crash)(commit.checkpoint());
             self.inner.commit(commit).await?;
             self.crashed
                 .store(crash, std::sync::atomic::Ordering::SeqCst);
@@ -109,5 +115,8 @@ impl RunStore for CrashingStore {
     }
     fn load_head(&self, run_id: &str) -> BoxFuture<'_, Result<Option<Arc<Checkpoint>>>> {
         self.inner.load_head(run_id)
+    }
+    fn delete(&self, run_id: &str) -> BoxFuture<'_, Result<()>> {
+        self.inner.delete(run_id)
     }
 }

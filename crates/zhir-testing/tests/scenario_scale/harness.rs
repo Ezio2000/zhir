@@ -225,7 +225,7 @@ struct ObservedStore {
 impl RunStore for ObservedStore {
     fn commit(&self, commit: Commit) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
-            let checkpoint = commit.checkpoint.clone();
+            let checkpoint = commit.checkpoint().clone();
             self.inner.commit(commit).await?;
             self.commits.lock().unwrap().push(checkpoint);
             Ok(())
@@ -234,6 +234,9 @@ impl RunStore for ObservedStore {
     fn load_head(&self, id: &str) -> BoxFuture<'_, Result<Option<Arc<Checkpoint>>>> {
         let id = id.to_owned();
         Box::pin(async move { self.inner.load_head(&id).await })
+    }
+    fn delete(&self, id: &str) -> BoxFuture<'_, Result<()>> {
+        self.inner.delete(id)
     }
 }
 pub struct StoreFixture {

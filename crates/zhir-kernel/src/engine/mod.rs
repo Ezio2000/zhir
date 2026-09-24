@@ -66,6 +66,9 @@ struct Engine {
     media_output: MediaInput,
     work_tx: mpsc::Sender<Work>,
     work: mpsc::Receiver<Work>,
+    /// Work taken from the queue while batching session events, handled next. Only
+    /// accessed through `get_mut`; the mutex keeps the engine `Sync`.
+    stashed: std::sync::Mutex<Option<Work>>,
     tasks: JoinSet<()>,
     session_control: Option<Arc<dyn SessionControl>>,
     model_media_input: Option<Arc<dyn MediaSender>>,

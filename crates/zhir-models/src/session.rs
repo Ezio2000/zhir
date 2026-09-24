@@ -313,7 +313,7 @@ impl SessionTask {
                 self.request.messages = self.seed.clone();
                 self.request
                     .messages
-                    .extend(conversation(self.history.entries()));
+                    .extend(conversation(self.history.iter()));
                 (self.negotiate)(&self.request)?;
                 let mut context = self.context.clone();
                 context.deltas = Some(Arc::new(Deltas {
@@ -370,7 +370,7 @@ impl SessionTask {
                         "context replacement crosses a generation or revision".into(),
                     ));
                 }
-                self.seed = conversation(History::from_entries(entries)?.entries());
+                self.seed = conversation(History::from_entries(entries)?.iter());
                 self.history = History::from_entries(vec![])?;
                 self.context_revision = context_revision;
                 Ok(vec![acknowledge])
