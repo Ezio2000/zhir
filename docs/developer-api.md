@@ -219,8 +219,10 @@ LocalProjection 会话（HttpModel、FunctionModel）从已提交历史重建投
 未发送的 Generate 与 Append 等本地命令在恢复后照常派发，只有 Generate 持久化 sent 边界。
 已发送或已开始、但响应未结束的生成可能已到达服务，恢复时以 RecoveryRequired 挂起。
 宿主核对后可用 `AbandonGeneration` 放弃它：内核移除该 Generate，把响应记为
-Incomplete 并重新生成；已提交的输出保留在历史中。处置要求持久化能力包含
-LocalProjection 且 `generation_id` 与进行中的生成一致，否则运行以 Failed 结束。
+Continuation 并重新调用模型；已提交的输出保留在历史中，之前各代仍在运行的 provider 操作
+随新调用继续。处置要求持久化能力包含 LocalProjection 且 `generation_id` 与进行中的生成一致；
+被放弃这一代自己发起、尚未结束的 provider 操作须先用 `Complete` 或 `Abandon` 结算，
+否则运行以 Failed 结束。
 
 ```rust
 let generation_id = checkpoint.active.session.generation_id.clone().unwrap();

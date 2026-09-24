@@ -29,7 +29,7 @@ cargo run -p zhir-conformance --bin schemas --locked -- --check
 | `core_values`、`core_boundaries` | 值、history（追加后共享已有条目）、wire、运行参数、目录与绑定 |
 | `session_runtime` | 原生会话早发工具、provider 任务、等待恢复、媒体封存 |
 | `session_semantics` | 委派与会话语义、流归档；2000 条流不重扫归档链、慢存储下排队包合并为一段且提交少于包数、宿主媒体输入在包数上限处阻塞 |
-| `session_recovery` | 未确认 outbox 不重发、竞争恢复 CAS、跨轮 provider 完成、重复/冲突完成、双向流、中断及 SealUserInput；本地投影在建立中或 Generate 发出前崩溃后可续跑，已发出的生成需 AbandonGeneration，处置不符即失败，连接被拒以 `http_connect` 失败 |
+| `session_recovery` | 未确认 outbox 不重发、竞争恢复 CAS、跨轮 provider 完成、重复/冲突完成、双向流、中断及 SealUserInput；本地投影在建立中或 Generate 发出前崩溃后可续跑，已发出的生成需 AbandonGeneration，处置不符即失败，被放弃这一代的 provider 操作须先结算、之前各代的 provider 操作随重新生成继续，批内 profile 协商覆盖尚未提交的输出，连接被拒以 `http_connect` 失败 |
 | `runtime_deadlines` | catalog/model 建立阶段截止时间、未确认 commit 超时；虚拟时钟下空闲运行零轮询、取消无需推进时间即结算、截止时间由定时器触发 |
 | `runtime_operations` | 工具按发出顺序准入、纯文本一轮与一次工具调用一轮的提交次数上限、串行屏障与并行分组、审批期间不再准入、start 错误结算、取消运行中工具、OperationChanged 完整序列、恢复后工具从序号 0 重放与同序号冲突 |
 | `refactoring` | provider operation 结算后的跨轮 replay 与 wire 往返、4096 项历史合并顺序、虚拟时钟下有界并发取消及统一退出预算 |

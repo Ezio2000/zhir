@@ -61,11 +61,24 @@ impl Engine {
                         "generation resolution has no matching unfinished generation".into(),
                     ));
                 }
+                // The service can never continue a lost response's own provider jobs;
+                // the host settles them with Complete or Abandon first.
+                if self.current.active.operations.values().any(|op| {
+                    !op.state.terminal()
+                        && matches!(op.owner, OperationOwner::Provider { .. })
+                        && op.origin.generation_id.as_ref() == Some(&generation_id)
+                }) {
+                    return Err(Error::Invalid(
+                        "settle the abandoned generation's provider operations first".into(),
+                    ));
+                }
                 let mut next = self.current.as_ref().clone();
                 next.active.commands.retain(|command| {
                     !matches!(&command.intent, CommandIntent::Generate { generation_id: id, .. } if *id == generation_id)
                 });
-                next.active.session.response_status = Some(ResponseStatus::Incomplete);
+                // The model is called again; provider jobs of earlier generations continue
+                // through that call as they would after any continuation response.
+                next.active.session.response_status = Some(ResponseStatus::Continuation);
                 next.active.session.needs_generation = true;
                 self.commit(
                     next,

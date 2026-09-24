@@ -62,7 +62,7 @@ pub fn verify_trace(checkpoints: &[Arc<Checkpoint>]) -> Result<()> {
             Fact::GenerationAbandoned { generation_id, .. }
                 if (after.active.session.generation_id.as_ref() != Some(generation_id)
                     || after.active.session.response_status
-                        != Some(zhir_core::model::ResponseStatus::Incomplete)
+                        != Some(zhir_core::model::ResponseStatus::Continuation)
                     || !after.active.session.needs_generation) =>
             {
                 return Err(Error::Protocol(

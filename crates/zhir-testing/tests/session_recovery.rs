@@ -648,3 +648,284 @@ async fn refused_http_connections_fail_the_run_instead_of_suspending() {
         checkpoint.state
     );
 }
+/// A local model whose first response starts a provider job and asks to continue;
+/// later responses finish it.
+fn continuing_model(calls: Arc<AtomicUsize>) -> Arc<zhir_models::FunctionModel> {
+    Arc::new(zhir_models::FunctionModel::new(
+        zhir_testing::model_capabilities(),
+        move |_, _| {
+            let first = calls.fetch_add(1, Ordering::SeqCst) == 0;
+            async move {
+                Ok(if first {
+                    zhir_core::model::GenerationOutput {
+                        output: vec![provider(ProviderToolStatus::Running, None)],
+                        status: ResponseStatus::Continuation,
+                        ..zhir_core::model::GenerationOutput::text("")
+                    }
+                } else {
+                    zhir_core::model::GenerationOutput {
+                        output: vec![
+                            provider(ProviderToolStatus::Completed, Some("video")),
+                            Output::text("done"),
+                        ],
+                        ..zhir_core::model::GenerationOutput::text("")
+                    }
+                })
+            }
+        },
+    ))
+}
+#[tokio::test]
+async fn abandoning_a_continuation_generation_regenerates_with_its_provider_job_running() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let store = Arc::new(RecordingStore::new(Arc::new(
+        zhir_storage::MemoryRunStore::new(),
+    )));
+    // Crash once the continuation's Generate has been sent while the job still runs.
+    let crashing = Arc::new(zhir_testing::CrashingStore::new(
+        store.clone(),
+        |checkpoint| {
+            !checkpoint.active.operations.is_empty()
+                && generate_command(checkpoint).is_some_and(|c| c.sent)
+        },
+    ));
+    let context = zhir_kernel::defaults::context();
+    let run_id = context.run_id.clone();
+    let mut invocation = Runtime::builder(continuing_model(calls.clone()))
+        .store(crashing)
+        .build()
+        .unwrap()
+        .start(RunRequest::new(vec![Message::user("start")]).context(context))
+        .unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(3), invocation.result())
+        .await
+        .expect("runtime stalled")
+        .unwrap_err();
+    assert!(matches!(error.error, Error::Storage(_)));
+    let head = zhir_core::storage::RunStore::load_head(store.as_ref(), &run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let runtime = Runtime::builder(continuing_model(calls.clone()))
+        .store(store.clone())
+        .build()
+        .unwrap();
+    let suspended = settle(runtime.continue_from(head).unwrap()).await;
+    assert!(matches!(suspended.state, State::Suspended { .. }));
+    assert_eq!(suspended.active.operations.len(), 1);
+    let generation_id = suspended.active.session.generation_id.clone().unwrap();
+    let checkpoint = settle(
+        runtime
+            .resume(ResumeRequest::from_checkpoint(suspended).resolve(abandon(&generation_id)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        matches!(&checkpoint.state, State::Completed { .. }),
+        "{:?}",
+        checkpoint.state
+    );
+    assert!(checkpoint.active.operations.is_empty());
+    // The start, the continuation lost in the crash, and its replacement.
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    store.verify_traces().unwrap();
+}
+#[tokio::test]
+async fn abandoning_a_generation_requires_settling_its_own_provider_jobs() {
+    let mut caps = zhir_testing::model_capabilities();
+    caps.features.insert(Capability::LocalProjection);
+    let opened = Arc::new(AtomicUsize::new(0));
+    let sessions = opened.clone();
+    // The first session starts a provider job and loses its response; later ones finish.
+    let model = Arc::new(SessionModel::new(caps, move |_, mut peer| {
+        let first = sessions.fetch_add(1, Ordering::SeqCst) == 0;
+        async move {
+            let start = peer.command().await?.unwrap();
+            let SessionCommandBody::Generate { generation_id, .. } = &start.body else {
+                unreachable!()
+            };
+            let generation_id = generation_id.clone();
+            peer.acknowledge(&start, None).await?;
+            if first {
+                peer.event(SessionEventBody::Output {
+                    generation_id: Some(generation_id),
+                    item_id: "job".into(),
+                    caller_id: "model".into(),
+                    output: provider(ProviderToolStatus::Running, None),
+                })
+                .await?;
+                return Err(Error::Uncertain("response lost".into()));
+            }
+            peer.event(SessionEventBody::Output {
+                generation_id: Some(generation_id.clone()),
+                item_id: "done".into(),
+                caller_id: "model".into(),
+                output: Output::text("done"),
+            })
+            .await?;
+            peer.finished(generation_id, ResponseStatus::Completed)
+                .await?;
+            peer.close().await
+        }
+    }));
+    let runtime = Runtime::builder(model).build().unwrap();
+    let paused = settle(
+        runtime
+            .start(RunRequest::new(vec![Message::user("start")]))
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        matches!(paused.state, State::Suspended { .. }),
+        "{:?}",
+        paused.state
+    );
+    assert_eq!(paused.active.operations.len(), 1);
+    let generation_id = paused.active.session.generation_id.clone().unwrap();
+    let job = paused.active.operations.keys().next().unwrap().clone();
+    let failed = settle(
+        runtime
+            .resume(ResumeRequest::from_checkpoint(paused.clone()).resolve(abandon(&generation_id)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        matches!(&failed.state, State::Failed { error } if error.message.contains("provider operations first")),
+        "{:?}",
+        failed.state
+    );
+    // Settling the job first lets the generation be abandoned and generated again.
+    let completed = settle(
+        runtime
+            .resume(
+                ResumeRequest::from_checkpoint(paused)
+                    .resolve(zhir_core::operation::RecoveryResolution::Abandon {
+                        operation_id: job,
+                        reason: "lost with its response".into(),
+                    })
+                    .resolve(abandon(&generation_id)),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        matches!(&completed.state, State::Completed { .. }),
+        "{:?}",
+        completed.state
+    );
+}
+/// A profile update acknowledged in the same batch as earlier output negotiates over
+/// that output too, not only over the last committed history.
+#[tokio::test]
+async fn batched_profile_updates_negotiate_over_staged_output() {
+    use zhir_core::{
+        profile::{Fidelity, RequestProfile, Requirement, ResourceUsage, Serving},
+        resource::{ResourceInput, ResourceRef, ResourceSource},
+    };
+    let mut caps = zhir_testing::model_capabilities();
+    caps.features
+        .extend([Capability::Steering, Capability::ProfileUpdates]);
+    caps.input_modalities.push("image".into());
+    caps.output_modalities.push("image".into());
+    caps.constraints
+        .insert("serving".into(), vec![json!("low_latency")]);
+    caps.constraints
+        .insert("resource.image.fidelity".into(), vec![json!("original")]);
+    let (ready_tx, mut ready) = tokio::sync::mpsc::channel(1);
+    let model = Arc::new(SessionModel::new(caps, move |_, mut peer| {
+        let ready_tx = ready_tx.clone();
+        async move {
+            let start = peer.command().await?.unwrap();
+            let SessionCommandBody::Generate { generation_id, .. } = &start.body else {
+                unreachable!()
+            };
+            let generation_id = generation_id.clone();
+            peer.acknowledge(&start, None).await?;
+            ready_tx.send(()).await.unwrap();
+            let update = peer.command().await?.unwrap();
+            assert!(matches!(
+                update.body,
+                SessionCommandBody::UpdateProfile { .. }
+            ));
+            // Output and acknowledgement are queued together, so they share one batch.
+            peer.event(SessionEventBody::Output {
+                generation_id: Some(generation_id.clone()),
+                item_id: "image".into(),
+                caller_id: "model".into(),
+                output: Output::Content {
+                    content: Content::Resource {
+                        input: ResourceInput {
+                            resource: ResourceRef {
+                                id: "image".into(),
+                                media_type: "image/png".into(),
+                                name: None,
+                                source: ResourceSource::Url {
+                                    url: "https://fixture.invalid/image.png".into(),
+                                },
+                                metadata: Default::default(),
+                            },
+                            usage: ResourceUsage {
+                                fidelity: Some(Requirement::Required(Fidelity::Original)),
+                                ..Default::default()
+                            },
+                        },
+                    },
+                },
+            })
+            .await?;
+            peer.acknowledge(&update, None).await?;
+            peer.finished(generation_id, ResponseStatus::Completed)
+                .await?;
+            peer.close().await
+        }
+    }));
+    let store = Arc::new(RecordingStore::new(Arc::new(
+        zhir_storage::MemoryRunStore::new(),
+    )));
+    let runtime = Runtime::builder(model)
+        .store(store.clone())
+        .build()
+        .unwrap();
+    let mut invocation = runtime
+        .start(RunRequest::new(vec![Message::user("draw")]))
+        .unwrap();
+    invocation.start();
+    ready.recv().await.unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        invocation.control().update_profile(RequestProfile {
+            serving: Some(Requirement::Required(Serving::LowLatency)),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("profile update stalled")
+    .unwrap();
+    let checkpoint = settle(invocation).await;
+    assert!(
+        matches!(checkpoint.state, State::Completed { .. }),
+        "{:?}",
+        checkpoint.state
+    );
+    let commits = store.commits();
+    let updated = commits
+        .iter()
+        .find(|c| c.checkpoint().active.session.profile_revision == 1)
+        .unwrap()
+        .checkpoint();
+    assert!(
+        updated
+            .history
+            .messages()
+            .iter()
+            .any(|m| matches!(m, Message::Assistant { .. })),
+        "the acknowledgement did not share a batch with the output"
+    );
+    assert_eq!(
+        updated.active.session.negotiated.selected["resource.image.fidelity"],
+        json!("original")
+    );
+}

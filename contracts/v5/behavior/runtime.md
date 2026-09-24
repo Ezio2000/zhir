@@ -95,8 +95,11 @@ implementations belong to testing modules and are not exported by production cra
     boundary before the external call. Attach, Complete and Abandon are explicit
     recovery resolutions; Unknown is never silently converted into a new start.
     AbandonGeneration gives up the unfinished generation of a persisted
-    LocalProjection session: its Generate command is removed, the response is
-    Incomplete and generation is required again, committed as GenerationAbandoned.
+    LocalProjection session: its Generate command is removed and the response becomes a
+    Continuation, so the model is called again and provider operations of earlier
+    generations continue through that call; it commits as GenerationAbandoned. Provider
+    operations the abandoned generation itself started are settled first with Complete
+    or Abandon, because the service cannot continue a lost response.
 17. Task runs suspend when all unfinished operations are Waiting/Unknown and the
     response has yielded and pending deliveries are acknowledged. Native async sessions
     can continue while work remains. Completed requires the mode's response/input boundary,
