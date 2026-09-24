@@ -360,7 +360,7 @@ impl Engine {
             next.active.session.acknowledged_context_revision = *context_revision;
         }
         if let CommandIntent::UpdateProfile { revision, profile } = command.intent {
-            let mut request = self.model_request(next.history.len());
+            let mut request = self.model_request(next.history.iter());
             request.profile = profile.clone();
             next.active.session.negotiated = self.negotiate(&request)?;
             next.active.session.effective.values = next

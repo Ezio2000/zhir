@@ -37,12 +37,12 @@ enum Work {
         Result<Vec<ApprovalDecision>>,
     ),
     MediaReady(
-        Vec<MediaChunk>,
+        zhir_core::resource::SealedMedia,
         zhir_core::resource::ResourceRef,
         oneshot::Sender<bool>,
     ),
     InputReady(
-        Vec<MediaChunk>,
+        zhir_core::resource::SealedMedia,
         zhir_core::resource::ResourceRef,
         oneshot::Sender<bool>,
     ),

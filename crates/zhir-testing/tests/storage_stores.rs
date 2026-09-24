@@ -547,3 +547,50 @@ async fn reachable_lists_the_stored_resources_a_checkpoint_references() {
             .is_err()
     );
 }
+/// Two stores on one file stand in for two processes: concurrent writes to different
+/// runs all commit, and racing first commits of one run yield one head and a conflict.
+#[tokio::test]
+async fn sqlite_writers_sharing_a_file_serialize() {
+    let directory = tempfile::tempdir().unwrap();
+    let url = format!(
+        "sqlite://{}?mode=rwc",
+        directory.path().join("shared.db").display()
+    );
+    let first = zhir_storage::sqlite::SqliteRunStore::connect(&url)
+        .await
+        .unwrap();
+    let second = zhir_storage::sqlite::SqliteRunStore::connect(&url)
+        .await
+        .unwrap();
+    let writers = [first.clone(), second.clone()].map(|store| {
+        tokio::spawn(async move {
+            for _ in 0..20 {
+                let commit = initial();
+                store.commit(commit.clone()).await.unwrap();
+                store.commit(append(&commit, "next")).await.unwrap();
+            }
+        })
+    });
+    for writer in writers {
+        writer.await.unwrap();
+    }
+    for _ in 0..10 {
+        let commit = initial();
+        let (a, b) = tokio::join!(
+            first.commit(commit.clone()),
+            second.commit(altered(&commit, |c| {
+                c.id = uuid::Uuid::new_v4().to_string();
+            }))
+        );
+        assert!(
+            matches!(
+                (&a, &b),
+                (Ok(()), Err(zhir_core::error::Error::Conflict { .. }))
+                    | (Err(zhir_core::error::Error::Conflict { .. }), Ok(()))
+            ),
+            "{a:?} {b:?}"
+        );
+    }
+    first.close().await;
+    second.close().await;
+}

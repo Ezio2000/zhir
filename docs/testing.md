@@ -44,7 +44,7 @@ cargo run -p zhir-conformance --bin schemas --locked -- --check
 | `provider_integration` | 自定义 provider 执行归属、媒体绑定、原生回放与并发隔离 |
 | `developer_api`、`consumer_six`、`consumer_ten`、`convenience` | 消费者组合、票据、参数隔离、选择、强类型上下文与输出、资源删除、文件资源分目录与格式标记拒绝 |
 | `scenario_scale`、`http_fixture` | 本地并发 HTTP/SSE、密集事件、RPC 工作流及传输故障 |
-| `storage_stores` | 四种存储共享的原子提交、冲突、截止时间、历史与 96 个等待操作恢复；重写后只留当前一代历史、删除运行后无残留、`reachable` 覆盖历史/完成内容/活动游标/归档链并在节点缺失时失败 |
+| `storage_stores` | 四种存储共享的原子提交、冲突、截止时间、历史与 96 个等待操作恢复；重写后只留当前一代历史、删除运行后无残留、`reachable` 覆盖历史/完成内容/活动游标/归档链并在节点缺失时失败；两个 SQLite 实例共享文件并发写全部提交、竞争首写一成一冲突 |
 
 ## 独立 feature、示例与发布包
 

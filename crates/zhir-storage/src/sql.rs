@@ -12,6 +12,7 @@ use zhir_core::{
 #[derive(Clone)]
 pub(crate) struct SqlStore {
     pool: AnyPool,
+    sqlite: bool,
 }
 impl SqlStore {
     pub async fn connect(url: &str, max_connections: u32) -> Result<Self> {
@@ -28,8 +29,8 @@ impl SqlStore {
             .after_connect(move |connection, _| {
                 Box::pin(async move {
                     if sqlite {
-                        // Readers in other processes proceed during a write, and a locked
-                        // database is waited on instead of failing immediately.
+                        // Readers in other processes proceed during a write, and a writer
+                        // waits for the write lock instead of failing immediately.
                         sqlx::query("PRAGMA journal_mode=WAL")
                             .execute(&mut *connection)
                             .await?;
@@ -118,10 +119,20 @@ impl SqlStore {
                 .await
                 .map_err(storage_error)?;
         }
-        Ok(Self { pool })
+        Ok(Self { pool, sqlite })
     }
     pub async fn close(&self) {
         self.pool.close().await;
+    }
+    /// A write transaction. SQLite takes the write lock up front: a deferred transaction
+    /// that read before another process wrote cannot upgrade, and the busy timeout does
+    /// not wait for that case.
+    async fn begin(&self) -> sqlx::Result<sqlx::Transaction<'static, sqlx::Any>> {
+        if self.sqlite {
+            self.pool.begin_with("BEGIN IMMEDIATE").await
+        } else {
+            self.pool.begin().await
+        }
     }
     pub async fn commit(&self, commit: Commit) -> Result<()> {
         // Own the transaction until it settles even when the public future is dropped.
@@ -136,7 +147,7 @@ impl SqlStore {
         let digest = commit.digest()?;
         let revision = i64::try_from(commit.checkpoint().revision).map_err(storage_error)?;
         // Waiting for a pooled connection is part of the commit budget.
-        let begin = self.pool.begin();
+        let begin = self.begin();
         let mut tx = match commit.deadline {
             Some(deadline) => {
                 tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), begin)
@@ -223,7 +234,19 @@ impl SqlStore {
             .bind(&core)
             .execute(&mut *tx)
             .await
-            .map_err(storage_error)?;
+            .map_err(|e| {
+                // Another writer created this run first.
+                if e.as_database_error()
+                    .is_some_and(|d| d.is_unique_violation())
+                {
+                    Error::Conflict {
+                        expected: commit.expected_revision(),
+                        actual: None,
+                    }
+                } else {
+                    storage_error(e)
+                }
+            })?;
         }
         sqlx::query(
             "INSERT INTO zhir_commits(run_id,checkpoint_id,revision,digest) VALUES(?,?,?,?)",
@@ -273,7 +296,7 @@ impl SqlStore {
         let this = self.clone();
         let run = run.to_owned();
         tokio::spawn(async move {
-            let mut tx = this.pool.begin().await.map_err(storage_error)?;
+            let mut tx = this.begin().await.map_err(storage_error)?;
             for statement in [
                 "DELETE FROM zhir_history WHERE run_id=?",
                 "DELETE FROM zhir_commits WHERE run_id=?",

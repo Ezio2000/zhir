@@ -123,7 +123,8 @@ implementations belong to testing modules and are not exported by production cra
     already queued behind one another are sealed as one SealedMedia segment: one
     resource holds their bytes and `chunks` records each sequence, timestamp, offset,
     length and end. The segment commits once and its chunks are then delivered in
-    order; an idle stream seals single chunks, so segmenting adds no wait. Only the
+    order; an idle stream seals single chunks, so segmenting adds no wait. A segment holds
+    at most `max_buffered_media_packets` and never more than 1024 chunks. Only the
     last chunk of a segment can end the stream. SealUserInput cannot overtake accepted input.
 21. Defaults bound inflight operations to 64, command and session-event queues to 256,
     concurrent host operations to 8, simultaneously active media streams to 64, individual media chunks to 1 MiB and buffered media

@@ -23,9 +23,12 @@ impl Engine {
             |control| control.negotiate(request),
         )
     }
-    pub(super) fn model_request(&self, history_count: usize) -> ModelRequest {
-        let messages =
-            zhir_core::model::conversation(self.current.history.iter().take(history_count));
+    /// A request over `entries`, which may include history staged but not yet committed.
+    pub(super) fn model_request<'a>(
+        &self,
+        entries: impl IntoIterator<Item = &'a zhir_core::run::HistoryEntry>,
+    ) -> ModelRequest {
+        let messages = zhir_core::model::conversation(entries);
         ModelRequest {
             messages,
             runtime_tools: self.catalog.specs(),
@@ -220,7 +223,7 @@ impl Engine {
             .unwrap_or(self.current.active.session.input_position);
         let open = SessionOpen {
             binding: self.current.active.session.binding.clone(),
-            request: self.model_request(seed_end),
+            request: self.model_request(self.current.history.iter().take(seed_end)),
             context_revision: self.current.active.session.acknowledged_context_revision,
             input_position: seed_input_position,
             profile_revision: self.current.active.session.profile_revision,

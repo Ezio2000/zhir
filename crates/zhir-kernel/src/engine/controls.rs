@@ -267,7 +267,7 @@ impl Engine {
                 "model does not support running profile updates".into(),
             ));
         }
-        let mut request = self.model_request(self.current.history.len());
+        let mut request = self.model_request(self.current.history.iter());
         request.profile = profile.clone();
         self.negotiate(&request)?;
         self.prepare_command(CommandIntent::UpdateProfile {
