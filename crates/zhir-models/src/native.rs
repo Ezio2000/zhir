@@ -6,7 +6,6 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::Duration,
 };
 use tokio::sync::{mpsc, oneshot};
 #[path = "native/media.rs"]
@@ -337,10 +336,11 @@ pub(crate) async fn guarded<T>(
     cancellation: &zhir_core::Cancellation,
     deadline: Option<std::time::Instant>,
 ) -> Result<T> {
-    tokio::pin!(work);
-    loop {
-        zhir_policies::timing::check(cancellation, deadline)?;
-        tokio::select! { result = &mut work => return result, _ = tokio::time::sleep(Duration::from_millis(10)) => () }
+    zhir_policies::timing::check(cancellation, deadline)?;
+    tokio::select! {
+        biased;
+        result = work => result,
+        error = zhir_policies::timing::interrupted(cancellation, deadline, |at| tokio::time::sleep_until(at.into())) => Err(error),
     }
 }
 

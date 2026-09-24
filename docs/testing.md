@@ -29,7 +29,7 @@ cargo run -p zhir-conformance --bin schemas --locked -- --check
 | `core_values`、`core_boundaries` | 值、history、wire、运行参数、目录与绑定 |
 | `session_runtime` | 原生会话早发工具、provider 任务、等待恢复、媒体封存 |
 | `session_recovery` | 未确认 outbox 不重发、竞争恢复 CAS、跨轮 provider 完成、重复/冲突完成、双向流、中断及 SealUserInput |
-| `runtime_deadlines` | catalog/model 建立阶段截止时间、未确认 commit 超时 |
+| `runtime_deadlines` | catalog/model 建立阶段截止时间、未确认 commit 超时；虚拟时钟下空闲运行零轮询、取消无需推进时间即结算、截止时间由定时器触发 |
 | `runtime_operations` | 工具按发出顺序准入、串行屏障与并行分组、审批期间不再准入、start 错误结算、取消运行中工具、OperationChanged 完整序列 |
 | `refactoring` | provider operation 结算后的跨轮 replay 与 wire 往返、4096 项历史合并顺序、虚拟时钟下有界并发取消及统一退出预算 |
 | `minimax_tts`（feature `minimax`） | 生产 WebSocket TTS：分句封存、中断、尾音、背压、凭据刷新与连接生命周期；ignored 测试访问真实服务 |

@@ -280,7 +280,7 @@ impl SessionTask {
                     closing = matches!(command.body, SessionCommandBody::Close);
                     controls.extend(self.command(command, busy)?);
                 }
-                _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => (),
+                error = zhir_policies::timing::interrupted(&self.context.cancellation, self.deadline, |at| tokio::time::sleep_until(at.into())) => return Err(error),
             }
         }
     }

@@ -96,7 +96,7 @@ mod workers;
 use checkpoint::WaitReason;
 use completion::provider_operation_id;
 pub(crate) use lifecycle::execute;
-use lifecycle::interruptible;
+use lifecycle::{interruptible, interruption};
 
 struct ToolProgress {
     operation_id: String,

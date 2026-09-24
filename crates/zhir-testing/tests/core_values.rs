@@ -232,3 +232,42 @@ fn commit_consistency_is_pure_and_deadline_checks_use_explicit_time() {
         Err(Error::Storage(_))
     ));
 }
+#[tokio::test]
+async fn cancellation_wakes_every_waiter_and_dropped_waiters_unregister() {
+    use std::{
+        future::Future,
+        sync::Arc,
+        task::{Context, Wake, Waker},
+    };
+    struct Flag;
+    impl Wake for Flag {
+        fn wake(self: Arc<Self>) {}
+    }
+    let cancellation = zhir_core::Cancellation::default();
+    let flag = Arc::new(Flag);
+    let waker = Waker::from(flag.clone());
+    let mut dropped = Box::pin(cancellation.cancelled());
+    assert!(
+        dropped
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    drop(waker);
+    assert_eq!(Arc::strong_count(&flag), 2);
+    drop(dropped);
+    assert_eq!(Arc::strong_count(&flag), 1);
+
+    let waiters: Vec<_> = (0..3)
+        .map(|_| tokio::spawn(cancellation.cancelled()))
+        .collect();
+    tokio::task::yield_now().await;
+    cancellation.cancel();
+    for waiter in waiters {
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
+            .await
+            .expect("waiter was not woken")
+            .unwrap();
+    }
+    cancellation.cancelled().await;
+}

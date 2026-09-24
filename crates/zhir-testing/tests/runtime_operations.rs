@@ -440,3 +440,20 @@ async fn every_operation_transition_is_observed_once() {
         );
     }
 }
+
+#[tokio::test]
+async fn binding_failures_found_during_admission_are_delivered() {
+    let log = Log::default();
+    let (checkpoint, _) = Harness::new(vec![probe("serial", SERIAL, log)])
+        .run(calls(&["missing"]))
+        .await;
+    assert!(
+        matches!(checkpoint.state, State::Completed { .. }),
+        "{:?}",
+        checkpoint.state
+    );
+    assert!(matches!(
+        outcomes(&checkpoint)["call-0"],
+        OperationOutcome::Failure { .. }
+    ));
+}

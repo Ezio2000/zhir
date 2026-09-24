@@ -139,12 +139,7 @@ pub fn bash(options: ShellOptions) -> Result<Arc<dyn RuntimeTool>> {
                 let stderr = child.stderr.take().expect("piped stderr");
                 let output = Stream::spawn(stdout, options.max_output_bytes);
                 let errors = Stream::spawn(stderr, options.max_output_bytes);
-                let cancelled = async {
-                    while !context.cancellation.is_cancelled() {
-                        tokio::time::sleep(Duration::from_millis(10)).await;
-                    }
-                };
-                let status = tokio::select! {result=child.wait()=>Some(result.map_err(|e|failure("command_wait",e))?),_=tokio::time::sleep(options.timeout)=>None,_=cancelled=>None};
+                let status = tokio::select! {result=child.wait()=>Some(result.map_err(|e|failure("command_wait",e))?),_=tokio::time::sleep(options.timeout)=>None,_=context.cancellation.cancelled()=>None};
                 group.stop();
                 if status.is_none() {
                     let _ = child.kill().await;

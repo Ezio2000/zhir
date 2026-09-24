@@ -1,5 +1,5 @@
 //! Shared bounded admission for the lifetime of model sessions.
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use zhir_core::{BoxFuture, Result, error::Error, model::*, profile::NegotiatedProfile};
 #[derive(Clone)]
@@ -73,11 +73,11 @@ impl Model for ConcurrencyLimitedModel {
     fn open_session(&self, open: SessionOpen) -> BoxFuture<'_, Result<ModelSession>> {
         Box::pin(async move {
             let deadline = zhir_policies::timing::deadline(&open.context.run)?;
-            let acquire = self.permits.clone().acquire_owned();
-            tokio::pin!(acquire);
-            let permit = loop {
-                zhir_policies::timing::check(&open.context.cancellation, deadline)?;
-                tokio::select! { result = &mut acquire => break result.map_err(|_| Error::Cancelled)?, _ = tokio::time::sleep(Duration::from_millis(10)) => () }
+            zhir_policies::timing::check(&open.context.cancellation, deadline)?;
+            let permit = tokio::select! {
+                biased;
+                result = self.permits.clone().acquire_owned() => result.map_err(|_| Error::Cancelled)?,
+                error = zhir_policies::timing::interrupted(&open.context.cancellation, deadline, |at| tokio::time::sleep_until(at.into())) => return Err(error),
             };
             let mut session = self.inner.open_session(open).await?;
             let permit = Arc::new(permit);

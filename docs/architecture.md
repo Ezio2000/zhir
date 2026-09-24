@@ -144,6 +144,9 @@ A commit timeout returns the last known checkpoint and requires a durable-head r
 the kernel does not pretend that the write was rolled back.
 
 Execution deadlines use monotonic time, including catalog/model establishment.
+`Cancellation::cancelled` wakes waiters when cancellation is requested; the kernel,
+session schedulers and built-in tools wait on it together with a deadline timer, so
+an idle run performs no periodic work.
 Commit timeout is a separate bounded settlement budget. Queue limits, tool
 concurrency and media byte budgets are explicit run options. Observer events may be
 dropped with ObservationGap; they are not the durable source of truth.
@@ -222,8 +225,9 @@ Built-in HTTP protocols implement one internal ProtocolAdapter per protocol. Eac
 endpoint/authentication, capabilities, encoding/decoding, usage normalization, replay
 shape and stream state construction. Transport uses this interface without its own
 protocol branches. External protocols still implement core Model; ProtocolExtension and
-ProviderToolAdapter customize the built-ins. Retry deadlines and the waiting loop are
-shared in policies::timing; adapters supply their executor's timer. Core profile::keys
+ProviderToolAdapter customize the built-ins. Retry deadlines, cancellable waits and
+interruption (`timing::wait`, `timing::interrupted`) are shared in policies::timing;
+adapters supply their executor's timer. Core profile::keys
 owns construction and recognition of built-in negotiation dimension names.
 
 ## Independent conversation items and delegated work

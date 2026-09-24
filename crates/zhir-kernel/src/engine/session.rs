@@ -158,7 +158,7 @@ impl Engine {
                         return Ok(());
                     }
                 },
-                _ = tokio::time::sleep(Duration::from_millis(10)) => self.check()?,
+                _ = interruption(self.cancellation.clone(), self.deadline) => self.check()?,
             }
         }
         Ok(())
@@ -268,7 +268,7 @@ impl Engine {
                         return Ok(());
                     }
                 },
-                _ = tokio::time::sleep(Duration::from_millis(10)) => self.check()?,
+                _ = interruption(self.cancellation.clone(), self.deadline) => self.check()?,
             }
         };
         let mut next = self.current.as_ref().clone();
