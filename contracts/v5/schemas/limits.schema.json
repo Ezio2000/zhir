@@ -20,6 +20,12 @@
       "minimum": 0,
       "type": "integer"
     },
+    "max_buffered_media_packets": {
+      "description": "Media packets queued in each direction between the host and the kernel.",
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
     "max_control_commands": {
       "format": "uint",
       "minimum": 0,
@@ -83,6 +89,7 @@
     "max_media_streams",
     "max_media_chunk_bytes",
     "max_buffered_media_bytes",
+    "max_buffered_media_packets",
     "max_operation_concurrency",
     "max_observer_events",
     "commit_timeout_ms"

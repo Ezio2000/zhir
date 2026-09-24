@@ -130,7 +130,8 @@ pub struct MediaPorts {
     pub output: Option<Box<dyn MediaReceiver>>,
 }
 
-/// One immutable node in a sealed media stream. `previous` links to another node,
+/// One immutable segment of a sealed media stream: consecutive chunks of one stream,
+/// epoch and media type stored in one resource. `previous` links to the prior segment,
 /// keeping checkpoint size independent of the stream duration.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -139,11 +140,22 @@ pub struct SealedMedia {
     pub stream_id: String,
     pub session_id: String,
     pub epoch: u64,
-    pub sequence: u64,
-    pub timestamp_us: u64,
-    pub end: bool,
+    /// Chunks in increasing sequence order; only the last one can end the stream.
+    pub chunks: Vec<SealedChunk>,
     pub resource: ResourceRef,
     pub previous: Option<ResourceRef>,
+}
+/// One chunk within a sealed segment. `offset` and `length` locate its bytes in the
+/// segment resource.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SealedChunk {
+    pub sequence: u64,
+    pub timestamp_us: u64,
+    pub offset: u64,
+    pub length: u64,
+    pub end: bool,
 }
 
 /// An immutable archive node. Completed or interrupted streams leave the active

@@ -147,7 +147,20 @@ async fn exercise(
             // Prove durability at delivery time, not just at eventual completion.
             let commits = store.commits();
             let key = format!("output:{}:{}", chunk.stream_id, chunk.epoch);
-            let reference = if chunk.end {
+            // The earliest cursor at or past this chunk names its segment; a chunk in the
+            // final segment is reachable only from the archive.
+            let cursor = commits.iter().find_map(|commit| {
+                commit
+                    .checkpoint()
+                    .active
+                    .media
+                    .get(&key)
+                    .filter(|cursor| cursor.sequence >= chunk.sequence)
+                    .map(|cursor| cursor.sealed.clone())
+            });
+            let reference = if let Some(reference) = cursor {
+                Some(reference)
+            } else {
                 let mut found = None;
                 for commit in &commits {
                     if let Some(reference) = &commit.checkpoint().active.session.media_archive {
@@ -162,28 +175,21 @@ async fn exercise(
                     }
                 }
                 found
-            } else {
-                commits.iter().find_map(|commit| {
-                    commit
-                        .checkpoint()
-                        .active
-                        .media
-                        .get(&key)
-                        .filter(|cursor| cursor.sequence == chunk.sequence)
-                        .map(|cursor| cursor.sealed.clone())
-                })
             }
             .expect("media escaped before its checkpoint commit");
             let manifest: SealedMedia =
                 serde_json::from_slice(&read_resource(resources.as_ref(), reference).await)
                     .unwrap();
-            assert_eq!(manifest.sequence, chunk.sequence);
+            let sealed = manifest
+                .chunks
+                .iter()
+                .find(|sealed| sealed.sequence == chunk.sequence)
+                .expect("delivered chunk is not in its segment");
             assert_eq!(manifest.epoch, chunk.epoch);
-            assert_eq!(manifest.end, chunk.end);
-            assert_eq!(
-                read_resource(resources.as_ref(), manifest.resource).await,
-                chunk.bytes
-            );
+            assert_eq!(sealed.end, chunk.end);
+            let data = read_resource(resources.as_ref(), manifest.resource).await;
+            let range = sealed.offset as usize..(sealed.offset + sealed.length) as usize;
+            assert_eq!(data[range], chunk.bytes);
             if !chunk.bytes.is_empty() {
                 first_audio_ms.get_or_insert(started.elapsed().as_millis());
             }
@@ -290,10 +296,12 @@ async fn exercise(
         while let Some(current) = reference {
             let node: SealedMedia =
                 serde_json::from_slice(&read_resource(resources.as_ref(), current).await).unwrap();
-            if let Some(previous) = previous_sequence {
-                assert!(node.sequence < previous);
+            for sealed in node.chunks.iter().rev() {
+                if let Some(previous) = previous_sequence {
+                    assert!(sealed.sequence < previous);
+                }
+                previous_sequence = Some(sealed.sequence);
             }
-            previous_sequence = Some(node.sequence);
             reference = node.previous;
         }
         streams += 1;

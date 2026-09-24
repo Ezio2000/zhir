@@ -66,19 +66,21 @@ impl Engine {
                 }
             }
             Work::Admitted(bindings, decisions) => self.admitted(bindings, decisions).await,
-            Work::MediaReady(chunk, reference, reply) => {
-                let valid = chunk.epoch == self.current.active.session.output_epoch
-                    && self.current.active.session.id == chunk.session_id;
+            Work::MediaReady(chunks, reference, reply) => {
+                // A segment shares one stream, session and epoch.
+                let valid = chunks[0].epoch == self.current.active.session.output_epoch
+                    && self.current.active.session.id == chunks[0].session_id;
                 if valid {
-                    self.seal_cursor("output", &chunk, reference).await?;
+                    self.seal_cursor("output", &chunks, reference).await?;
                 }
                 let _ = reply.send(valid);
                 Ok(())
             }
-            Work::InputReady(chunk, reference, reply) => {
-                let valid = chunk.epoch == 0 && self.current.active.session.id == chunk.session_id;
+            Work::InputReady(chunks, reference, reply) => {
+                let valid =
+                    chunks[0].epoch == 0 && self.current.active.session.id == chunks[0].session_id;
                 if valid {
-                    self.seal_cursor("input", &chunk, reference).await?;
+                    self.seal_cursor("input", &chunks, reference).await?;
                 }
                 let _ = reply.send(valid);
                 Ok(())

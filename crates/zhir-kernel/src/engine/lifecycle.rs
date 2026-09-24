@@ -64,6 +64,12 @@ impl Engine {
         if let Some(work) = self.stash().take() {
             return self.handle(work).await;
         }
+        if self.model_media_input.is_some()
+            && !self.input_sending
+            && let Some(packet) = self.held_input.take()
+        {
+            return self.input_media(packet);
+        }
         tokio::select! { biased;
             Some(control) = self.controls.recv(), if !self.controls.is_closed() || !self.controls.is_empty() => {
                 self.control(control).await?;
@@ -270,6 +276,8 @@ pub(crate) async fn execute(
         sent,
         sending: false,
         input_sending: false,
+        held_input: None,
+        ended_streams: None,
         media_pending: false,
         pending_replies: BTreeSet::new(),
         pending_starts: BTreeSet::new(),

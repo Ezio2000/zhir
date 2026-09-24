@@ -764,13 +764,40 @@ async fn filesystem_resources_survive_reopen_and_reject_corruption() {
             .unwrap(),
         b"hello"
     );
-    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    // The root holds only the format marker and shard directories named by id prefix.
+    let root: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert!(root.contains(&reference.id[..2].to_string()));
+    assert!(root.iter().all(|name| name == "format"
+        || (name.len() == 2
+            && name.bytes().all(|b| b.is_ascii_hexdigit())
+            && dir.path().join(name).is_dir())));
+    let path = dir
+        .path()
+        .join(&reference.id[..2])
+        .join(format!("{}.resource", reference.id));
+    std::fs::write(&path, b"incomplete").unwrap();
+    assert!(ResourceStore::open(&fresh, reference).await.is_err());
+    // A root in another format, or with unsharded resource files, is not adopted.
+    let stray = tempfile::tempdir().unwrap();
     std::fs::write(
-        dir.path().join(format!("{}.resource", reference.id)),
-        b"incomplete",
+        stray.path().join(format!("{}.resource", "a".repeat(64))),
+        b"x",
     )
     .unwrap();
-    assert!(ResourceStore::open(&fresh, reference).await.is_err());
+    assert!(FilesystemResourceStore::open(stray.path()).await.is_err());
+    let other = tempfile::tempdir().unwrap();
+    std::fs::write(other.path().join("format"), b"zhir-resources 4\n").unwrap();
+    assert!(FilesystemResourceStore::open(other.path()).await.is_err());
+    FilesystemResourceStore::open(dir.path()).await.unwrap();
+    std::fs::write(
+        dir.path().join(format!("{}.resource", "b".repeat(64))),
+        b"x",
+    )
+    .unwrap();
+    assert!(FilesystemResourceStore::open(dir.path()).await.is_err());
     let blocked = dir.path().join("not-a-directory");
     std::fs::write(&blocked, b"x").unwrap();
     assert!(FilesystemResourceStore::open(blocked).await.is_err());

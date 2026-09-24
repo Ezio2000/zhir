@@ -293,20 +293,70 @@ mod filesystem {
         }
         .into()
     }
+    const FORMAT: &str = "zhir-resources 5\n";
+    /// Resources live in subdirectories named by the first two hex digits of their id,
+    /// under a root marked with the current format.
     #[derive(Clone)]
     pub struct FilesystemResourceStore {
         root: PathBuf,
     }
     impl FilesystemResourceStore {
+        /// Opens or initializes a store. A root with another format marker, or with
+        /// resource files outside the shard directories, is rejected.
         pub async fn open(root: impl Into<PathBuf>) -> Result<Self> {
             let root = root.into();
             tokio::task::spawn_blocking(move || {
                 std::fs::create_dir_all(&root).map_err(io)?;
+                let marker = root.join("format");
+                let unsupported = || {
+                    Error::Storage(
+                        "unsupported resource directory format; use a fresh directory".into(),
+                    )
+                };
+                match std::fs::read_to_string(&marker) {
+                    Ok(format) if format == FORMAT => {}
+                    Ok(_) => return Err(unsupported()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        let mut temp = tempfile::NamedTempFile::new_in(&root).map_err(io)?;
+                        temp.write_all(FORMAT.as_bytes()).map_err(io)?;
+                        temp.as_file().sync_all().map_err(io)?;
+                        match temp.persist_noclobber(&marker) {
+                            Ok(_) => sync_dir(&root)?,
+                            // Another store initialized the root concurrently.
+                            Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                                if std::fs::read_to_string(&marker).map_err(io)? != FORMAT {
+                                    return Err(unsupported());
+                                }
+                            }
+                            Err(e) => return Err(io(e.error)),
+                        }
+                    }
+                    Err(e) => return Err(io(e)),
+                }
+                for entry in std::fs::read_dir(&root).map_err(io)? {
+                    if entry
+                        .map_err(io)?
+                        .path()
+                        .extension()
+                        .is_some_and(|e| e == "resource")
+                    {
+                        return Err(unsupported());
+                    }
+                }
                 Ok(Self { root })
             })
             .await
             .map_err(io)?
         }
+    }
+    fn sync_dir(path: &std::path::Path) -> Result<()> {
+        std::fs::File::open(path)
+            .and_then(|f| f.sync_all())
+            .map_err(io)
+    }
+    /// `id` is a 64-digit hex key.
+    fn resource_path(root: &std::path::Path, id: &str) -> PathBuf {
+        root.join(&id[..2]).join(format!("{id}.resource"))
     }
     struct Writer {
         root: PathBuf,
@@ -346,13 +396,9 @@ mod filesystem {
                         .take()
                         .ok_or_else(|| Error::Invalid("resource writer finished".into()))?;
                     temp.as_file().sync_all().map_err(io)?;
-                    let path = self.root.join(format!("{}.resource", self.id));
+                    let path = resource_path(&self.root, &self.id);
                     match temp.persist_noclobber(&path) {
-                        Ok(_) => {
-                            std::fs::File::open(&self.root)
-                                .and_then(|f| f.sync_all())
-                                .map_err(io)?;
-                        }
+                        Ok(_) => sync_dir(path.parent().expect("shard directory"))?,
                         Err(mut error)
                             if error.error.kind() == std::io::ErrorKind::AlreadyExists =>
                         {
@@ -428,7 +474,12 @@ mod filesystem {
                 validate(&key, &media_type)?;
                 tokio::task::spawn_blocking(move || {
                     let id = format!("{:x}", Sha256::digest(key.as_bytes()));
-                    let mut temp = tempfile::NamedTempFile::new_in(&root).map_err(io)?;
+                    let shard = root.join(&id[..2]);
+                    if !shard.is_dir() {
+                        std::fs::create_dir_all(&shard).map_err(io)?;
+                        sync_dir(&root)?;
+                    }
+                    let mut temp = tempfile::NamedTempFile::new_in(&shard).map_err(io)?;
                     let header = serde_json::to_vec(
                         &serde_json::json!({"version": 5,"media_type":media_type}),
                     )
@@ -453,8 +504,8 @@ mod filesystem {
             Box::pin(async move {
                 let key = file_key(&reference)?.to_owned();
                 tokio::task::spawn_blocking(move || {
-                    let mut file = std::fs::File::open(root.join(format!("{key}.resource")))
-                        .map_err(|e| {
+                    let mut file =
+                        std::fs::File::open(resource_path(&root, &key)).map_err(|e| {
                             if e.kind() == std::io::ErrorKind::NotFound {
                                 ResourceError::NotFound { id: key.clone() }.into()
                             } else {
@@ -488,10 +539,9 @@ mod filesystem {
             Box::pin(async move {
                 let key = file_key(&reference)?.to_owned();
                 tokio::task::spawn_blocking(move || {
-                    match std::fs::remove_file(root.join(format!("{key}.resource"))) {
-                        Ok(()) => std::fs::File::open(&root)
-                            .and_then(|f| f.sync_all())
-                            .map_err(io),
+                    let path = resource_path(&root, &key);
+                    match std::fs::remove_file(&path) {
+                        Ok(()) => sync_dir(path.parent().expect("shard directory")),
                         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
                         Err(e) => Err(io(e)),
                     }

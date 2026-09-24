@@ -37,12 +37,12 @@ enum Work {
         Result<Vec<ApprovalDecision>>,
     ),
     MediaReady(
-        MediaChunk,
+        Vec<MediaChunk>,
         zhir_core::resource::ResourceRef,
         oneshot::Sender<bool>,
     ),
     InputReady(
-        MediaChunk,
+        Vec<MediaChunk>,
         zhir_core::resource::ResourceRef,
         oneshot::Sender<bool>,
     ),
@@ -78,6 +78,10 @@ struct Engine {
     sent: BTreeSet<String>,
     sending: bool,
     input_sending: bool,
+    /// The first queued host packet that did not join the last input segment.
+    held_input: Option<Packet>,
+    /// Archived stream keys, read from the archive chain on first use.
+    ended_streams: Option<BTreeSet<String>>,
     media_pending: bool,
     pending_replies: BTreeSet<String>,
     pending_starts: BTreeSet<String>,

@@ -119,10 +119,15 @@ implementations belong to testing modules and are not exported by production cra
     Media input/output are separate bounded channels. Payload and manifest resources
     are sealed, and the cursor is committed, before delivery. Old output epochs are not
     delivered; input epoch is zero. Within a stream/epoch the cursor increases; checkpoints retain only
-    the latest immutable manifest reference. SealUserInput cannot overtake accepted input.
+    the latest immutable segment reference. Chunks of one stream, epoch and media type
+    already queued behind one another are sealed as one SealedMedia segment: one
+    resource holds their bytes and `chunks` records each sequence, timestamp, offset,
+    length and end. The segment commits once and its chunks are then delivered in
+    order; an idle stream seals single chunks, so segmenting adds no wait. Only the
+    last chunk of a segment can end the stream. SealUserInput cannot overtake accepted input.
 21. Defaults bound inflight operations to 64, command and session-event queues to 256,
     concurrent host operations to 8, simultaneously active media streams to 64, individual media chunks to 1 MiB and buffered media
-    bytes to 16 MiB per direction. Observer capacity defaults to 256. Configured
+    bytes to 16 MiB and buffered media packets to 256 per direction. Observer capacity defaults to 256. Configured
     limits are validated before channel/worker creation.
 22. Observer events can be lost; ObservationGap reports loss when capacity returns.
     Committed checkpoint state is the durable source of truth. SDK media sends use
@@ -182,6 +187,8 @@ payload on subsequent turns.
     Input epoch is zero. Ended streams leave active.media and remain reachable through
     immutable ArchivedMedia nodes; output interruption archives its unfinished streams
     with complete=false. A stream identity cannot resume after end in the same epoch.
+    The kernel reads the archive chain once per execution and tracks later archives in
+    memory, so opening a stream does not rescan the chain.
 
 30. FlushInput requires FlushInput capability. It keeps input admission open, drains
     accepted media input before dispatch, and asks the adapter to materialize buffered
@@ -192,7 +199,8 @@ payload on subsequent turns.
 32. Native adapters share bounded ports and independent terminal settlement in models.
     Output pressure must not block command dispatch or acknowledgement timers. Retired
     output epochs are filtered at both adapter and kernel queues; rejected late chunks
-    cannot remove the accepted epoch’s media-manifest predecessor.
+    cannot remove the accepted epoch’s media-segment predecessor. A segment never spans
+    epochs, so a rejected segment contains only retired chunks.
 
 33. ReplaceContext is an acknowledged context revision, atomic with the history rewrite
     and its outbox intent. It cannot cross active generation, operations, media or commands.

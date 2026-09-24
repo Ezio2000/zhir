@@ -407,9 +407,13 @@ async fn reachable_lists_the_stored_resources_a_checkpoint_references() {
             stream_id: key.into(),
             session_id: "session".into(),
             epoch: 0,
-            sequence: 0,
-            timestamp_us: 0,
-            end: false,
+            chunks: vec![zhir_core::resource::SealedChunk {
+                sequence: 0,
+                timestamp_us: 0,
+                offset: 0,
+                length: 4,
+                end: false,
+            }],
             resource,
             previous,
         };

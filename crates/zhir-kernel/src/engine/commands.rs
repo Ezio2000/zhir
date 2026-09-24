@@ -28,6 +28,7 @@ impl Engine {
         let interrupt = matches!(intent, CommandIntent::InterruptOutput { .. });
         let id = new_id();
         let mut next = self.current.as_ref().clone();
+        let mut archived = vec![];
         match &intent {
             CommandIntent::Close => next.active.session.closing = true,
             CommandIntent::InterruptOutput { output_epoch, .. } => {
@@ -43,6 +44,7 @@ impl Engine {
                     self.archive_media(&mut next, key.clone(), sealed, false)
                         .await?;
                     next.active.media.remove(&key);
+                    archived.push(key);
                 }
             }
             CommandIntent::SealUserInput => next.active.session.input_closed = true,
@@ -64,6 +66,9 @@ impl Engine {
             HistoryDelta::Unchanged,
         )
         .await?;
+        for key in archived {
+            self.ended_stream(key);
+        }
         if interrupt {
             self.media_output
                 .invalidate_before(self.current.active.session.output_epoch);
@@ -140,7 +145,7 @@ impl Engine {
             && self.current.active.session.generation_id.is_some();
         match &command.intent {
             CommandIntent::SealUserInput | CommandIntent::Close | CommandIntent::FlushInput => {
-                !self.input_sending && self.media.is_empty()
+                !self.input_sending && self.held_input.is_none() && self.media.is_empty()
             }
             CommandIntent::Append {
                 operation_id: Some(_),

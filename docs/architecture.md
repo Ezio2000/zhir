@@ -175,11 +175,16 @@ kernel history. Native replay positions are explicit adapter bindings; unbound
 copies of sealed media data are rejected.
 
 MediaChunk carries session, stream, epoch, sequence, timestamp and end metadata. Separate
-byte-bounded channels apply backpressure. Payload and linked stream-manifest nodes
+channels bounded by bytes and packets (`max_buffered_media_packets`) apply backpressure.
+Chunks of one stream already queued behind one another are sealed as one segment: one
+data resource plus a SealedMedia node listing each chunk's offset and length, committed
+once and then delivered in order. Slow storage therefore costs fewer commits instead of
+more latency; an idle stream still seals each chunk alone. The kernel reads the archive
+chain once and tracks ended streams in memory. Payload and linked segment nodes
 are sealed before committing cursors and before external input/output delivery.
 InterruptOutput advances the output epoch in the same commit as its outbox command;
 the command carries that exact epoch to the adapter. Providers do not allocate a
-second independent epoch. Late rejected media cannot mutate the current manifest chain. SealUserInput
+second independent epoch. Late rejected media cannot mutate the current segment chain. SealUserInput
 closes admission and drains accepted input before sending the endpoint command.
 Older output epochs cannot advance a stream; input epoch is zero. Checkpoints keep the latest sealed reference,
 not an ever-growing media transcript. Resource retention/collection belongs to the
@@ -219,7 +224,9 @@ after an error; a failed commit remains uncertain and is not replayed. A history
 removes the previous generation in the same write. `RunStore::delete`,
 `ResourceStore::delete` and `zhir_storage::resources::reachable` let the host implement
 retention; nothing is collected automatically.
-Filesystem resources use their current format in a new directory. Older layouts are
+FilesystemResourceStore marks its root with format 5 and shards resources by the first
+two hex digits of their id; a root with another marker or unsharded resource files is
+rejected. Older layouts are
 rejected rather than translated.
 
 ## Execution and protocol implementation boundaries

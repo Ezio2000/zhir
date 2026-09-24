@@ -110,14 +110,55 @@
           "type": "object"
         }
       ]
+    },
+    "SealedChunk": {
+      "additionalProperties": false,
+      "description": "One chunk within a sealed segment. `offset` and `length` locate its bytes in the\nsegment resource.",
+      "properties": {
+        "end": {
+          "type": "boolean"
+        },
+        "length": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "offset": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sequence": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timestamp_us": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sequence",
+        "timestamp_us",
+        "offset",
+        "length",
+        "end"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "One immutable node in a sealed media stream. `previous` links to another node,\nkeeping checkpoint size independent of the stream duration.",
+  "description": "One immutable segment of a sealed media stream: consecutive chunks of one stream,\nepoch and media type stored in one resource. `previous` links to the prior segment,\nkeeping checkpoint size independent of the stream duration.",
   "properties": {
-    "end": {
-      "type": "boolean"
+    "chunks": {
+      "description": "Chunks in increasing sequence order; only the last one can end the stream.",
+      "items": {
+        "$ref": "#/$defs/SealedChunk"
+      },
+      "type": "array"
     },
     "epoch": {
       "format": "uint64",
@@ -137,30 +178,18 @@
     "resource": {
       "$ref": "#/$defs/ResourceRef"
     },
-    "sequence": {
-      "format": "uint64",
-      "minimum": 0,
-      "type": "integer"
-    },
     "session_id": {
       "type": "string"
     },
     "stream_id": {
       "type": "string"
-    },
-    "timestamp_us": {
-      "format": "uint64",
-      "minimum": 0,
-      "type": "integer"
     }
   },
   "required": [
     "stream_id",
     "session_id",
     "epoch",
-    "sequence",
-    "timestamp_us",
-    "end",
+    "chunks",
     "resource"
   ],
   "title": "SealedMedia",

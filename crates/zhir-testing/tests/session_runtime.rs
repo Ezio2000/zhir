@@ -529,7 +529,7 @@ async fn native_voice_video_stream_is_lossless_and_sealed_before_delivery() {
             data.extend(bytes);
         }
         let node: SealedMedia = serde_json::from_slice(&data).unwrap();
-        sequences.push(node.sequence);
+        sequences.extend(node.chunks.iter().rev().map(|chunk| chunk.sequence));
         next = node.previous;
     }
     assert_eq!(sequences, (0..8).rev().collect::<Vec<_>>());

@@ -294,7 +294,12 @@ session_id、stream_id、epoch、sequence、timestamp_us、media_type、bytes、
 媒体序号在同一流内递增。输入 epoch 固定为 0；输出打断后使用新的 output_epoch，过期输出不会交付给宿主。结束的流从活动表移出，通过 media_archive 保留资源引用。
 
 媒体在存储完成和 cursor 提交后才交付，输出消费者变慢会向上游施加背压。
-checkpoint 只记录最新封存节点；SealedMedia 的 previous 引用链接历史节点。
+同一流、epoch 与媒体类型中已经排队的多个包合并为一段封存：一个数据资源加一个 SealedMedia
+节点，`chunks` 记录每个包的 sequence、timestamp_us、offset、length 与 end；该段提交一次后按序交付。
+每个方向的排队包数受 `Limits.max_buffered_media_packets`（默认 256）约束，字节数受
+`max_buffered_media_bytes` 约束，宿主的 send 在任一上限处等待。
+checkpoint 只记录最新封存段；SealedMedia 的 previous 引用链接更早的段。
+FilesystemResourceStore 在根目录写入格式 5 标记，并按 id 前两位十六进制分目录存放资源。
 长期资源保留、检索索引、解码/转码与播放界面由产品层负责。
 
 ## 凭据与跨供应商能力

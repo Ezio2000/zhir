@@ -14,6 +14,7 @@ pub fn limits() -> zhir_core::run::Limits {
         max_media_streams: 64,
         max_media_chunk_bytes: 1024 * 1024,
         max_buffered_media_bytes: 16 * 1024 * 1024,
+        max_buffered_media_packets: 256,
         max_operation_concurrency: 8,
         max_observer_events: 256,
         max_total_tokens: None,
