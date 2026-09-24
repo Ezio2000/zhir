@@ -466,9 +466,16 @@ async fn reachable_lists_the_stored_resources_a_checkpoint_references() {
             .await,
         );
     }
+    // Content may reference media nodes directly; listing them first must not stop the
+    // walk over their data and earlier nodes.
     let mut checkpoint = zhir_testing::checkpoint(vec![
         Message::User {
-            content: vec![Content::resource(user.clone()), Content::resource(inline)],
+            content: vec![
+                Content::resource(user.clone()),
+                Content::resource(inline),
+                Content::resource(active.clone()),
+                Content::resource(archive.clone().unwrap()),
+            ],
         },
         Message::Assistant {
             output: vec![Output::Content {

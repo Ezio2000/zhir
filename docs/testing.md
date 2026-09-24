@@ -28,13 +28,13 @@ cargo run -p zhir-conformance --bin schemas --locked -- --check
 | `conformance/tests/dependencies.rs` | 生产依赖图、feature 边界、接入包不直接依赖 webrtc/tokio-tungstenite、验收代码位置 |
 | `core_values`、`core_boundaries` | 值、history（追加后共享已有条目）、wire、运行参数、目录与绑定 |
 | `session_runtime` | 原生会话早发工具、provider 任务、等待恢复、媒体封存 |
-| `session_semantics` | 委派与会话语义、流归档；2000 条流不重扫归档链、慢存储下排队包合并为一段且提交少于包数、宿主媒体输入在包数上限处阻塞 |
+| `session_semantics` | 委派与会话语义、委派恢复失败保持 Unknown、流归档；2000 条流不重扫归档链、慢存储下排队包合并为一段且提交少于包数、宿主媒体输入在包数上限处阻塞 |
 | `session_recovery` | 未确认 outbox 不重发、竞争恢复 CAS、跨轮 provider 完成、重复/冲突完成、双向流、中断及 SealUserInput；本地投影在建立中或 Generate 发出前崩溃后可续跑，已发出的生成需 AbandonGeneration，处置不符即失败，被放弃这一代的 provider 操作须先结算、之前各代的 provider 操作随重新生成继续，批内 profile 协商覆盖尚未提交的输出，连接被拒以 `http_connect` 失败 |
 | `runtime_deadlines` | catalog/model 建立阶段截止时间、未确认 commit 超时；虚拟时钟下空闲运行零轮询、取消无需推进时间即结算、截止时间由定时器触发 |
 | `runtime_operations` | 工具按发出顺序准入、纯文本一轮（9 次）与一次工具调用一轮（15 次）的提交次数上限、串行屏障与并行分组、审批期间不再准入、start 错误结算、取消运行中工具、OperationChanged 完整序列、恢复后工具从序号 0 重放与同序号冲突 |
 | `refactoring` | provider operation 结算后的跨轮 replay 与 wire 往返、4096 项历史合并顺序、虚拟时钟下有界并发取消及统一退出预算 |
 | `minimax_tts`（feature `minimax`） | 生产 WebSocket TTS：分句封存、中断、尾音、背压、凭据刷新与连接生命周期、运行写入的全部资源都能从最终 checkpoint 到达；ignored 测试访问真实服务 |
-| `webrtc_driver`（feature `webrtc`） | 生产骨架配确定性传输与非 Live 适配器：无 Peer 命令、主动建连、排水期间确认与期限、发送顺序、媒体预算与关闭边界 |
+| `webrtc_driver`（feature `webrtc`） | 生产骨架配确定性传输与非 Live 适配器：无 Peer 命令、主动建连、排水期间确认与期限、发送顺序、媒体预算与关闭边界；TURN 服务器的凭据传入 WebRTC 栈 |
 | `models_*` | 请求与流协议、Unicode/分片、回放、装饰器、资源预算、会话资源输入；HTTP 429 + Retry-After 重试、400 不重试、5xx 耗尽、响应体开始后不重试、连接被拒、截止时间约束与共享请求限流 |
 | `contract_review` | 检查点 schema、最新输入完成条件、恢复绑定、小栈历史结算，以及 exchange 回调即时发出 delta 时的确认/开始顺序和有界队列取消 |
 | `models_decorators` | 会话包装器转发与绑定；独立保留 control、events、media.input 或 media.output 时，会话并发额度持续占用，最后一个端口释放后才允许新会话 |
@@ -44,7 +44,7 @@ cargo run -p zhir-conformance --bin schemas --locked -- --check
 | `provider_integration` | 自定义 provider 执行归属、媒体绑定、原生回放与并发隔离 |
 | `developer_api`、`consumer_six`、`consumer_ten`、`convenience` | 消费者组合、票据、参数隔离、选择、强类型上下文与输出、资源删除、文件资源分目录与格式标记拒绝 |
 | `scenario_scale`、`http_fixture` | 本地并发 HTTP/SSE、密集事件、RPC 工作流及传输故障 |
-| `storage_stores` | 四种存储共享的原子提交、冲突、截止时间、历史与 96 个等待操作恢复；重写后只留当前一代历史、删除运行后无残留、`reachable` 覆盖历史/完成内容/活动游标/归档链并在节点缺失时失败；两个 SQLite 实例共享文件并发写全部提交、竞争首写一成一冲突 |
+| `storage_stores` | 四种存储共享的原子提交、冲突、截止时间、历史与 96 个等待操作恢复；重写后只留当前一代历史、删除运行后无残留、`reachable` 覆盖历史/完成内容/活动游标/归档链、内容直接引用媒体节点时仍遍历其数据与前驱，并在节点缺失时失败；两个 SQLite 实例共享文件并发写全部提交、竞争首写一成一冲突 |
 
 ## 独立 feature、示例与发布包
 

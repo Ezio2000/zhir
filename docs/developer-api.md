@@ -170,6 +170,7 @@ Finished/Unknown 更新生命周期；Waiting 的 prompt 用于展示交互，�
 | `Invalid`、`Validation`、`Catalog`、`Model` 等确定错误 | Failure（如 `invalid_arguments`），模型下一轮可见 |
 | 已请求取消后返回 `Cancelled` | Cancelled |
 | `Uncertain`、`Storage`、`Conflict`、`Protocol`、`Deadline`，或未请求取消时的 `Cancelled` | Unknown，运行以 RecoveryRequired 挂起 |
+| 工具或委派的 `recover` 返回任何错误 | Unknown：无法判断外部工作是否仍在运行 |
 
 `Execution.parallel` 为 false 的调用单独执行：它等待所有更早发出的调用结束，之后的
 调用也等它结束才开始。连续的并行调用成组执行，受 `max_operation_concurrency` 约束。

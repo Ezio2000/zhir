@@ -210,7 +210,7 @@ pub async fn reachable(
     }
     let mut archive = checkpoint.active.session.media_archive.clone();
     while let Some(node) = archive.take() {
-        if !found.insert(&node) {
+        if !found.walk(&node) {
             break;
         }
         let archived: ArchivedMedia = read_node(store, &node).await?;
@@ -222,9 +222,19 @@ pub async fn reachable(
 #[derive(Default)]
 struct Reachable {
     keys: std::collections::BTreeSet<String>,
+    walked: std::collections::BTreeSet<String>,
     resources: Vec<ResourceRef>,
 }
 impl Reachable {
+    /// Lists a media node and reports whether its links still need following. A node
+    /// already listed as message content has not been followed yet.
+    fn walk(&mut self, reference: &ResourceRef) -> bool {
+        self.insert(reference);
+        match &reference.source {
+            ResourceSource::Stored { key } => self.walked.insert(key.clone()),
+            _ => false,
+        }
+    }
     fn insert(&mut self, reference: &ResourceRef) -> bool {
         let ResourceSource::Stored { key } = &reference.source else {
             return false;
@@ -247,7 +257,7 @@ impl Reachable {
         mut node: Option<ResourceRef>,
     ) -> Result<()> {
         while let Some(reference) = node.take() {
-            if !self.insert(&reference) {
+            if !self.walk(&reference) {
                 break;
             }
             let sealed: SealedMedia = read_node(store, &reference).await?;

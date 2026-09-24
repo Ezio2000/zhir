@@ -70,7 +70,8 @@ implementations belong to testing modules and are not exported by production cra
     to repeat start. Queued work has not been dispatched. A start error other than
     Uncertain, Storage, Conflict, Protocol, Deadline or Cancelled settles as a Failure
     with the error's code; those errors leave the operation Unknown, except Cancelled
-    after a cancellation request, which settles as Cancelled.
+    after a cancellation request, which settles as Cancelled. Any recover error of a
+    tool or delegation leaves the operation Unknown.
 12. OperationOutcome contains only Success, Failure and Cancelled. Running,
     Waiting, Cancelling and Unknown are unfinished operation states. Waiting prompt
     data is not a model-visible final tool result. Only Finished appends a result.

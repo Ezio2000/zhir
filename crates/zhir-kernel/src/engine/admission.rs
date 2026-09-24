@@ -51,7 +51,7 @@ impl Engine {
                 Some(record) => binding
                     .recover(record, context)
                     .await
-                    .map_err(|error| Error::Protocol(format!("recovery failed: {error}"))),
+                    .map_err(recovery_failed),
                 None => binding.start(context).await,
             };
             let _ = tx.send(Work::Started(id, result)).await;
@@ -284,7 +284,8 @@ impl Engine {
                         let result = handler
                             .recover(record, context)
                             .await
-                            .map(ToolExecution::Active);
+                            .map(ToolExecution::Active)
+                            .map_err(recovery_failed);
                         let _ = tx.send(Work::Started(id, result)).await;
                     });
                 } else {
@@ -398,4 +399,10 @@ impl Engine {
         }
         Ok(())
     }
+}
+
+/// A failed recovery cannot establish whether the external work is still running, so
+/// the operation becomes Unknown rather than a definite failure.
+fn recovery_failed(error: Error) -> Error {
+    Error::Protocol(format!("recovery failed: {error}"))
 }

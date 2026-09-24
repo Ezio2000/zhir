@@ -87,6 +87,7 @@ impl WebRtcAdapter for Adapter {
                     .iter()
                     .map(|url| IceServer {
                         urls: vec![url.clone()],
+                        ..Default::default()
                     })
                     .collect(),
                 channel_label: "oai-events",

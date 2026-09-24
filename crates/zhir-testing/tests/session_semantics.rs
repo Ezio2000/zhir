@@ -312,42 +312,8 @@ fn assistant(text: &str) -> Message {
     }
 }
 
-#[tokio::test]
-async fn delegation_recovery_attaches_without_repeating_start() {
-    struct Recover;
-    impl DelegationHandler for Recover {
-        fn start(
-            &self,
-            _: DelegationRequest,
-            _: DelegationContext,
-        ) -> BoxFuture<'_, Result<OperationHandle>> {
-            Box::pin(async { panic!("recovery must never start backend work") })
-        }
-        fn recover(
-            &self,
-            record: OperationRecord,
-            context: DelegationContext,
-        ) -> BoxFuture<'_, Result<OperationHandle>> {
-            Box::pin(async move {
-                assert_eq!(record.id, "operation");
-                assert_eq!(context.operation_id, record.id);
-                assert_eq!(record.recovery.unwrap().adapter, "backend");
-                Ok(OperationHandle {
-                    recovery: None,
-                    control: Arc::new(Control),
-                    events: Box::new(Events(VecDeque::from([OperationEvent {
-                        sequence: 0,
-                        update: OperationUpdate::Finished {
-                            outcome: OperationOutcome::Success {
-                                content: vec![Content::text("recovered")],
-                                structured: serde_json::Value::Null,
-                            },
-                        },
-                    }]))),
-                })
-            })
-        }
-    }
+/// A run suspended for recovery with one delegation in an unknown state.
+fn recovering_delegation() -> (zhir_core::run::Checkpoint, CapabilitySet) {
     let origin = CallRef {
         session_id: "fixture-session".into(),
         item_id: "d".into(),
@@ -407,6 +373,46 @@ async fn delegation_recovery_attaches_without_repeating_start() {
         Capability::AsyncResults,
         Capability::Resume,
     ]);
+    (checkpoint, caps)
+}
+
+#[tokio::test]
+async fn delegation_recovery_attaches_without_repeating_start() {
+    struct Recover;
+    impl DelegationHandler for Recover {
+        fn start(
+            &self,
+            _: DelegationRequest,
+            _: DelegationContext,
+        ) -> BoxFuture<'_, Result<OperationHandle>> {
+            Box::pin(async { panic!("recovery must never start backend work") })
+        }
+        fn recover(
+            &self,
+            record: OperationRecord,
+            context: DelegationContext,
+        ) -> BoxFuture<'_, Result<OperationHandle>> {
+            Box::pin(async move {
+                assert_eq!(record.id, "operation");
+                assert_eq!(context.operation_id, record.id);
+                assert_eq!(record.recovery.unwrap().adapter, "backend");
+                Ok(OperationHandle {
+                    recovery: None,
+                    control: Arc::new(Control),
+                    events: Box::new(Events(VecDeque::from([OperationEvent {
+                        sequence: 0,
+                        update: OperationUpdate::Finished {
+                            outcome: OperationOutcome::Success {
+                                content: vec![Content::text("recovered")],
+                                structured: serde_json::Value::Null,
+                            },
+                        },
+                    }]))),
+                })
+            })
+        }
+    }
+    let (checkpoint, caps) = recovering_delegation();
     let model = SessionModel::new(caps, |open, mut peer| async move {
         assert!(open.recovery.is_some());
         let result = peer.command().await?.unwrap();
@@ -453,6 +459,77 @@ async fn delegation_recovery_attaches_without_repeating_start() {
         result.state
     );
     assert!(result.active.operations.is_empty());
+}
+
+/// A recovery that fails cannot establish whether the delegated work still runs, so
+/// the operation stays Unknown instead of becoming a definite failure.
+#[tokio::test]
+async fn a_failed_delegation_recovery_leaves_the_operation_unknown() {
+    struct Rejects;
+    impl DelegationHandler for Rejects {
+        fn start(
+            &self,
+            _: DelegationRequest,
+            _: DelegationContext,
+        ) -> BoxFuture<'_, Result<OperationHandle>> {
+            Box::pin(async { panic!("recovery must never start backend work") })
+        }
+        fn recover(
+            &self,
+            _: OperationRecord,
+            _: DelegationContext,
+        ) -> BoxFuture<'_, Result<OperationHandle>> {
+            Box::pin(async {
+                Err(zhir_core::error::Error::Invalid(
+                    "backend has no such run".into(),
+                ))
+            })
+        }
+    }
+    let (checkpoint, caps) = recovering_delegation();
+    let model = SessionModel::new(caps, |_, mut peer| async move {
+        peer.finished("t".into(), ResponseStatus::Completed).await?;
+        while peer.command().await?.is_some() {}
+        Ok(())
+    });
+    let runtime = Runtime::builder(Arc::new(model))
+        .delegation(Arc::new(Rejects))
+        .build()
+        .unwrap();
+    let mut invocation = runtime
+        .resume(
+            zhir_kernel::ResumeRequest::from_checkpoint(Arc::new(checkpoint)).resolve(
+                RecoveryResolution::Attach {
+                    operation_id: "operation".into(),
+                    reference: RecoveryRef {
+                        adapter: "backend".into(),
+                        data: serde_json::Value::Null,
+                    },
+                },
+            ),
+        )
+        .await
+        .unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(3), invocation.result())
+        .await
+        .unwrap()
+        .unwrap()
+        .into_checkpoint();
+    assert!(
+        matches!(&result.state, State::Suspended { suspension } if suspension.reason == "RecoveryRequired"),
+        "{:?}",
+        result.state
+    );
+    assert_eq!(
+        result.active.operations["operation"].state,
+        OperationState::Unknown
+    );
+    assert!(
+        !result
+            .history
+            .iter()
+            .any(|entry| matches!(entry.message, Message::DelegationResult { .. }))
+    );
 }
 
 /// Counts opened archive nodes and can slow every create to let media queue up.

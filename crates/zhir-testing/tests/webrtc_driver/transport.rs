@@ -12,6 +12,7 @@ use zhir_core::{BoxFuture, Result, error::Error};
 #[allow(dead_code)]
 #[path = "../../../zhir-models/src/transport/webrtc/connection.rs"]
 mod connection;
+pub(crate) use connection::configuration;
 pub use connection::{AudioCodec, Connection, ConnectionState, IceServer};
 #[path = "../../../zhir-models/src/transport/rtp.rs"]
 mod rtp;

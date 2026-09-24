@@ -342,6 +342,30 @@ fn chunk(sequence: u64) -> MediaChunk {
 }
 
 #[tokio::test]
+async fn turn_servers_reach_the_webrtc_stack_with_their_credentials() {
+    let server = IceServer {
+        urls: vec!["turn:turn.example.com:3478".into()],
+        username: "user".into(),
+        credential: "secret".into(),
+    };
+    let api = ::webrtc::api::APIBuilder::new().build();
+    let config = fixture::configuration(std::slice::from_ref(&server));
+    assert_eq!(config.ice_servers[0].username, "user");
+    assert_eq!(config.ice_servers[0].credential, "secret");
+    let peer = api.new_peer_connection(config).await.unwrap();
+    peer.close().await.unwrap();
+    // The stack rejects a TURN server without credentials.
+    let anonymous = IceServer {
+        urls: server.urls,
+        ..Default::default()
+    };
+    assert!(
+        api.new_peer_connection(fixture::configuration(&[anonymous]))
+            .await
+            .is_err()
+    );
+}
+#[tokio::test]
 async fn adapter_can_connect_initially_without_audio_input() {
     let (mut session, harness, signals) = setup("eager", true, false).await;
     assert!(session.media.input.is_none());

@@ -32,7 +32,7 @@ lifetime, handshake authentication, heartbeat, bounded delivery and cancellation
 WebRtcConnectionPolicy, PeerSettings, Action}` and `WebRtcModel::new` support a text
 DataChannel and an independent RTP audio queue. The adapter supplies signaling,
 codec settings, connection policy and synchronous protocol transitions. `PeerSettings`
-uses the driver's own `IceServer` and `AudioCodec`, and policies observe
+uses the driver's own `IceServer` (URLs plus TURN username and credential) and `AudioCodec`, and policies observe
 `Connection { state: ConnectionState, since }`; adapters never depend on the WebRTC stack. It may
 request connection at initialization or after receiving session commands.
 

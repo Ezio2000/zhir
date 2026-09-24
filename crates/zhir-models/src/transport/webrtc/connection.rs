@@ -45,10 +45,12 @@ impl Connection {
     }
 }
 
-/// One ICE server and the URLs that reach it.
+/// One STUN or TURN server, the URLs that reach it and, for TURN, its credentials.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IceServer {
     pub urls: Vec<String>,
+    pub username: String,
+    pub credential: String,
 }
 
 /// The single audio codec a peer registers, sends and receives.
@@ -67,7 +69,8 @@ pub(crate) fn configuration(ice_servers: &[IceServer]) -> RTCConfiguration {
             .iter()
             .map(|server| RTCIceServer {
                 urls: server.urls.clone(),
-                ..Default::default()
+                username: server.username.clone(),
+                credential: server.credential.clone(),
             })
             .collect(),
         ..Default::default()
