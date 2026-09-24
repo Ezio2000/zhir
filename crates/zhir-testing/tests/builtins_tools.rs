@@ -135,6 +135,50 @@ async fn shell_drains_both_streams_and_times_out() {
         .is_err()
     );
 }
+#[cfg(unix)]
+#[tokio::test]
+async fn shell_output_held_by_escaped_descendants_is_truncated_after_grace() {
+    let dir = tempfile::tempdir().unwrap();
+    let started = std::time::Instant::now();
+    let result = start_tool(
+        zhir_builtins::shell::bash(zhir_builtins::shell::ShellOptions::new(dir.path())).unwrap(),
+        json!({"command":"perl -MPOSIX -e 'POSIX::setsid(); sleep 5' & sleep 0.2; printf done"}),
+    )
+    .await
+    .unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    let output = result.final_outcome().structured().unwrap();
+    assert_eq!(output["stdout"], "done");
+    assert_eq!(output["truncated"], true);
+}
+#[tokio::test]
+async fn model_input_errors_carry_tool_failure_codes() {
+    let dir = tempfile::tempdir().unwrap();
+    let code = |result: Result<zhir_core::operation::ToolExecution>| match result {
+        Err(zhir_core::error::Error::RuntimeTool(failure)) => failure.code,
+        other => panic!("{:?}", other.map(|_| ())),
+    };
+    assert_eq!(
+        code(
+            start_tool(
+                zhir_builtins::filesystem::grep(dir.path()).unwrap(),
+                json!({"pattern":"("}),
+            )
+            .await
+        ),
+        "invalid_pattern"
+    );
+    assert_eq!(
+        code(
+            start_tool(
+                zhir_builtins::filesystem::list_files(dir.path()).unwrap(),
+                json!({"path":".."}),
+            )
+            .await
+        ),
+        "outside_workspace"
+    );
+}
 #[tokio::test]
 async fn questions_produce_a_host_suspension() {
     let result = start_tool(

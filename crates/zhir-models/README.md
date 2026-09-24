@@ -7,8 +7,9 @@ Service endpoints, model/voice defaults and provider task semantics belong to in
 integration crates: [zhir-minimax](../zhir-minimax/README.md) and
 [zhir-openai](../zhir-openai/README.md).
 
-Includes TransformModel, ResourceModel, session concurrency, establishment-only
-retry, stable-ID fallback recovery, static/refreshing credential providers and
+Includes TransformModel, ResourceModel, session and request concurrency limits,
+EstablishmentRetryModel, HTTP request retry before the response body, stable-ID
+fallback recovery, static/refreshing credential providers and
 explicit endpoint profile mappings. ProtocolExtension and ProviderToolAdapter
 implement endpoint-specific requests, outputs and replay. Protocol defaults are not
 live model capability discovery. OAuth login remains the host's responsibility.
@@ -30,7 +31,9 @@ lifetime, handshake authentication, heartbeat, bounded delivery and cancellation
 `webrtc::{WebRtcAdapter, WebRtcSession, WebRtcProtocol, WebRtcMedia,
 WebRtcConnectionPolicy, PeerSettings, Action}` and `WebRtcModel::new` support a text
 DataChannel and an independent RTP audio queue. The adapter supplies signaling,
-codec settings, connection policy and synchronous protocol transitions. It may
+codec settings, connection policy and synchronous protocol transitions. `PeerSettings`
+uses the driver's own `IceServer` (URLs plus TURN username and credential) and `AudioCodec`, and policies observe
+`Connection { state: ConnectionState, since }`; adapters never depend on the WebRTC stack. It may
 request connection at initialization or after receiving session commands.
 
 `WebRtcMedia::receive` consumes an `AudioPacket` and returns an optional `MediaChunk`.
@@ -49,4 +52,4 @@ commits. External integrations may instead implement core's Model contract direc
 Features have no provider dependencies. Enabling WebSocket does not enable HTTP or
 WebRTC, and enabling WebRTC does not enable a service's signaling client.
 
-Part of the zhir workspace, version 0.3.0.
+Part of the zhir workspace, version 0.4.0.

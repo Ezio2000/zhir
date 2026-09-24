@@ -28,6 +28,7 @@ impl Engine {
         let interrupt = matches!(intent, CommandIntent::InterruptOutput { .. });
         let id = new_id();
         let mut next = self.current.as_ref().clone();
+        let mut archived = vec![];
         match &intent {
             CommandIntent::Close => next.active.session.closing = true,
             CommandIntent::InterruptOutput { output_epoch, .. } => {
@@ -43,6 +44,7 @@ impl Engine {
                     self.archive_media(&mut next, key.clone(), sealed, false)
                         .await?;
                     next.active.media.remove(&key);
+                    archived.push(key);
                 }
             }
             CommandIntent::SealUserInput => next.active.session.input_closed = true,
@@ -64,6 +66,9 @@ impl Engine {
             HistoryDelta::Unchanged,
         )
         .await?;
+        for key in archived {
+            self.ended_stream(key);
+        }
         if interrupt {
             self.media_output
                 .invalidate_before(self.current.active.session.output_epoch);
@@ -91,34 +96,66 @@ impl Engine {
         else {
             return Ok(());
         };
+        // A local projection is rebuilt from committed history after a crash, so only a
+        // generation request can have reached a service and needs a durable send boundary.
+        let durable = matches!(command.intent, CommandIntent::Generate { .. })
+            || !control.capabilities().supports(Capability::LocalProjection);
         let body = self.command_body(command.intent)?;
-        // A crash after this commit is an explicitly uncertain send, never an implicit retry.
-        let mut next = self.current.as_ref().clone();
-        next.active
-            .commands
-            .iter_mut()
-            .find(|c| c.id == command.id)
-            .expect("pending command")
-            .sent = true;
-        self.commit(
-            next,
-            Fact::Command {
-                command_id: command.id.clone(),
-            },
-            HistoryDelta::Unchanged,
-        )
-        .await?;
+        // A local Generate is prepared with its send boundary already committed.
+        if durable && !command.sent {
+            // A crash after this commit is an explicitly uncertain send, never an implicit retry.
+            let mut next = self.current.as_ref().clone();
+            next.active
+                .commands
+                .iter_mut()
+                .find(|c| c.id == command.id)
+                .expect("pending command")
+                .sent = true;
+            self.commit(
+                next,
+                Fact::Command {
+                    command_id: command.id.clone(),
+                },
+                HistoryDelta::Unchanged,
+            )
+            .await?;
+        }
         self.check()?;
-        self.sent.insert(command.id.clone());
+        let first = command.id;
+        let mut batch = vec![SessionCommand {
+            id: first.clone(),
+            body,
+        }];
+        // Local commands without a durable boundary that follow are submitted in the same
+        // pass, in order, so their acknowledgements arrive together and share a commit.
+        if !durable {
+            for next in self
+                .current
+                .active
+                .commands
+                .iter()
+                .filter(|c| !self.sent.contains(&c.id) && c.id != first)
+            {
+                if matches!(next.intent, CommandIntent::Generate { .. }) || !self.can_send(next) {
+                    break;
+                }
+                batch.push(SessionCommand {
+                    id: next.id.clone(),
+                    body: self.command_body(next.intent.clone())?,
+                });
+            }
+        }
+        self.sent.extend(batch.iter().map(|c| c.id.clone()));
         self.sending = true;
         let tx = self.work_tx.clone();
         self.tasks.spawn(async move {
-            let result = control
-                .submit(SessionCommand {
-                    id: command.id,
-                    body,
-                })
-                .await;
+            let mut result = Ok(());
+            for command in batch {
+                result = control.submit(command).await;
+                if result.is_err() {
+                    break;
+                }
+            }
             let _ = tx.send(Work::CommandSent(result)).await;
         });
         Ok(())
@@ -134,7 +171,7 @@ impl Engine {
             && self.current.active.session.generation_id.is_some();
         match &command.intent {
             CommandIntent::SealUserInput | CommandIntent::Close | CommandIntent::FlushInput => {
-                !self.input_sending && self.media.is_empty()
+                !self.input_sending && self.held_input.is_none() && self.media.is_empty()
             }
             CommandIntent::Append {
                 operation_id: Some(_),

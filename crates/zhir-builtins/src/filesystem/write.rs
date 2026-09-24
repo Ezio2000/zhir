@@ -1,12 +1,11 @@
 use super::workspace::*;
-use crate::common::{failure, spec};
+use crate::common::{MUTATING, failure, spec};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{io::Write, path::Path};
 use std::{path::PathBuf, sync::Arc};
 use zhir_core::{
     Result,
-    error::Error,
     tool::{RuntimeTool, RuntimeToolContext},
 };
 use zhir_tools::function;
@@ -93,7 +92,7 @@ pub fn write_file(root: impl Into<PathBuf>) -> Result<Arc<dyn RuntimeTool>> {
         spec::<WriteArgs>(
             "write_file",
             "Create or replace a UTF-8 file using its expected digest.",
-            false,
+            MUTATING,
         ),
         move |a: WriteArgs, context| {
             let w = workspace.clone();
@@ -107,7 +106,7 @@ pub fn edit_file(root: impl Into<PathBuf>) -> Result<Arc<dyn RuntimeTool>> {
         spec::<EditArgs>(
             "edit_file",
             "Replace matching text using the current file digest.",
-            false,
+            MUTATING,
         ),
         move |a: EditArgs, context| {
             let w = workspace.clone();
@@ -133,7 +132,7 @@ fn edit_content(w: &Workspace, a: EditArgs, ctx: &RuntimeToolContext) -> Result<
     let bytes = read(&path)?;
     let text = utf8(&bytes)?;
     if a.old_string.is_empty() {
-        return Err(Error::Invalid("empty match text".into()));
+        return Err(failure("invalid_edit", "empty match text"));
     }
     let count = text.matches(&a.old_string).count();
     if count == 0 || (count > 1 && !a.replace_all) {

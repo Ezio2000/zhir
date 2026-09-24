@@ -23,4 +23,7 @@ pub enum HistoryDelta {
 pub trait RunStore: Send + Sync {
     fn commit(&self, commit: Commit) -> BoxFuture<'_, Result<()>>;
     fn load_head(&self, run_id: &str) -> BoxFuture<'_, Result<Option<Arc<Checkpoint>>>>;
+    /// Removes every checkpoint, commit identity and history record of a run. Deleting an
+    /// unknown run succeeds. Resources a run references are deleted separately.
+    fn delete(&self, run_id: &str) -> BoxFuture<'_, Result<()>>;
 }

@@ -34,7 +34,7 @@ pub struct SessionPeer {
 impl SessionPeer {
     pub fn projection(&self) -> Vec<zhir_core::message::Message> {
         let mut messages = self.seed.clone();
-        messages.extend(conversation(self.projection.clone()));
+        messages.extend(conversation(&self.projection));
         messages
     }
     /// Apply kernel-accepted output to the fixture projection before exposing host commands.

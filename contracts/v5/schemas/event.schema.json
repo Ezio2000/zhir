@@ -283,6 +283,27 @@
             "sequence"
           ],
           "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "generation_id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "generation_abandoned",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "generation_id",
+            "reason"
+          ],
+          "type": "object"
         }
       ]
     },

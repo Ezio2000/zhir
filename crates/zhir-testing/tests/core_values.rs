@@ -78,11 +78,31 @@ fn history_snapshots_remain_immutable_and_large_drops_do_not_recurse() {
     assert_eq!(&history.last().unwrap().message, &Message::external("next"));
 }
 #[test]
+fn appended_histories_share_existing_entries() {
+    let before = History::new(vec![Message::user("begin"), Message::user("again")]).unwrap();
+    let after = before
+        .append(vec![entry("added", Message::external("next"))])
+        .unwrap();
+    for index in 0..before.len() {
+        assert!(std::ptr::eq(
+            before.get(index).unwrap(),
+            after.get(index).unwrap()
+        ));
+    }
+    assert_eq!(
+        after
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<_>>(),
+        ["input:0", "input:1", "added"]
+    );
+}
+#[test]
 fn wire_rejects_version_drift_unknown_fields_and_corrupt_history() {
     let checkpoint = zhir_testing::checkpoint(vec![Message::user("hello")]);
     let bytes = wire::encode_checkpoint(&checkpoint).unwrap();
     let original: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    for version in [0, 1, 2, 3, 5] {
+    for version in [0, 1, 2, 3, 4, 6] {
         let mut changed = original.clone();
         changed["version"] = json!(version);
         assert!(wire::decode_checkpoint(&serde_json::to_vec(&changed).unwrap()).is_err());
@@ -226,9 +246,51 @@ fn commit_consistency_is_pure_and_deadline_checks_use_explicit_time() {
         commit.check_deadline(at + Duration::from_millis(1)),
         Err(Error::Deadline)
     ));
-    commit.history = HistoryDelta::Initial(vec![entry("wrong", Message::user("wrong"))]);
+    let wrong = Commit::new(
+        commit.checkpoint().clone(),
+        HistoryDelta::Initial(vec![entry("wrong", Message::user("wrong"))]),
+    );
     assert!(matches!(
-        commit.validate_against(None),
+        wrong.validate_against(None),
         Err(Error::Storage(_))
     ));
+}
+#[tokio::test]
+async fn cancellation_wakes_every_waiter_and_dropped_waiters_unregister() {
+    use std::{
+        future::Future,
+        sync::Arc,
+        task::{Context, Wake, Waker},
+    };
+    struct Flag;
+    impl Wake for Flag {
+        fn wake(self: Arc<Self>) {}
+    }
+    let cancellation = zhir_core::Cancellation::default();
+    let flag = Arc::new(Flag);
+    let waker = Waker::from(flag.clone());
+    let mut dropped = Box::pin(cancellation.cancelled());
+    assert!(
+        dropped
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    drop(waker);
+    assert_eq!(Arc::strong_count(&flag), 2);
+    drop(dropped);
+    assert_eq!(Arc::strong_count(&flag), 1);
+
+    let waiters: Vec<_> = (0..3)
+        .map(|_| tokio::spawn(cancellation.cancelled()))
+        .collect();
+    tokio::task::yield_now().await;
+    cancellation.cancel();
+    for waiter in waiters {
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
+            .await
+            .expect("waiter was not woken")
+            .unwrap();
+    }
+    cancellation.cancelled().await;
 }

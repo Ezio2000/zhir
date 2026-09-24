@@ -14,7 +14,7 @@ use zhir_core::{
     },
     run::RunContext,
 };
-use zhir_models::decorators::{FallbackCandidate, FallbackModel, RetryingModel};
+use zhir_models::decorators::{EstablishmentRetryModel, FallbackCandidate, FallbackModel};
 use zhir_testing::ModelTestExt;
 
 struct Flaky {
@@ -102,7 +102,7 @@ fn context() -> ModelContext {
 async fn retries_only_retryable_session_establishment_before_any_turn() {
     for (retryable, emit, expected) in [(true, false, 2), (false, false, 1), (true, true, 1)] {
         let inner = Flaky::new(1, retryable, emit);
-        let model = RetryingModel::new(
+        let model = EstablishmentRetryModel::new(
             inner.clone(),
             zhir_policies::RetryPolicy::new(3)
                 .unwrap()
@@ -312,7 +312,7 @@ async fn observer_errors_after_side_effects_never_retry_in_either_nesting_order(
         let captured = sink.clone();
         let model: Arc<dyn Model> = if observer_inside {
             Arc::new(
-                RetryingModel::new(
+                EstablishmentRetryModel::new(
                     Arc::new(ObservedModel::new(inner.clone(), move |_, _| {
                         Ok(captured.clone())
                     })),
@@ -325,7 +325,7 @@ async fn observer_errors_after_side_effects_never_retry_in_either_nesting_order(
         } else {
             Arc::new(ObservedModel::new(
                 Arc::new(
-                    RetryingModel::new(
+                    EstablishmentRetryModel::new(
                         inner.clone(),
                         zhir_policies::RetryPolicy::new(3)
                             .unwrap()
@@ -358,7 +358,7 @@ async fn observer_factory_scope_tracks_wrapper_invocations_across_retries() {
         };
         let model: Arc<dyn Model> = if observer_inside {
             Arc::new(
-                RetryingModel::new(
+                EstablishmentRetryModel::new(
                     Arc::new(ObservedModel::new(inner.clone(), factory)),
                     zhir_policies::RetryPolicy::new(3)
                         .unwrap()
@@ -369,7 +369,7 @@ async fn observer_factory_scope_tracks_wrapper_invocations_across_retries() {
         } else {
             Arc::new(ObservedModel::new(
                 Arc::new(
-                    RetryingModel::new(
+                    EstablishmentRetryModel::new(
                         inner.clone(),
                         zhir_policies::RetryPolicy::new(3)
                             .unwrap()

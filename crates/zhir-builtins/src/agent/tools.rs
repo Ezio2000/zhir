@@ -6,7 +6,7 @@ use zhir_core::{
     BoxFuture, Result,
     error::Error,
     operation::{OperationRecord, ToolExecution},
-    tool::{RuntimeTool, RuntimeToolCall, RuntimeToolContext, RuntimeToolSpec},
+    tool::{Execution, RuntimeTool, RuntimeToolCall, RuntimeToolContext, RuntimeToolSpec},
 };
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -62,7 +62,12 @@ pub fn tools(backend: Arc<dyn AgentBackend>) -> Result<Vec<Arc<dyn RuntimeTool>>
         spec: spec::<Start>(
             "agent_run",
             "Run a child Agent; progress, replies and cancellation use its operation handle.",
-            false,
+            // Child runs are independent; max_running and operation concurrency bound them.
+            Execution {
+                parallel: true,
+                read_only: false,
+                idempotent: false,
+            },
         ),
     })])
 }

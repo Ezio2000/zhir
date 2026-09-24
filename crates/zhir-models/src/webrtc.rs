@@ -1,14 +1,12 @@
 //! Session orchestration for a text DataChannel and an independent RTP audio queue.
 //! Provider phases, signaling, media interpretation and connection policy are injected.
 use crate::native::Buffered;
-pub use crate::transport::webrtc::{AudioPacket, Connection, RtpTimeline};
+pub use crate::transport::webrtc::{
+    AudioCodec, AudioPacket, Connection, ConnectionState, IceServer, RtpTimeline,
+};
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
 use tokio::time::Instant;
-use webrtc::{
-    peer_connection::configuration::RTCConfiguration,
-    rtp_transceiver::rtp_codec::RTCRtpCodecParameters,
-};
 use zhir_core::{
     BoxFuture, Result, error::Error, model::*, profile::NegotiatedProfile, resource::MediaChunk,
 };
@@ -76,9 +74,9 @@ pub struct WebRtcSession {
     pub command_headroom: usize,
 }
 pub struct PeerSettings {
-    pub connection: RTCConfiguration,
+    pub ice_servers: Vec<IceServer>,
     pub channel_label: &'static str,
-    pub audio_codec: RTCRtpCodecParameters,
+    pub audio_codec: AudioCodec,
     pub max_event_bytes: usize,
     pub audio_input: bool,
 }

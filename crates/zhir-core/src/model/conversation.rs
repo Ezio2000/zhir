@@ -15,11 +15,11 @@ struct Response {
 /// Project causal history into real responses or independent items, retaining each provider call's
 /// original output position when a later item updates it. History remains in
 /// arrival order; only the context projection groups causally related assistant output.
-pub fn conversation(entries: impl IntoIterator<Item = HistoryEntry>) -> Vec<Message> {
+pub fn conversation<'a>(entries: impl IntoIterator<Item = &'a HistoryEntry>) -> Vec<Message> {
     let mut messages = Vec::new();
     let mut responses = BTreeMap::new();
     for entry in entries {
-        match (entry.origin, entry.message) {
+        match (&entry.origin, &entry.message) {
             (
                 Some(origin),
                 Message::Assistant {
@@ -36,13 +36,13 @@ pub fn conversation(entries: impl IntoIterator<Item = HistoryEntry>) -> Vec<Mess
                     unreachable!("responses index assistant messages")
                 };
                 for item in output {
-                    response.merge(accumulated, item);
+                    response.merge(accumulated, item.clone());
                 }
                 if !provider_data.is_null() {
-                    *data = provider_data;
+                    *data = provider_data.clone();
                 }
             }
-            (_, message) => messages.push(message),
+            (_, message) => messages.push(message.clone()),
         }
     }
     messages
@@ -51,11 +51,18 @@ pub fn conversation(entries: impl IntoIterator<Item = HistoryEntry>) -> Vec<Mess
 fn response<'a>(
     responses: &'a mut BTreeMap<(String, Option<String>, Option<String>), Response>,
     messages: &mut Vec<Message>,
-    origin: CallRef,
+    origin: &CallRef,
 ) -> &'a mut Response {
-    let item = origin.generation_id.is_none().then_some(origin.item_id);
+    let item = origin
+        .generation_id
+        .is_none()
+        .then(|| origin.item_id.clone());
     responses
-        .entry((origin.session_id, origin.generation_id, item))
+        .entry((
+            origin.session_id.clone(),
+            origin.generation_id.clone(),
+            item,
+        ))
         .or_insert_with(|| {
             let message_index = messages.len();
             messages.push(Message::Assistant {

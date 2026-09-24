@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "name": "profile_preferred",
   "kind": "value",
   "schema": "request-profile",

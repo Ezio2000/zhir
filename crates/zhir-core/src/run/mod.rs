@@ -277,6 +277,8 @@ pub struct Limits {
     pub max_media_streams: usize,
     pub max_media_chunk_bytes: usize,
     pub max_buffered_media_bytes: usize,
+    /// Media packets queued in each direction between the host and the kernel.
+    pub max_buffered_media_packets: usize,
     pub max_operation_concurrency: usize,
     pub max_observer_events: usize,
     pub max_total_tokens: Option<u64>,
@@ -290,10 +292,12 @@ impl Limits {
             || self.max_session_events == 0
             || self.max_observer_events == 0
             || self.max_media_streams == 0
+            || self.max_buffered_media_packets == 0
             || [
                 self.max_control_commands,
                 self.max_session_events,
                 self.max_observer_events,
+                self.max_buffered_media_packets,
             ]
             .iter()
             .any(|size| *size > u32::MAX as usize)
@@ -376,6 +380,10 @@ pub enum Fact {
         stream_id: String,
         sequence: u64,
     },
+    GenerationAbandoned {
+        generation_id: String,
+        reason: String,
+    },
 }
 impl Fact {
     pub fn kind(&self) -> &'static str {
@@ -389,6 +397,7 @@ impl Fact {
             Self::HistoryRewrite { .. } => "history_rewrite",
             Self::Control { .. } => "control",
             Self::Media { .. } => "media",
+            Self::GenerationAbandoned { .. } => "generation_abandoned",
         }
     }
 }

@@ -2,7 +2,7 @@
 
 zhir 是可嵌入的 Rust Agent SDK，为研发平台提供模型会话、异步操作、资源流、运行控制和持久化恢复。宿主提供 Tokio 运行环境、模型客户端、凭据、工具与存储。
 
-当前工作区版本为 **0.3.0**，checkpoint 和存储格式为 **v4**。这是一次直接替换公共契约的重构；使用新的数据库、Redis namespace 和资源目录。
+当前工作区版本为 **0.4.0**，checkpoint 和存储格式为 **v5**。这是一次直接替换公共契约的重构；使用新的数据库、Redis namespace 和资源目录。
 
 ## 组件
 
@@ -42,7 +42,7 @@ let model = openai::chat::model(ModelConfig::new(
     Arc::new(StaticCredential::new("Bearer", std::env::var("OPENAI_API_KEY")?)),
     std::env::var("OPENAI_MODEL")?,
 ))?;
-let store = SqliteRunStore::connect("sqlite://runs-v4.db?mode=rwc").await?;
+let store = SqliteRunStore::connect("sqlite://runs-v5.db?mode=rwc").await?;
 let runtime = Runtime::builder(Arc::new(model))
     .store(Arc::new(store))
     .defaults(|run| run.stream(true))
@@ -83,7 +83,7 @@ cargo test --workspace --all-features --locked
 
 验收、故障注入、trace 校验和基准只放在不发布的 `zhir-testing` 与 `conformance`。独立 feature、契约、真实数据库和包验证方法见[测试说明](docs/testing.md)。
 
-[架构与职责](docs/architecture.md) · [研发接入](docs/developer-api.md) · [运行契约](contracts/v4/behavior/runtime.md) · [测试说明](docs/testing.md)
+[架构与职责](docs/architecture.md) · [研发接入](docs/developer-api.md) · [运行契约](contracts/v5/behavior/runtime.md) · [测试说明](docs/testing.md)
 
 GPT-Live 原生接入使用 `zhir-openai::live`，包含订阅端 WebRTC、完整发言历史及后台委托；
 [接入与限制](crates/zhir-openai/README.md) · [运行示例](crates/zhir-openai/examples/gpt_live.rs)。

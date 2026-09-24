@@ -1,4 +1,4 @@
-//! Version 2 contract cases. Scenario drivers remain outside production packages.
+//! Current v5 contract cases. Scenario drivers remain outside production packages.
 mod fixtures;
 mod validation;
 use serde::Deserialize;
@@ -43,8 +43,8 @@ struct Expected {
     unused_steps: usize,
 }
 pub async fn run_case(case: &Value) -> Result<()> {
-    if case["version"] != 4 {
-        return Err(Error::Invalid("case requires version 4".into()));
+    if case["version"] != 5 {
+        return Err(Error::Invalid("case requires version 5".into()));
     }
     match case["kind"].as_str() {
         Some("value") => validation::run(case),

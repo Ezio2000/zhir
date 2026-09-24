@@ -1,11 +1,10 @@
 use super::workspace::*;
-use crate::common::{failure, spec};
+use crate::common::{READ_ONLY, failure, spec};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc};
 use zhir_core::{
     Result,
-    error::Error,
     tool::{RuntimeTool, RuntimeToolContext},
 };
 use zhir_tools::function;
@@ -23,7 +22,11 @@ struct ReadArgs {
 pub fn read_file(root: impl Into<PathBuf>) -> Result<Arc<dyn RuntimeTool>> {
     let workspace = Workspace::new(root)?;
     let tool = function::structured(
-        spec::<ReadArgs>("read_file", "Read UTF-8 lines and the file digest.", true),
+        spec::<ReadArgs>(
+            "read_file",
+            "Read UTF-8 lines and the file digest.",
+            READ_ONLY,
+        ),
         move |a: ReadArgs, context| {
             let w = workspace.clone();
             async move { blocking(context, move |_| read_content(&w, a)).await }
@@ -43,7 +46,7 @@ struct ListArgs {
 pub fn list_files(root: impl Into<PathBuf>) -> Result<Arc<dyn RuntimeTool>> {
     let workspace = Workspace::new(root)?;
     Ok(Arc::new(function::structured(
-        spec::<ListArgs>("list_files", "List directory entries.", true),
+        spec::<ListArgs>("list_files", "List directory entries.", READ_ONLY),
         move |a: ListArgs, context| {
             let w = workspace.clone();
             async move { blocking(context, move |ctx| list_content(&w, a, &ctx)).await }
@@ -52,7 +55,7 @@ pub fn list_files(root: impl Into<PathBuf>) -> Result<Arc<dyn RuntimeTool>> {
 }
 fn read_content(w: &Workspace, a: ReadArgs) -> Result<Value> {
     if a.offset == 0 || a.limit == 0 || a.limit > MAX_READ_LINES {
-        return Err(Error::Invalid("invalid line range".into()));
+        return Err(failure("invalid_range", "invalid line range"));
     }
     let path = w.path(&a.path, false)?;
     let bytes = read(&path)?;

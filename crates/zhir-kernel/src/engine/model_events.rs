@@ -1,34 +1,167 @@
 use super::*;
 
+/// Session events applied to one checkpoint and committed together.
+#[derive(Default)]
+struct SessionBatch {
+    staged: Option<Checkpoint>,
+    sequence: Option<u64>,
+    events: usize,
+    seal_user_input: bool,
+    suspend: bool,
+    provider_state: bool,
+}
+impl SessionBatch {
+    /// A batch that seals input, suspends, leaves the running state or changes a provider
+    /// operation commits before any later event is applied, so every operation state is
+    /// durable and observed before a later event settles or removes it.
+    fn closed(&self) -> bool {
+        self.seal_user_input
+            || self.suspend
+            || self.provider_state
+            || self
+                .staged
+                .as_ref()
+                .is_some_and(|next| !next.state.active())
+    }
+}
+#[derive(Default)]
+struct Effects {
+    seal_user_input: bool,
+    suspend: bool,
+    provider_state: bool,
+}
+
 impl Engine {
+    /// Applies a session event together with the session events already queued behind
+    /// it, up to `max_session_events`, as one checkpoint. A delta or provider operation
+    /// event ends the batch, and the first unbatched work item is handled next.
     pub(super) async fn model_event(&mut self, event: SessionEvent) -> Result<()> {
+        if !self.fresh_sequence(event.sequence)? {
+            return Ok(());
+        }
+        let body = match event.body {
+            SessionEventBody::Delta { delta, .. } => {
+                self.emitter.emit(EventData::ModelDelta { delta });
+                return Ok(());
+            }
+            SessionEventBody::Operation {
+                origin,
+                event: operation_event,
+            } => {
+                return self
+                    .provider_event(event.sequence, origin, operation_event)
+                    .await;
+            }
+            body => body,
+        };
+        let mut batch = SessionBatch::default();
+        let staged = self.collect(&mut batch, event.sequence, body);
+        // Events applied before a failure remain committed facts.
+        if let (Some(next), Some(sequence)) = (batch.staged, batch.sequence) {
+            let entries = next.history.appended_since(&self.current.history)?;
+            let history = if entries.is_empty() {
+                HistoryDelta::Unchanged
+            } else {
+                HistoryDelta::Append(entries)
+            };
+            self.commit(
+                next,
+                Fact::Session {
+                    session_id: self.current.active.session.id.clone(),
+                    sequence,
+                },
+                history,
+            )
+            .await?;
+        }
+        staged?;
+        if batch.seal_user_input {
+            self.media.close();
+        }
+        if batch.suspend {
+            self.suspend(WaitReason::Recovery).await?;
+        }
+        Ok(())
+    }
+
+    fn collect(
+        &mut self,
+        batch: &mut SessionBatch,
+        mut sequence: u64,
+        mut body: SessionEventBody,
+    ) -> Result<()> {
+        loop {
+            let mut next = batch
+                .staged
+                .as_ref()
+                .unwrap_or(self.current.as_ref())
+                .clone();
+            let effects = self.apply_event(&mut next, sequence, body)?;
+            batch.staged = Some(next);
+            batch.sequence = Some(sequence);
+            batch.events += 1;
+            batch.seal_user_input |= effects.seal_user_input;
+            batch.suspend |= effects.suspend;
+            batch.provider_state |= effects.provider_state;
+            loop {
+                if batch.closed() || batch.events >= self.current.options.limits.max_session_events
+                {
+                    return Ok(());
+                }
+                let Ok(work) = self.work.try_recv() else {
+                    return Ok(());
+                };
+                match work {
+                    Work::Model(Ok(Some(event)))
+                        if !matches!(
+                            event.body,
+                            SessionEventBody::Delta { .. } | SessionEventBody::Operation { .. }
+                        ) =>
+                    {
+                        if self.fresh_sequence(event.sequence)? {
+                            (sequence, body) = (event.sequence, event.body);
+                            break;
+                        }
+                    }
+                    work => {
+                        *self.stash() = Some(work);
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Rejects a sequence that does not increase and reports whether the event is new
+    /// rather than a replay of one already committed.
+    fn fresh_sequence(&mut self, sequence: u64) -> Result<bool> {
         if self
             .session_sequence
-            .is_some_and(|sequence| event.sequence <= sequence)
+            .is_some_and(|previous| sequence <= previous)
         {
             return Err(Error::Protocol(
                 "session event sequence did not increase".into(),
             ));
         }
-        self.session_sequence = Some(event.sequence);
-        if self
+        self.session_sequence = Some(sequence);
+        Ok(self
             .current
             .active
             .session
             .last_sequence
-            .is_some_and(|sequence| event.sequence <= sequence)
-        {
-            return Ok(());
-        }
-        if let SessionEventBody::Delta { delta, .. } = event.body {
-            self.emitter.emit(EventData::ModelDelta { delta });
-            return Ok(());
-        }
-        let mut next = self.current.as_ref().clone();
-        next.active.session.last_sequence = Some(event.sequence);
+            .is_none_or(|previous| sequence > previous))
+    }
+
+    fn apply_event(
+        &mut self,
+        next: &mut Checkpoint,
+        sequence: u64,
+        body: SessionEventBody,
+    ) -> Result<Effects> {
+        next.active.session.last_sequence = Some(sequence);
         let mut entries = vec![];
-        let mut seal_user_input = false;
-        match event.body {
+        let mut effects = Effects::default();
+        match body {
             SessionEventBody::Ready { context_revision } => {
                 if next.active.session.ready {
                     return Err(Error::Protocol("duplicate session ready".into()));
@@ -83,7 +216,7 @@ impl Engine {
                         .supports(Capability::StreamingInput)
                 {
                     next.active.session.input_closed = true;
-                    seal_user_input = true;
+                    effects.seal_user_input = true;
                     next.active.commands.push(PendingCommand {
                         id: new_id(),
                         intent: CommandIntent::SealUserInput,
@@ -123,13 +256,21 @@ impl Engine {
                 recovery,
                 ..
             } => {
-                self.acknowledge_command(&mut next, command_id, recovery)?;
+                self.acknowledge_command(next, command_id, recovery)?;
             }
             body @ SessionEventBody::Output { .. } => {
-                return self.accept_output(next, event.sequence, body).await;
+                effects.provider_state = matches!(
+                    &body,
+                    SessionEventBody::Output {
+                        output: Output::ProviderToolCall { .. },
+                        ..
+                    }
+                );
+                effects.suspend = self.stage_output(next, body)?;
+                return Ok(effects);
             }
             body @ SessionEventBody::ResponseFinished { .. } => {
-                entries.push(self.complete_response(&mut next, body)?);
+                entries.push(self.complete_response(next, body)?);
             }
             SessionEventBody::Recovery { reference } => {
                 next.active.session.recovery = Some(reference)
@@ -150,17 +291,11 @@ impl Engine {
                 next.active.session.input_closed = true;
                 self.media.close();
             }
-            SessionEventBody::Operation {
-                origin,
-                event: operation_event,
-            } => {
-                return self
-                    .provider_event(event.sequence, origin, operation_event)
-                    .await;
+            SessionEventBody::Operation { .. } | SessionEventBody::Delta { .. } => {
+                unreachable!("deltas and provider operation events are not batched")
             }
-            SessionEventBody::Delta { .. } => unreachable!(),
         }
-        let unfinished_close = next.active.session.closure.is_some()
+        effects.suspend = next.active.session.closure.is_some()
             && (next
                 .active
                 .operations
@@ -169,12 +304,23 @@ impl Engine {
                 || !next.active.commands.is_empty()
                 || (next.active.session.generation_id.is_some()
                     && next.active.session.response_status.is_none()));
-        self.commit_session(next, event.sequence, entries).await?;
-        if seal_user_input {
-            self.media.close();
+        self.stage_entries(next, entries)?;
+        Ok(effects)
+    }
+
+    fn stage_entries(&self, next: &mut Checkpoint, entries: Vec<HistoryEntry>) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
         }
-        if unfinished_close {
-            self.suspend(WaitReason::Recovery).await?;
+        let start = next.history.len();
+        next.history = next.history.append(entries)?;
+        if self
+            .session_capabilities()
+            .supports(Capability::ExplicitGeneration)
+        {
+            for index in start..next.history.len() {
+                Self::append_command(next, index, AppendSource::Accepted, None);
+            }
         }
         Ok(())
     }
@@ -214,7 +360,7 @@ impl Engine {
             next.active.session.acknowledged_context_revision = *context_revision;
         }
         if let CommandIntent::UpdateProfile { revision, profile } = command.intent {
-            let mut request = self.model_request(next.history.len());
+            let mut request = self.model_request(next.history.iter());
             request.profile = profile.clone();
             next.active.session.negotiated = self.negotiate(&request)?;
             next.active.session.effective.values = next
@@ -234,12 +380,8 @@ impl Engine {
         self.sent.remove(&command_id);
         Ok(())
     }
-    async fn accept_output(
-        &mut self,
-        mut next: Checkpoint,
-        sequence: u64,
-        body: SessionEventBody,
-    ) -> Result<()> {
+    /// Stages one output item and reports whether it is late work after closing.
+    fn stage_output(&mut self, next: &mut Checkpoint, body: SessionEventBody) -> Result<bool> {
         let SessionEventBody::Output {
             generation_id,
             item_id,
@@ -308,16 +450,7 @@ impl Engine {
             if previous != &entry {
                 return Err(Error::Protocol("conflicting output identity".into()));
             }
-            return self
-                .commit(
-                    next,
-                    Fact::Session {
-                        session_id: self.current.active.session.id.clone(),
-                        sequence,
-                    },
-                    HistoryDelta::Unchanged,
-                )
-                .await;
+            return Ok(false);
         }
         let late_work = next.active.session.closing
             && matches!(
@@ -326,12 +459,9 @@ impl Engine {
                     | Output::RuntimeToolCall { .. }
                     | Output::ProviderToolCall { .. }
             );
-        self.record_output(&mut next, output, origin)?;
-        self.commit_session(next, sequence, vec![entry]).await?;
-        if late_work {
-            self.suspend(WaitReason::Recovery).await?;
-        }
-        Ok(())
+        self.record_output(next, output, origin)?;
+        self.stage_entries(next, vec![entry])?;
+        Ok(late_work)
     }
     fn record_output(&self, next: &mut Checkpoint, output: Output, origin: CallRef) -> Result<()> {
         if let Output::Delegation { .. } = &output {
@@ -587,35 +717,12 @@ impl Engine {
             )
             .await;
     }
-    async fn commit_session(
-        &mut self,
-        mut next: Checkpoint,
-        sequence: u64,
-        entries: Vec<HistoryEntry>,
-    ) -> Result<()> {
-        let history = if entries.is_empty() {
-            HistoryDelta::Unchanged
-        } else {
-            let start = next.history.len();
-            next.history = next.history.append(entries.clone())?;
-            if self
-                .session_capabilities()
-                .supports(Capability::ExplicitGeneration)
-            {
-                for index in start..next.history.len() {
-                    Self::append_command(&mut next, index, AppendSource::Accepted, None);
-                }
-            }
-            HistoryDelta::Append(entries)
-        };
-        self.commit(
-            next,
-            Fact::Session {
-                session_id: self.current.active.session.id.clone(),
-                sequence,
-            },
-            history,
-        )
-        .await
+}
+
+impl Engine {
+    pub(super) fn stash(&mut self) -> &mut Option<Work> {
+        self.stashed
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }

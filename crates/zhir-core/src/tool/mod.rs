@@ -55,14 +55,6 @@ pub struct Execution {
     pub read_only: bool,
     pub idempotent: bool,
 }
-impl Execution {
-    pub fn validate(&self) -> Result<()> {
-        Ok(())
-    }
-    pub fn parallel_safe(&self) -> bool {
-        self.parallel
-    }
-}
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -100,6 +92,9 @@ pub trait RuntimeTool: Send + Sync {
         call: RuntimeToolCall,
         context: RuntimeToolContext,
     ) -> BoxFuture<'_, Result<crate::operation::ToolExecution>>;
+    /// Attaches to work started earlier. Its event stream may replay from sequence 0:
+    /// events before the recorded `last_sequence` are ignored, the recorded sequence must
+    /// repeat the recorded update, and later sequences continue the operation.
     fn recover(
         &self,
         _record: crate::operation::OperationRecord,
@@ -118,6 +113,9 @@ pub trait RuntimeToolBinding: Send + Sync {
         &self,
         context: RuntimeToolContext,
     ) -> BoxFuture<'_, Result<crate::operation::ToolExecution>>;
+    /// Attaches to work started earlier. Its event stream may replay from sequence 0:
+    /// events before the recorded `last_sequence` are ignored, the recorded sequence must
+    /// repeat the recorded update, and later sequences continue the operation.
     fn recover(
         &self,
         record: crate::operation::OperationRecord,

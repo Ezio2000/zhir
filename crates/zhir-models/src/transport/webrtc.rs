@@ -10,12 +10,8 @@ use webrtc::{
     data_channel::RTCDataChannel,
     interceptor::registry::Registry,
     media::Sample,
-    peer_connection::{
-        RTCPeerConnection, configuration::RTCConfiguration,
-        peer_connection_state::RTCPeerConnectionState,
-        sdp::session_description::RTCSessionDescription,
-    },
-    rtp_transceiver::rtp_codec::{RTCRtpCodecParameters, RTPCodecType},
+    peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription},
+    rtp_transceiver::rtp_codec::RTPCodecType,
     track::track_local::{TrackLocal, track_local_static_sample::TrackLocalStaticSample},
 };
 use zhir_core::{BoxFuture, Result, error::Error};
@@ -27,9 +23,9 @@ pub struct AudioPacket {
     pub ssrc: u32,
 }
 pub(crate) struct PeerConfig {
-    pub connection: RTCConfiguration,
+    pub ice_servers: Vec<IceServer>,
     pub channel_label: &'static str,
-    pub audio_codec: RTCRtpCodecParameters,
+    pub audio_codec: AudioCodec,
     pub event_capacity: usize,
     pub max_event_bytes: usize,
     pub max_audio_bytes: usize,
@@ -38,7 +34,7 @@ pub(crate) struct PeerConfig {
 
 #[path = "webrtc/connection.rs"]
 mod connection;
-pub use connection::Connection;
+pub use connection::{AudioCodec, Connection, ConnectionState, IceServer};
 #[path = "rtp.rs"]
 mod rtp;
 pub use rtp::RtpTimeline;
@@ -61,7 +57,10 @@ impl Peer {
     pub async fn new(config: PeerConfig) -> Result<Self> {
         let mut media = MediaEngine::default();
         media
-            .register_codec(config.audio_codec.clone(), RTPCodecType::Audio)
+            .register_codec(
+                connection::parameters(&config.audio_codec),
+                RTPCodecType::Audio,
+            )
             .map_err(error)?;
         let registry = register_default_interceptors(Registry::new(), &mut media).map_err(error)?;
         let api = APIBuilder::new()
@@ -69,7 +68,7 @@ impl Peer {
             .with_interceptor_registry(registry)
             .build();
         let pc = Arc::new(
-            api.new_peer_connection(config.connection)
+            api.new_peer_connection(connection::configuration(&config.ice_servers))
                 .await
                 .map_err(error)?,
         );
@@ -77,7 +76,7 @@ impl Peer {
         // All entries own reservations from the same budget as native output.
         let (audio_tx, audio) = mpsc::unbounded_channel();
         let (failed, failure) = watch::channel(None);
-        let (state_tx, connection) = watch::channel(Connection::new(RTCPeerConnectionState::New));
+        let (state_tx, connection) = watch::channel(Connection::new(ConnectionState::New));
         let (ready_tx, ready) = watch::channel(false);
         let readers = Arc::new(Mutex::new(Vec::new()));
         let audio_failed = failed.clone();
@@ -125,6 +124,7 @@ impl Peer {
         }));
         pc.on_peer_connection_state_change(Box::new(move |state| {
             let tx = state_tx.clone();
+            let state = ConnectionState::from(state);
             Box::pin(async move {
                 tx.send_if_modified(|connection| {
                     if connection.state == state {
@@ -178,7 +178,7 @@ impl Peer {
             })
         }));
         let track = Arc::new(TrackLocalStaticSample::new(
-            config.audio_codec.capability,
+            connection::capability(&config.audio_codec),
             "audio".into(),
             "zhir".into(),
         ));

@@ -2,9 +2,10 @@
 //! Pending control frames are interpreted before reporting connection loss.
 use std::time::Duration;
 use tokio::time::Instant;
-use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState as State;
 use zhir_core::{Result, error::Error};
-use zhir_models::webrtc::{Connection, ConnectionStatus, WebRtcConnectionPolicy};
+use zhir_models::webrtc::{
+    Connection, ConnectionState as State, ConnectionStatus, WebRtcConnectionPolicy,
+};
 
 pub(crate) struct LiveConnection {
     pub grace: Duration,

@@ -17,6 +17,7 @@ impl Engine {
         next.parent_id = Some(self.current.id.clone());
         next.revision = self.current.revision + 1;
         next.fact = fact;
+        let previous = self.current.clone();
         self.current = persist(self.store.as_ref(), next, history).await?;
         self.emitter.emit(EventData::CheckpointCommitted {
             checkpoint_id: self.current.id.clone(),
@@ -24,6 +25,20 @@ impl Engine {
             state: self.current.state.kind(),
             fact: self.current.fact.clone(),
         });
+        // Every durable operation state transition is observable exactly once.
+        for (id, operation) in &self.current.active.operations {
+            if previous
+                .active
+                .operations
+                .get(id)
+                .is_none_or(|before| before.state != operation.state)
+            {
+                self.emitter.emit(EventData::OperationChanged {
+                    operation_id: id.clone(),
+                    state: operation.state,
+                });
+            }
+        }
         Ok(())
     }
     pub(super) async fn suspend(&mut self, reason: WaitReason) -> Result<()> {
@@ -70,7 +85,7 @@ pub(super) async fn persist(
     let timeout = Duration::from_millis(next.options.limits.commit_timeout_ms);
     let mut commit = Commit::new(Arc::new(next), history);
     commit.deadline = Some(std::time::Instant::now() + timeout);
-    let checkpoint = commit.checkpoint.clone();
+    let checkpoint = commit.checkpoint().clone();
     tokio::time::timeout(timeout, store.commit(commit))
         .await
         .map_err(|_| {

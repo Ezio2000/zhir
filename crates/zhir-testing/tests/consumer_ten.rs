@@ -21,7 +21,7 @@ use zhir::{
     },
     message::{Message, Output},
     model::{CapabilitySet, GenerationOutput, Model, ModelContext, ModelRequest},
-    models::{FunctionModel, TransformModel, decorators::RetryingModel},
+    models::{FunctionModel, TransformModel, decorators::EstablishmentRetryModel},
     policies::{Backoff, RetryPolicy},
     run::{ContextKey, Limits, State},
     runtime_tools::{
@@ -536,7 +536,7 @@ async fn model_and_tool_backoff_are_cancelled_and_deadline_bounded() {
             calls: counted,
             entered: signal,
         };
-        let model = RetryingModel::new(
+        let model = EstablishmentRetryModel::new(
             Arc::new(model),
             RetryPolicy::new(4)
                 .unwrap()
@@ -629,7 +629,9 @@ async fn matching_retry_cases_have_independent_attempts_and_strict_verification(
         }))
         .unwrap(),
     );
-    let model = Arc::new(RetryingModel::new(script.clone(), RetryPolicy::new(2).unwrap()).unwrap());
+    let model = Arc::new(
+        EstablishmentRetryModel::new(script.clone(), RetryPolicy::new(2).unwrap()).unwrap(),
+    );
     let mut tasks = vec![];
     for n in 0..32 {
         let model = model.clone();
@@ -710,6 +712,18 @@ async fn check_resources(store: Arc<dyn ResourceStore>) -> ResourceRef {
             .await
             .is_err()
     );
+    let mut writer = store
+        .create("consumer/deleted".into(), "text/plain".into())
+        .await
+        .unwrap();
+    writer.append(0, b"gone".to_vec()).await.unwrap();
+    let deleted = writer.finish().await.unwrap();
+    store.delete(deleted.clone()).await.unwrap();
+    assert!(matches!(
+        store.open(deleted.clone()).await,
+        Err(Error::Resource(ResourceError::NotFound { .. }))
+    ));
+    store.delete(deleted).await.unwrap();
     refs[0].clone()
 }
 #[tokio::test]
@@ -750,13 +764,40 @@ async fn filesystem_resources_survive_reopen_and_reject_corruption() {
             .unwrap(),
         b"hello"
     );
-    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    // The root holds only the format marker and shard directories named by id prefix.
+    let root: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert!(root.contains(&reference.id[..2].to_string()));
+    assert!(root.iter().all(|name| name == "format"
+        || (name.len() == 2
+            && name.bytes().all(|b| b.is_ascii_hexdigit())
+            && dir.path().join(name).is_dir())));
+    let path = dir
+        .path()
+        .join(&reference.id[..2])
+        .join(format!("{}.resource", reference.id));
+    std::fs::write(&path, b"incomplete").unwrap();
+    assert!(ResourceStore::open(&fresh, reference).await.is_err());
+    // A root in another format, or with unsharded resource files, is not adopted.
+    let stray = tempfile::tempdir().unwrap();
     std::fs::write(
-        dir.path().join(format!("{}.resource", reference.id)),
-        b"incomplete",
+        stray.path().join(format!("{}.resource", "a".repeat(64))),
+        b"x",
     )
     .unwrap();
-    assert!(ResourceStore::open(&fresh, reference).await.is_err());
+    assert!(FilesystemResourceStore::open(stray.path()).await.is_err());
+    let other = tempfile::tempdir().unwrap();
+    std::fs::write(other.path().join("format"), b"zhir-resources 4\n").unwrap();
+    assert!(FilesystemResourceStore::open(other.path()).await.is_err());
+    FilesystemResourceStore::open(dir.path()).await.unwrap();
+    std::fs::write(
+        dir.path().join(format!("{}.resource", "b".repeat(64))),
+        b"x",
+    )
+    .unwrap();
+    assert!(FilesystemResourceStore::open(dir.path()).await.is_err());
     let blocked = dir.path().join("not-a-directory");
     std::fs::write(&blocked, b"x").unwrap();
     assert!(FilesystemResourceStore::open(blocked).await.is_err());
@@ -809,7 +850,7 @@ async fn filesystem_resource_model_commits_references_and_rehydrates_history() {
     let checkpoint =
         zhir::wire::decode_checkpoint(&zhir::wire::encode_checkpoint(run.checkpoint()).unwrap())
             .unwrap();
-    let mut messages = zhir::model::conversation(checkpoint.history.entries());
+    let mut messages = zhir::model::conversation(checkpoint.history.iter());
     messages.push(Message::user("read"));
     let inner = FunctionModel::new(capabilities, move |request, _| {
         let inline = inline.clone();

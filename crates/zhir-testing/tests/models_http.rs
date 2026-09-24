@@ -245,7 +245,8 @@ async fn truncated_stream_and_http_errors_are_explicit() {
         )),
         "fixture",
     ))
-    .unwrap();
+    .unwrap()
+    .with_retry(zhir_policies::RetryPolicy::new(1).unwrap());
     assert!(
         matches!(model.generate(request(false),context(Arc::new(Deltas::default()))).await,Err(zhir_core::error::Error::Model(e)) if e.retryable && e.code=="http_429")
     );
@@ -812,4 +813,147 @@ fn protocol_key(protocol: zhir_models::Protocol) -> &'static str {
         zhir_models::Protocol::Responses => "responses",
         zhir_models::Protocol::Messages => "messages",
     }
+}
+
+fn fixture_model(url: &str) -> zhir_models::HttpModel {
+    protocol_model(zhir_models::Protocol::Chat, format!("{url}/v1"))
+}
+fn chat_reply() -> zhir_testing::http::HttpReply {
+    zhir_testing::http::HttpReply::json(
+        &json!({"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}),
+    )
+}
+fn no_backoff(attempts: usize) -> zhir_policies::RetryPolicy {
+    zhir_policies::RetryPolicy::new(attempts)
+        .unwrap()
+        .backoff(zhir_policies::Backoff::fixed(std::time::Duration::ZERO))
+}
+fn failure_code(result: Result<zhir_core::model::GenerationOutput>) -> String {
+    match result {
+        Err(zhir_core::error::Error::Model(failure)) => failure.code,
+        other => panic!("{:?}", other.map(|_| ())),
+    }
+}
+#[tokio::test]
+async fn rate_limits_are_retried_after_the_server_delay() {
+    use zhir_testing::http::{HttpFixture, HttpReply};
+    let fixture = HttpFixture::start([
+        HttpReply::json(&json!({"error":"slow down"}))
+            .status(429)
+            .header("retry-after", "1"),
+        chat_reply(),
+    ])
+    .await
+    .unwrap();
+    let started = std::time::Instant::now();
+    let output = fixture_model(fixture.url())
+        .generate(request(false), context(Arc::new(Deltas::default())))
+        .await
+        .unwrap();
+    assert!(started.elapsed() >= std::time::Duration::from_secs(1));
+    assert_eq!(output.output, vec![Output::text("ok")]);
+    assert_eq!(fixture.finish().await.unwrap().len(), 2);
+}
+#[tokio::test]
+async fn deterministic_rejections_are_not_retried() {
+    use zhir_testing::http::{HttpFixture, HttpReply};
+    let fixture = HttpFixture::start([HttpReply::json(&json!({"error":"bad"})).status(400)])
+        .await
+        .unwrap();
+    let result = fixture_model(fixture.url())
+        .generate(request(false), context(Arc::new(Deltas::default())))
+        .await;
+    assert_eq!(failure_code(result), "http_400");
+    assert_eq!(fixture.finish().await.unwrap().len(), 1);
+}
+#[tokio::test]
+async fn persistent_unavailability_exhausts_the_retry_budget() {
+    use zhir_testing::http::{HttpFixture, HttpReply};
+    let busy = || HttpReply::json(&json!({"error":"busy"})).status(503);
+    let fixture = HttpFixture::start([busy(), busy(), busy()]).await.unwrap();
+    let result = fixture_model(fixture.url())
+        .with_retry(no_backoff(3))
+        .generate(request(false), context(Arc::new(Deltas::default())))
+        .await;
+    assert_eq!(failure_code(result), "http_503");
+    assert_eq!(fixture.finish().await.unwrap().len(), 3);
+}
+#[tokio::test]
+async fn failures_after_the_response_body_starts_are_not_retried() {
+    use zhir_testing::http::{HttpFixture, HttpReply};
+    let body = sse(&[json!({"choices":[{"delta":{"content":"partial"}}]})]);
+    let fixture = HttpFixture::start([HttpReply::sse(body).disconnect_after(12)])
+        .await
+        .unwrap();
+    let result = fixture_model(fixture.url())
+        .with_retry(no_backoff(3))
+        .generate(request(true), context(Arc::new(Deltas::default())))
+        .await;
+    assert!(!matches!(
+        result,
+        Ok(_) | Err(zhir_core::error::Error::Model(_))
+    ));
+    assert_eq!(fixture.finish().await.unwrap().len(), 1);
+}
+#[tokio::test]
+async fn refused_connections_are_retryable_failures() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    let result = fixture_model(&url)
+        .with_retry(no_backoff(2))
+        .generate(request(false), context(Arc::new(Deltas::default())))
+        .await;
+    assert!(
+        matches!(&result, Err(zhir_core::error::Error::Model(f)) if f.code == "http_connect" && f.retryable),
+        "{:?}",
+        result.map(|_| ())
+    );
+}
+#[tokio::test]
+async fn a_retry_that_cannot_start_before_the_deadline_reports_the_rejection() {
+    use zhir_testing::http::{HttpFixture, HttpReply};
+    let fixture = HttpFixture::start([HttpReply::json(&json!({"error":"busy"}))
+        .status(503)
+        .header("retry-after", "5")])
+    .await
+    .unwrap();
+    let mut context = context(Arc::new(Deltas::default()));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    context.run.deadline_at_ms = Some(now + 2_000);
+    let started = std::time::Instant::now();
+    let result = fixture_model(fixture.url())
+        .generate(request(false), context)
+        .await;
+    assert_eq!(failure_code(result), "http_503");
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    assert_eq!(fixture.finish().await.unwrap().len(), 1);
+}
+#[tokio::test]
+async fn a_shared_request_limit_serializes_requests_across_models() {
+    use zhir_testing::http::HttpFixture;
+    let delay = std::time::Duration::from_millis(300);
+    let first = HttpFixture::start([chat_reply().delay(delay)])
+        .await
+        .unwrap();
+    let second = HttpFixture::start([chat_reply().delay(delay)])
+        .await
+        .unwrap();
+    let limit = zhir_models::RequestLimit::new(1).unwrap();
+    let a = fixture_model(first.url()).with_request_limit(limit.clone());
+    let b = fixture_model(second.url()).with_request_limit(limit);
+    let started = std::time::Instant::now();
+    let (x, y) = tokio::join!(
+        a.generate(request(false), context(Arc::new(Deltas::default()))),
+        b.generate(request(false), context(Arc::new(Deltas::default())))
+    );
+    x.unwrap();
+    y.unwrap();
+    assert!(started.elapsed() >= delay * 2);
+    first.finish().await.unwrap();
+    second.finish().await.unwrap();
+    assert!(zhir_models::RequestLimit::new(0).is_err());
 }

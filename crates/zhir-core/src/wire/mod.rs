@@ -1,4 +1,4 @@
-//! Explicit native v4 envelopes. Provider payloads and storage layouts are separate.
+//! Explicit native v5 envelopes. Provider payloads and storage layouts are separate.
 use crate::{
     Result,
     error::Error,
@@ -8,7 +8,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -71,7 +71,7 @@ impl CheckpointCore {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CheckpointEnvelope {
-    #[cfg_attr(feature = "schema", schemars(range(min = 4, max = 4)))]
+    #[cfg_attr(feature = "schema", schemars(range(min = 5, max = 5)))]
     version: u32,
     checkpoint: CheckpointCore,
     history: Vec<HistoryEntry>,
@@ -94,7 +94,7 @@ pub fn decode_checkpoint(bytes: &[u8]) -> Result<Checkpoint> {
     e.checkpoint.with_history(History::from_entries(e.history)?)
 }
 
-/// Schemas are generated from explicitly tagged native DTOs and checked into contracts/v4.
+/// Schemas are generated from explicitly tagged native DTOs and checked into contracts/v5.
 #[cfg(feature = "schema")]
 pub fn schemas() -> std::collections::BTreeMap<&'static str, serde_json::Value> {
     use schemars::schema_for;

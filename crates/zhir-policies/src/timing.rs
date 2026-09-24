@@ -1,6 +1,6 @@
 //! Shared monotonic retry deadlines; the caller supplies its executor timer.
 use std::time::Duration;
-use std::{future::Future, time::Instant};
+use std::{future::Future, pin::pin, task::Poll, time::Instant};
 use zhir_core::{Cancellation, Result, error::Error, run::RunContext};
 pub fn deadline(run: &RunContext) -> Result<Option<Instant>> {
     run.deadline_at_ms
@@ -18,6 +18,7 @@ pub fn check(cancellation: &Cancellation, deadline: Option<Instant>) -> Result<(
     }
     Ok(())
 }
+/// Sleeps for `delay`, returning early with the cancellation or deadline error.
 pub async fn wait<F, Fut>(
     delay: Duration,
     cancellation: &Cancellation,
@@ -32,16 +33,46 @@ where
     let until = Instant::now()
         .checked_add(delay)
         .ok_or_else(|| Error::Invalid("retry delay exceeds clock range".into()))?;
+    let wake = deadline.map_or(until, |at| at.min(until));
     loop {
+        race(cancellation, sleep_until(wake)).await;
         check(cancellation, deadline)?;
         if Instant::now() >= until {
             return Ok(());
         }
-        let wake = deadline
-            .map_or(until, |d| d.min(until))
-            .min(Instant::now() + Duration::from_millis(10));
-        sleep_until(wake).await;
     }
+}
+/// Completes with the error that interrupts work: cancellation or the deadline.
+pub async fn interrupted<F, Fut>(
+    cancellation: &Cancellation,
+    deadline: Option<Instant>,
+    mut sleep_until: F,
+) -> Error
+where
+    F: FnMut(Instant) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    loop {
+        if let Err(error) = check(cancellation, deadline) {
+            return error;
+        }
+        match deadline {
+            Some(at) => race(cancellation, sleep_until(at)).await,
+            None => cancellation.cancelled().await,
+        }
+    }
+}
+async fn race(cancellation: &Cancellation, sleep: impl Future<Output = ()>) {
+    let mut sleep = pin!(sleep);
+    let mut cancelled = pin!(cancellation.cancelled());
+    std::future::poll_fn(|context| {
+        if cancelled.as_mut().poll(context).is_ready() || sleep.as_mut().poll(context).is_ready() {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    })
+    .await
 }
 
 fn now_ms() -> u64 {

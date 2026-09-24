@@ -1,6 +1,6 @@
-# zhir v4 runtime behavior
+# zhir v5 runtime behavior
 
-These rules describe the current Rust values, kernel and v4 schemas. Acceptance
+These rules describe the current Rust values, kernel and v5 schemas. Acceptance
 implementations belong to testing modules and are not exported by production crates.
 
 ## State and identity
@@ -35,7 +35,12 @@ implementations belong to testing modules and are not exported by production cra
    external send. An acknowledgement retires the matching command. Recovery does
    not resend an entry marked sent; the adapter must reconcile it using its recovery
    reference. Loss of a session before completion, or an uncertain external result,
-   suspends with RecoveryRequired when its outcome cannot be established.
+   suspends with RecoveryRequired when its outcome cannot be established. A
+   LocalProjection session is rebuilt from committed history, so only Generate
+   persists sent=true, in the same checkpoint that records its intent; its other
+   commands are dispatched again into the rebuilt projection, and consecutive ones are
+   submitted together so their acknowledgements share a checkpoint. Opening such a
+   session has no external effect and commits no boundary before it opens.
 7. Complete output items are durable immediately; deltas are observations. The
    kernel may dispatch local tools before ResponseFinished. Append carries submitted inputs,
    host results or kernel-accepted canonical outputs. Ordinary adapters maintain their own
@@ -44,6 +49,10 @@ implementations belong to testing modules and are not exported by production cra
    ignored. Unknown acknowledgements, conflicting output identities and duplicate or
    foreign response completions are protocol errors. Each output requires a nonempty
    item/caller identity. Provider continuation preserves the initiating call identity.
+   Session events already queued behind one another, up to `max_session_events`, are
+   applied in order and committed as one `Session` fact carrying the last applied
+   sequence. Deltas, provider operation events, input sealing, suspension, provider
+   tool output and non-running states end a batch; their effects follow its commit.
 9. ResponseFinished records typed status, verified covered input position, usage,
    metadata and profile confirmations. Failed, Cancelled and Incomplete are not successful
    run completion. A response started before a later input cannot claim to cover it without
@@ -58,18 +67,27 @@ implementations belong to testing modules and are not exported by production cra
 11. RuntimeTool is the only executable tool trait. start and recover return Finished
     or Active. OperationRecord identity and Running admission are committed before
     start. recover attaches to existing work; inability to recover is not permission
-    to repeat start. Queued work has not been dispatched.
+    to repeat start. Queued work has not been dispatched. A start error other than
+    Uncertain, Storage, Conflict, Protocol, Deadline or Cancelled settles as a Failure
+    with the error's code; those errors leave the operation Unknown, except Cancelled
+    after a cancellation request, which settles as Cancelled. Any recover error of a
+    tool or delegation leaves the operation Unknown.
 12. OperationOutcome contains only Success, Failure and Cancelled. Running,
     Waiting, Cancelling and Unknown are unfinished operation states. Waiting prompt
     data is not a model-visible final tool result. Only Finished appends a result.
 13. A local final result, its terminal operation state and delivery command share one
     commit. Output schema failure becomes a final invalid_tool_output failure. An
     identical completion is idempotent; conflicting completion or reuse of an adapter
-    event sequence with another update fails. The persisted sequence/update pair is
-    not advanced by kernel-local control transitions.
+    event sequence with another update fails; an earlier sequence is an already applied
+    replay and is ignored. The persisted sequence/update pair is
+    not advanced by kernel-local control transitions. Every committed operation state
+    change is observed once as OperationChanged after its checkpoint.
 14. Catalog binding, input validation and approval precede external start. Scheduling
     is bounded by inflight and concurrent limits and explicit tool execution facts.
-    A batch approval suspension starts none of that admission group. Independent
+    Queued calls are admitted in emission order: a serial call runs alone after all
+    earlier calls, and consecutive parallel calls form one group. No new group is
+    admitted while an approval decision is pending. A batch approval suspension
+    starts none of that admission group. Independent
     operations commit in completion order with causal identities, not batch order.
 15. ProviderToolCall reports provider-owned work. It never invokes a local tool.
     Provider Operation events refer to an introduced call; a model cannot report the
@@ -79,6 +97,12 @@ implementations belong to testing modules and are not exported by production cra
     an operation event or explicit recovery resolution. Reply records an uncertain
     boundary before the external call. Attach, Complete and Abandon are explicit
     recovery resolutions; Unknown is never silently converted into a new start.
+    AbandonGeneration gives up the unfinished generation of a persisted
+    LocalProjection session: its Generate command is removed and the response becomes a
+    Continuation, so the model is called again and provider operations of earlier
+    generations continue through that call; it commits as GenerationAbandoned. Provider
+    operations the abandoned generation itself started are settled first with Complete
+    or Abandon, because the service cannot continue a lost response.
 17. Task runs suspend when all unfinished operations are Waiting/Unknown and the
     response has yielded and pending deliveries are acknowledged. Native async sessions
     can continue while work remains. Completed requires the mode's response/input boundary,
@@ -101,10 +125,16 @@ implementations belong to testing modules and are not exported by production cra
     Media input/output are separate bounded channels. Payload and manifest resources
     are sealed, and the cursor is committed, before delivery. Old output epochs are not
     delivered; input epoch is zero. Within a stream/epoch the cursor increases; checkpoints retain only
-    the latest immutable manifest reference. SealUserInput cannot overtake accepted input.
+    the latest immutable segment reference. Chunks of one stream, epoch and media type
+    already queued behind one another are sealed as one SealedMedia segment: one
+    resource holds their bytes and `chunks` records each sequence, timestamp, offset,
+    length and end. The segment commits once and its chunks are then delivered in
+    order; an idle stream seals single chunks, so segmenting adds no wait. A segment holds
+    at most `max_buffered_media_packets` and never more than 1024 chunks. Only the
+    last chunk of a segment can end the stream. SealUserInput cannot overtake accepted input.
 21. Defaults bound inflight operations to 64, command and session-event queues to 256,
     concurrent host operations to 8, simultaneously active media streams to 64, individual media chunks to 1 MiB and buffered media
-    bytes to 16 MiB per direction. Observer capacity defaults to 256. Configured
+    bytes to 16 MiB and buffered media packets to 256 per direction. Observer capacity defaults to 256. Configured
     limits are validated before channel/worker creation.
 22. Observer events can be lost; ObservationGap reports loss when capacity returns.
     Committed checkpoint state is the durable source of truth. SDK media sends use
@@ -124,16 +154,24 @@ implementations belong to testing modules and are not exported by production cra
     choose only explicit alternatives; unmet preferences remain visible. Negotiated
     and effective profiles are distinct. Effective values are Provider/Verified or
     Unknown; absence of confirmation never becomes inferred success.
-25. Model retry/fallback applies only to establishment before command dispatch.
+25. Model retry/fallback decorators apply only to establishment before command dispatch.
+    An HTTP adapter retries a generation request only for a retryable rejection received
+    before its response body: connection failure, 429 or 5xx, within the deadline.
     Fallback recovery binds a stable candidate identity and the original recovery
     reference. Endpoint capabilities, account credentials and profile mappings belong
     to adapters. Credential resolution/refresh is injected, not implemented by kernel.
 26. Run stores use one Commit validator, optimistic revisions and immutable history
     deltas. Same checkpoint ID/digest is idempotent; conflicting identity/revision is
-    rejected. Wire envelope version is exactly 4. SQL, Redis and resource format markers are 4;
+    rejected. Wire envelope version is exactly 5. SQL, Redis and resource format markers are 5;
     unversioned or other-version layouts require a fresh database/namespace. There
     are no old aliases, old-format readers, migration paths, transitional fields or
     compatibility execution modes. API, callers, tests, schemas and docs change together.
+    A history rewrite removes the replaced generation in the same commit, so stores keep
+    only the current history. `RunStore::delete` removes a run and
+    `ResourceStore::delete` removes a resource; unknown targets succeed. Stores never
+    delete on their own; `resources::reachable` lists what a checkpoint still references.
+    The commit deadline bounds SQL connection acquisition and is checked on the local
+    monotonic clock before a Redis write; server clocks do not decide it.
 
 
 Provider operation completion preserves `ProviderToolCall.data` exactly. The kernel
@@ -156,6 +194,8 @@ payload on subsequent turns.
     Input epoch is zero. Ended streams leave active.media and remain reachable through
     immutable ArchivedMedia nodes; output interruption archives its unfinished streams
     with complete=false. A stream identity cannot resume after end in the same epoch.
+    The kernel reads the archive chain once per execution and tracks later archives in
+    memory, so opening a stream does not rescan the chain.
 
 30. FlushInput requires FlushInput capability. It keeps input admission open, drains
     accepted media input before dispatch, and asks the adapter to materialize buffered
@@ -166,15 +206,18 @@ payload on subsequent turns.
 32. Native adapters share bounded ports and independent terminal settlement in models.
     Output pressure must not block command dispatch or acknowledgement timers. Retired
     output epochs are filtered at both adapter and kernel queues; rejected late chunks
-    cannot remove the accepted epoch’s media-manifest predecessor.
+    cannot remove the accepted epoch’s media-segment predecessor. A segment never spans
+    epochs, so a rejected segment contains only retired chunks.
 
 33. ReplaceContext is an acknowledged context revision, atomic with the history rewrite
     and its outbox intent. It cannot cross active generation, operations, media or commands.
     Unsupported live replacement/history reduction fails before external establishment.
     No close/reopen simulation is permitted.
-34. Opening is a durable uncertain boundary. Recovery never replays uncertain remote
-    creation or commands. Only an idle local projection can be reconstructed without a
-    recovery attachment. Retry/fallback is restricted to certain establishment rejection.
+34. Opening is a durable uncertain boundary for remote sessions. Recovery never replays
+    uncertain remote creation or commands. A local projection is reconstructed without a
+    recovery attachment unless a sent or started generation has no response; that
+    generation needs AbandonGeneration or an attachment. Retry/fallback is restricted to
+    certain establishment rejection.
 35. MiniMax Task explicitly generates, seals its input after ResponseStarted, waits for
     task_finished, then closes and drains. Interactive synthesis waits for SealUserInput.
     Live opens directly, reports independent conversation/delegation items, and closes

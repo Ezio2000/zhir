@@ -48,9 +48,11 @@ impl Engine {
         self.recover_operations().await?;
         while self.current.state.active() {
             self.check()?;
+            let revision = self.current.revision;
             self.dispatch_commands().await?;
             self.admit().await?;
-            if self.advance().await? {
+            // Any commit in this pass can enable another command, admission or step.
+            if self.advance().await? || self.current.revision != revision {
                 continue;
             }
             self.receive_work().await?;
@@ -59,6 +61,15 @@ impl Engine {
     }
 
     async fn receive_work(&mut self) -> Result<()> {
+        if let Some(work) = self.stash().take() {
+            return self.handle(work).await;
+        }
+        if self.model_media_input.is_some()
+            && !self.input_sending
+            && let Some(packet) = self.held_input.take()
+        {
+            return self.input_media(packet);
+        }
         tokio::select! { biased;
             Some(control) = self.controls.recv(), if !self.controls.is_closed() || !self.controls.is_empty() => {
                 self.control(control).await?;
@@ -67,7 +78,7 @@ impl Engine {
             Some(packet) = self.media.recv(), if self.model_media_input.is_some() && !self.input_sending && (!self.media.is_closed() || !self.media.is_empty()) => {
                 self.input_media(packet)?;
             }
-            _ = tokio::time::sleep(Duration::from_millis(10)) => (),
+            _ = interruption(self.cancellation.clone(), self.deadline) => (),
         }
         Ok(())
     }
@@ -138,13 +149,14 @@ impl Engine {
         if self.current.active.session.closure.is_none() {
             if !self.current.active.session.closing && !self.input_sending {
                 self.prepare_command(CommandIntent::Close).await?;
+                return Ok(true);
             }
             return Ok(false);
         }
         if self.media_pending || self.input_sending {
             return Ok(false);
         }
-        let content = conversation(self.current.history.entries().into_iter().skip(
+        let content = conversation(self.current.history.iter().skip(
             if self.current.options.mode == RunMode::Interactive {
                 self.current.active.session.run_start
             } else {
@@ -254,6 +266,7 @@ pub(crate) async fn execute(
         media_output,
         work_tx,
         work,
+        stashed: Default::default(),
         tasks: JoinSet::new(),
         session_control: None,
         model_media_input: None,
@@ -263,6 +276,8 @@ pub(crate) async fn execute(
         sent,
         sending: false,
         input_sending: false,
+        held_input: None,
+        ended_streams: None,
         media_pending: false,
         pending_replies: BTreeSet::new(),
         pending_starts: BTreeSet::new(),
@@ -329,14 +344,23 @@ pub(super) async fn interruptible<T>(
     cancellation: Cancellation,
     deadline: Option<Instant>,
 ) -> Result<T> {
-    tokio::pin!(future);
-    loop {
-        tokio::select! {
-            result = &mut future => return result,
-            _ = tokio::time::sleep(Duration::from_millis(10)) => {
-                cancellation.check()?;
-                if deadline.is_some_and(|d| Instant::now() >= d) { return Err(Error::Deadline); }
-            }
+    tokio::select! {
+        biased;
+        result = future => result,
+        _ = interruption(cancellation.clone(), deadline) => {
+            cancellation.check()?;
+            Err(Error::Deadline)
         }
+    }
+}
+
+/// Completes once the run is cancelled or its deadline passes.
+pub(super) async fn interruption(cancellation: Cancellation, deadline: Option<Instant>) {
+    match deadline {
+        Some(at) => tokio::select! {
+            _ = cancellation.cancelled() => (),
+            _ = tokio::time::sleep_until(at) => (),
+        },
+        None => cancellation.cancelled().await,
     }
 }

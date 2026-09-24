@@ -133,7 +133,7 @@ async fn settled_provider_replay_survives_next_turn_and_checkpoint_roundtrip() {
         ));
         let encoded = zhir_core::wire::encode_checkpoint(completion.checkpoint()).unwrap();
         let restored = zhir_core::wire::decode_checkpoint(&encoded).unwrap();
-        let projected = conversation(restored.history.entries());
+        let projected = conversation(restored.history.iter());
         let call = projected
             .iter()
             .find_map(|message| match message {
@@ -206,7 +206,7 @@ fn projection_indexes_provider_updates_without_reordering_other_content_or_turns
         ));
     }
     entries.push(entry(11000, "a", Output::text("after")));
-    let messages = conversation(entries);
+    let messages = conversation(&entries);
     assert_eq!(messages.len(), 2);
     let Message::Assistant { output, .. } = &messages[0] else {
         unreachable!()
@@ -329,7 +329,7 @@ async fn cleanup_uses_one_budget_and_bounded_concurrent_cancellation() {
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let ready = store.commits().last().is_some_and(|commit| {
-                let operations = &commit.checkpoint.active.operations;
+                let operations = &commit.checkpoint().active.operations;
                 operations.len() == 12 && operations.values().all(|op| op.last_sequence == Some(0))
             });
             if ready {
@@ -342,7 +342,7 @@ async fn cleanup_uses_one_budget_and_bounded_concurrent_cancellation() {
     .unwrap_or_else(|error| {
         panic!(
             "{error}: {:?}",
-            store.commits().last().map(|c| &c.checkpoint)
+            store.commits().last().map(|c| c.checkpoint())
         )
     });
     let before = tokio::time::Instant::now();

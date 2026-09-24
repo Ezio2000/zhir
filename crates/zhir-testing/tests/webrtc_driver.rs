@@ -61,17 +61,14 @@ impl WebRtcAdapter for Adapter {
             }),
             connection: Box::new(Connected),
             peer: PeerSettings {
-                connection: Default::default(),
+                ice_servers: vec![],
                 channel_label: self.label,
-                audio_codec: ::webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters {
-                    capability: ::webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
-                        mime_type: "audio/PCMU".into(),
-                        clock_rate: 8000,
-                        channels: 1,
-                        ..Default::default()
-                    },
+                audio_codec: AudioCodec {
+                    mime_type: "audio/PCMU".into(),
+                    clock_rate: 8000,
+                    channels: 1,
+                    fmtp: String::new(),
                     payload_type: 0,
-                    ..Default::default()
                 },
                 max_event_bytes: 1024,
                 audio_input: self.audio,
@@ -102,7 +99,7 @@ impl WebRtcConnectionPolicy for Connected {
         connection: fixture::Connection,
         queued_events: bool,
     ) -> Result<ConnectionStatus> {
-        use ::webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState as State;
+        use ConnectionState as State;
         if matches!(connection.state, State::Failed | State::Closed) && !queued_events {
             return Err(Error::Uncertain("fixture connection failed".into()));
         }
@@ -345,6 +342,30 @@ fn chunk(sequence: u64) -> MediaChunk {
 }
 
 #[tokio::test]
+async fn turn_servers_reach_the_webrtc_stack_with_their_credentials() {
+    let server = IceServer {
+        urls: vec!["turn:turn.example.com:3478".into()],
+        username: "user".into(),
+        credential: "secret".into(),
+    };
+    let api = ::webrtc::api::APIBuilder::new().build();
+    let config = fixture::configuration(std::slice::from_ref(&server));
+    assert_eq!(config.ice_servers[0].username, "user");
+    assert_eq!(config.ice_servers[0].credential, "secret");
+    let peer = api.new_peer_connection(config).await.unwrap();
+    peer.close().await.unwrap();
+    // The stack rejects a TURN server without credentials.
+    let anonymous = IceServer {
+        urls: server.urls,
+        ..Default::default()
+    };
+    assert!(
+        api.new_peer_connection(fixture::configuration(&[anonymous]))
+            .await
+            .is_err()
+    );
+}
+#[tokio::test]
 async fn adapter_can_connect_initially_without_audio_input() {
     let (mut session, harness, signals) = setup("eager", true, false).await;
     assert!(session.media.input.is_none());
@@ -543,7 +564,7 @@ async fn rejection_preserves_diagnostic_and_cancels_pending_write() {
 
 #[tokio::test(start_paused = true)]
 async fn connection_policy_gates_queued_writes_without_blocking_observations() {
-    use ::webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState as State;
+    use ConnectionState as State;
     let (mut session, mut harness, _) = setup("connection", true, false).await;
     receipt(&mut session, "ready").await;
     command(

@@ -1,36 +1,40 @@
 use super::*;
+use zhir_core::resource::{ArchivedMedia, ResourceRef, ResourceStore, SealedChunk, SealedMedia};
 
 impl Engine {
+    /// Commits one sealed segment: the cursor advances to its last chunk, or the stream
+    /// is archived when that chunk ends it.
     pub(super) async fn seal_cursor(
         &mut self,
         direction: &str,
-        chunk: &MediaChunk,
-        reference: zhir_core::resource::ResourceRef,
+        segment: &SealedMedia,
+        reference: ResourceRef,
     ) -> Result<()> {
-        let key = media_key(direction, chunk);
-        if self
-            .current
-            .active
-            .media
-            .get(&key)
-            .is_some_and(|c| chunk.sequence <= c.sequence)
+        let chunks = &segment.chunks;
+        let (Some(first), Some(last)) = (chunks.first(), chunks.last()) else {
+            return Err(Error::Protocol("empty media segment".into()));
+        };
+        let key = media_key(direction, &segment.stream_id, segment.epoch);
+        let cursor = self.current.active.media.get(&key);
+        if cursor.is_some_and(|c| first.sequence <= c.sequence)
+            || chunks.windows(2).any(|w| w[1].sequence <= w[0].sequence)
         {
             return Err(Error::Protocol("media sequence did not increase".into()));
         }
-        if !self.current.active.media.contains_key(&key) {
+        if cursor.is_none() {
             self.ensure_new_stream(&key).await?;
         }
         let mut next = self.current.as_ref().clone();
-        if chunk.end {
-            self.archive_media(&mut next, key.clone(), reference.clone(), true)
+        if last.end {
+            self.archive_media(&mut next, key.clone(), reference, true)
                 .await?;
             next.active.media.remove(&key);
         } else {
             next.active.media.insert(
-                key,
+                key.clone(),
                 StreamCursor {
-                    sequence: chunk.sequence,
-                    epoch: chunk.epoch,
+                    sequence: last.sequence,
+                    epoch: segment.epoch,
                     sealed: reference,
                 },
             );
@@ -38,39 +42,50 @@ impl Engine {
         self.commit(
             next,
             Fact::Media {
-                stream_id: chunk.stream_id.clone(),
-                sequence: chunk.sequence,
+                stream_id: segment.stream_id.clone(),
+                sequence: last.sequence,
             },
             HistoryDelta::Unchanged,
         )
-        .await
+        .await?;
+        if last.end {
+            self.ended_stream(key);
+        }
+        Ok(())
     }
 
-    async fn ensure_new_stream(&self, key: &str) -> Result<()> {
-        let mut reference = self.current.active.session.media_archive.clone();
-        let Some(resources) = &self.config.resources else {
+    /// Records a stream archived by a committed checkpoint.
+    pub(super) fn ended_stream(&mut self, key: String) {
+        if let Some(ended) = &mut self.ended_streams {
+            ended.insert(key);
+        }
+    }
+
+    /// Rejects media for an archived stream. The archive chain is read once per engine;
+    /// later archives update the in-memory set.
+    async fn ensure_new_stream(&mut self, key: &str) -> Result<()> {
+        let Some(resources) = self.config.resources.clone() else {
             return Ok(());
         };
-        while let Some(node) = reference {
-            self.check()?;
-            let mut reader = resources.open(node).await?;
-            let mut bytes = Vec::new();
-            loop {
-                let part = reader.read(4096).await?;
-                if part.is_empty() {
-                    break;
-                }
-                if bytes.len() + part.len() > 1024 * 1024 {
-                    return Err(Error::Protocol("oversized media archive node".into()));
-                }
-                bytes.extend(part);
+        if self.ended_streams.is_none() {
+            let mut ended = BTreeSet::new();
+            let mut reference = self.current.active.session.media_archive.clone();
+            while let Some(node) = reference {
+                self.check()?;
+                let node: ArchivedMedia = read_node(resources.as_ref(), node)
+                    .await
+                    .map_err(|_| Error::Protocol("invalid media archive node".into()))?;
+                ended.insert(node.stream_key);
+                reference = node.previous;
             }
-            let node: zhir_core::resource::ArchivedMedia = serde_json::from_slice(&bytes)
-                .map_err(|_| Error::Protocol("invalid media archive node".into()))?;
-            if node.stream_key == key {
-                return Err(Error::Protocol("media after stream end".into()));
-            }
-            reference = node.previous;
+            self.ended_streams = Some(ended);
+        }
+        if self
+            .ended_streams
+            .as_ref()
+            .is_some_and(|ended| ended.contains(key))
+        {
+            return Err(Error::Protocol("media after stream end".into()));
         }
         Ok(())
     }
@@ -78,7 +93,7 @@ impl Engine {
         &self,
         next: &mut Checkpoint,
         stream_key: String,
-        sealed: zhir_core::resource::ResourceRef,
+        sealed: ResourceRef,
         complete: bool,
     ) -> Result<()> {
         let resources = self
@@ -86,29 +101,48 @@ impl Engine {
             .resources
             .as_ref()
             .ok_or_else(|| Error::Invalid("media archive requires resource storage".into()))?;
-        let node = zhir_core::resource::ArchivedMedia {
+        let node = ArchivedMedia {
             stream_key,
             sealed,
             complete,
             previous: next.active.session.media_archive.clone(),
         };
-        let mut writer = resources
-            .create(new_id(), "application/vnd.zhir.archived-media+json".into())
-            .await?;
-        writer
-            .append(
-                0,
-                serde_json::to_vec(&node).map_err(|e| Error::Invalid(e.to_string()))?,
+        next.active.session.media_archive = Some(
+            write_node(
+                resources.as_ref(),
+                "application/vnd.zhir.archived-media+json",
+                &node,
             )
-            .await?;
-        next.active.session.media_archive = Some(writer.finish().await?);
+            .await?,
+        );
         Ok(())
     }
-    pub(super) fn input_media(&mut self, packet: Packet) -> Result<()> {
-        let chunk = &packet.chunk;
-        chunk.validate(self.current.options.limits.max_media_chunk_bytes)?;
-        if chunk.epoch != 0 || self.current.active.session.id != chunk.session_id {
-            return Err(Error::Invalid("foreign media turn or epoch".into()));
+    /// Seals the host packets already queued behind `first` for the same stream as one
+    /// segment, commits it once, then sends its chunks to the model in order.
+    pub(super) fn input_media(&mut self, first: Packet) -> Result<()> {
+        let limits = &self.current.options.limits;
+        let (max_chunk, max_packets) = (
+            limits.max_media_chunk_bytes,
+            limits.max_buffered_media_packets,
+        );
+        let mut segment = vec![first];
+        while segment.len() < max_packets.min(MAX_SEGMENT_CHUNKS) {
+            let Ok(packet) = self.media.try_recv() else {
+                break;
+            };
+            if joins(&segment[segment.len() - 1].chunk, &packet.chunk) {
+                segment.push(packet);
+            } else {
+                self.held_input = Some(packet);
+                break;
+            }
+        }
+        for packet in &segment {
+            packet.chunk.validate(max_chunk)?;
+            if packet.chunk.epoch != 0 || self.current.active.session.id != packet.chunk.session_id
+            {
+                return Err(Error::Invalid("foreign media turn or epoch".into()));
+            }
         }
         let resources = self
             .config
@@ -123,129 +157,225 @@ impl Engine {
             .current
             .active
             .media
-            .get(&media_key("input", chunk))
+            .get(&media_key("input", &segment[0].chunk.stream_id, 0))
             .map(|cursor| cursor.sealed.clone());
         let tx = self.work_tx.clone();
         self.input_sending = true;
         self.tasks.spawn(async move {
             let result: Result<()> = async {
-                let reference = seal_media(resources.as_ref(), &packet.chunk, previous).await?;
+                let (node, reference) = seal_media(resources.as_ref(), &segment, previous).await?;
                 let (ack, rx) = oneshot::channel();
-                tx.send(Work::InputReady(packet.chunk.clone(), reference, ack))
+                tx.send(Work::InputReady(node, reference, ack))
                     .await
                     .map_err(|_| Error::Cancelled)?;
                 if rx.await.map_err(|_| Error::Cancelled)? {
-                    input.send(packet.chunk.clone()).await?;
+                    for packet in &segment {
+                        input.send(packet.chunk.clone()).await?;
+                    }
                 }
                 Ok(())
             }
             .await;
-            drop(packet);
+            drop(segment);
             let _ = tx.send(Work::InputSent(result)).await;
         });
         Ok(())
     }
 }
 
-pub(super) fn media_key(direction: &str, chunk: &MediaChunk) -> String {
-    format!("{direction}:{}:{}", chunk.stream_id, chunk.epoch)
+pub(super) fn media_key(direction: &str, stream_id: &str, epoch: u64) -> String {
+    format!("{direction}:{stream_id}:{epoch}")
 }
 
-pub(super) async fn seal_media(
-    store: &dyn zhir_core::resource::ResourceStore,
-    chunk: &MediaChunk,
-    previous: Option<zhir_core::resource::ResourceRef>,
-) -> Result<zhir_core::resource::ResourceRef> {
-    let mut writer = store.create(new_id(), chunk.media_type.clone()).await?;
-    writer.append(0, chunk.bytes.clone()).await?;
-    let resource = writer.finish().await?;
-    let node = zhir_core::resource::SealedMedia {
-        stream_id: chunk.stream_id.clone(),
-        session_id: chunk.session_id.clone(),
-        epoch: chunk.epoch,
-        sequence: chunk.sequence,
-        timestamp_us: chunk.timestamp_us,
-        end: chunk.end,
-        resource,
+/// A queued chunk continues a segment when it belongs to the same stream, epoch and
+/// media type and the segment has not ended.
+fn joins(last: &MediaChunk, next: &MediaChunk) -> bool {
+    !last.end
+        && last.stream_id == next.stream_id
+        && last.session_id == next.session_id
+        && last.epoch == next.epoch
+        && last.media_type == next.media_type
+}
+
+/// Chunks per segment, keeping every SealedMedia node far below the 1 MiB node limit
+/// that readers of the chain enforce.
+const MAX_SEGMENT_CHUNKS: usize = 1024;
+
+/// Stores a segment's bytes as one resource, then its immutable node. The node, not
+/// the bytes, is what the engine commits.
+async fn seal_media(
+    store: &dyn ResourceStore,
+    segment: &[Packet],
+    previous: Option<ResourceRef>,
+) -> Result<(SealedMedia, ResourceRef)> {
+    let first = &segment
+        .first()
+        .ok_or_else(|| Error::Protocol("empty media segment".into()))?
+        .chunk;
+    let mut writer = store.create(new_id(), first.media_type.clone()).await?;
+    let mut sealed = Vec::with_capacity(segment.len());
+    let mut offset = 0;
+    for (index, chunk) in segment.iter().map(|packet| &packet.chunk).enumerate() {
+        let length = chunk.bytes.len() as u64;
+        writer.append(index as u64, chunk.bytes.clone()).await?;
+        sealed.push(SealedChunk {
+            sequence: chunk.sequence,
+            timestamp_us: chunk.timestamp_us,
+            offset,
+            length,
+            end: chunk.end,
+        });
+        offset += length;
+    }
+    let node = SealedMedia {
+        stream_id: first.stream_id.clone(),
+        session_id: first.session_id.clone(),
+        epoch: first.epoch,
+        chunks: sealed,
+        resource: writer.finish().await?,
         previous,
     };
-    let mut writer = store
-        .create(new_id(), "application/vnd.zhir.sealed-media+json".into())
-        .await?;
+    let reference = write_node(store, "application/vnd.zhir.sealed-media+json", &node).await?;
+    Ok((node, reference))
+}
+
+async fn write_node(
+    store: &dyn ResourceStore,
+    media_type: &str,
+    node: &impl serde::Serialize,
+) -> Result<ResourceRef> {
+    let mut writer = store.create(new_id(), media_type.into()).await?;
     writer
         .append(
             0,
-            serde_json::to_vec(&node).map_err(|e| Error::Invalid(e.to_string()))?,
+            serde_json::to_vec(node).map_err(|e| Error::Invalid(e.to_string()))?,
         )
         .await?;
     writer.finish().await
 }
 
+async fn read_node<T: serde::de::DeserializeOwned>(
+    store: &dyn ResourceStore,
+    reference: ResourceRef,
+) -> Result<T> {
+    let mut reader = store.open(reference).await?;
+    let mut bytes = Vec::new();
+    loop {
+        let part = reader.read(4096).await?;
+        if part.is_empty() {
+            break;
+        }
+        if bytes.len() + part.len() > 1024 * 1024 {
+            return Err(Error::Protocol("oversized media node".into()));
+        }
+        bytes.extend(part);
+    }
+    serde_json::from_slice(&bytes).map_err(|_| Error::Protocol("invalid media node".into()))
+}
+
 impl Engine {
+    /// A reader task moves model media into a bounded kernel queue; a sealer task seals
+    /// the chunks already queued for one stream as a segment, commits its cursor once
+    /// and then delivers the chunks in order. An idle stream seals single chunks.
     pub(super) fn start_media_output(
         &mut self,
         media: Option<Box<dyn zhir_core::resource::MediaReceiver>>,
     ) -> Result<()> {
-        if let Some(mut media) = media {
-            self.media_pending = true;
-            let mut previous: BTreeMap<_, _> = self
-                .current
-                .active
-                .media
-                .iter()
-                .map(|(key, cursor)| (key.clone(), cursor.sealed.clone()))
-                .collect();
-            let resources =
-                self.config.resources.clone().ok_or_else(|| {
-                    Error::Invalid("media session requires a resource store".into())
-                })?;
-            let tx = self.work_tx.clone();
-            let output = self.media_output.clone();
-            let limit = self.current.options.limits.max_media_chunk_bytes;
-            self.tasks.spawn(async move {
+        let Some(mut media) = media else {
+            return Ok(());
+        };
+        let resources = self
+            .config
+            .resources
+            .clone()
+            .ok_or_else(|| Error::Invalid("media session requires a resource store".into()))?;
+        self.media_pending = true;
+        let mut previous: BTreeMap<_, _> = self
+            .current
+            .active
+            .media
+            .iter()
+            .map(|(key, cursor)| (key.clone(), cursor.sealed.clone()))
+            .collect();
+        let limits = &self.current.options.limits;
+        let max_packets = limits.max_buffered_media_packets;
+        let (queue, mut queued) = crate::invocation::media_pipe(
+            limits.max_buffered_media_bytes,
+            max_packets,
+            limits.max_media_chunk_bytes,
+        );
+        // The reader's terminal error is reported after every chunk queued before it.
+        let failure = Arc::new(std::sync::Mutex::new(None));
+        let reader_failure = failure.clone();
+        self.tasks.spawn(async move {
+            let result: Result<()> = async {
+                while let Some(chunk) = media.receive().await? {
+                    queue.send(chunk).await?;
+                }
+                Ok(())
+            }
+            .await;
+            if let Err(error) = result {
+                *reader_failure.lock().expect("media failure lock") = Some(error);
+            }
+        });
+        let tx = self.work_tx.clone();
+        let output = self.media_output.clone();
+        self.tasks.spawn(async move {
+            let mut held = None;
+            let result: Result<()> = async {
                 loop {
-                    let result: Result<bool> = async {
-                        let Some(chunk) = media.receive().await? else {
-                            return Ok(false);
+                    let first = match held.take() {
+                        Some(packet) => packet,
+                        None => match queued.recv().await {
+                            Some(packet) => packet,
+                            None => return Ok(()),
+                        },
+                    };
+                    let mut segment = vec![first];
+                    while segment.len() < max_packets.min(MAX_SEGMENT_CHUNKS) {
+                        let Ok(packet) = queued.try_recv() else {
+                            break;
                         };
-                        chunk.validate(limit)?;
-                        let key = media_key("output", &chunk);
-                        let reference =
-                            seal_media(resources.as_ref(), &chunk, previous.get(&key).cloned())
-                                .await?;
-                        let (ack, rx) = oneshot::channel();
-                        tx.send(Work::MediaReady(chunk.clone(), reference.clone(), ack))
-                            .await
-                            .map_err(|_| Error::Cancelled)?;
-                        if rx.await.map_err(|_| Error::Cancelled)? {
-                            // Only accepted frames may mutate the chain. A late old
-                            // epoch must not erase the current generation's links.
-                            if chunk.end {
-                                previous.remove(&key);
-                            } else {
-                                previous
-                                    .retain(|key, _| key.ends_with(&format!(":{}", chunk.epoch)));
-                                previous.insert(key, reference);
-                            }
-                            output.send(chunk).await?;
+                        if joins(&segment[segment.len() - 1].chunk, &packet.chunk) {
+                            segment.push(packet);
+                        } else {
+                            held = Some(packet);
+                            break;
                         }
-                        Ok(true)
                     }
-                    .await;
-                    match result {
-                        Ok(true) => (),
-                        Ok(false) => {
-                            let _ = tx.send(Work::MediaDone).await;
-                            break;
+                    let last = &segment[segment.len() - 1].chunk;
+                    let (end, epoch) = (last.end, last.epoch);
+                    let key = media_key("output", &last.stream_id, epoch);
+                    let (node, reference) =
+                        seal_media(resources.as_ref(), &segment, previous.get(&key).cloned())
+                            .await?;
+                    let (ack, rx) = oneshot::channel();
+                    tx.send(Work::MediaReady(node, reference.clone(), ack))
+                        .await
+                        .map_err(|_| Error::Cancelled)?;
+                    if rx.await.map_err(|_| Error::Cancelled)? {
+                        // Only accepted segments may mutate the chain. A late old
+                        // epoch must not erase the current generation's links.
+                        if end {
+                            previous.remove(&key);
+                        } else {
+                            previous.retain(|key, _| key.ends_with(&format!(":{epoch}")));
+                            previous.insert(key, reference);
                         }
-                        Err(error) => {
-                            let _ = tx.send(Work::MediaError(error)).await;
-                            break;
+                        for packet in segment {
+                            output.send(packet.chunk).await?;
                         }
                     }
                 }
-            });
-        }
+            }
+            .await;
+            let failure = failure.lock().expect("media failure lock").take();
+            let _ = match result.err().or(failure) {
+                None => tx.send(Work::MediaDone).await,
+                Some(error) => tx.send(Work::MediaError(error)).await,
+            };
+        });
         Ok(())
     }
 }

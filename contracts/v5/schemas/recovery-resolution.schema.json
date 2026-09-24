@@ -422,6 +422,28 @@
         "reason"
       ],
       "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "Gives up an unfinished generation of a local projection session so it is generated again.",
+      "properties": {
+        "generation_id": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "abandon_generation",
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "generation_id",
+        "reason"
+      ],
+      "type": "object"
     }
   ],
   "title": "RecoveryResolution"

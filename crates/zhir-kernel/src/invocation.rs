@@ -122,8 +122,12 @@ impl MediaReceiver for MediaOutput {
         })
     }
 }
-pub(crate) fn media_pipe(limit: usize, max_chunk: usize) -> (MediaInput, mpsc::Receiver<Packet>) {
-    let (sender, receiver) = mpsc::channel(256);
+pub(crate) fn media_pipe(
+    limit: usize,
+    packets: usize,
+    max_chunk: usize,
+) -> (MediaInput, mpsc::Receiver<Packet>) {
+    let (sender, receiver) = mpsc::channel(packets);
     (
         MediaInput {
             sender,
@@ -159,10 +163,12 @@ impl Invocation {
         let (result_tx, result_rx) = watch::channel(None);
         let (media_input, media_rx) = media_pipe(
             limits.max_buffered_media_bytes,
+            limits.max_buffered_media_packets,
             limits.max_media_chunk_bytes,
         );
         let (media_tx, media_output) = media_pipe(
             limits.max_buffered_media_bytes,
+            limits.max_buffered_media_packets,
             limits.max_media_chunk_bytes,
         );
         let output_epoch = media_tx.min_epoch.clone();

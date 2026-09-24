@@ -133,7 +133,7 @@ async fn workflow(
             schema: schemars::schema_for!(Quote).into(),
         }
     };
-    let model = zhir::models::decorators::RetryingModel::new(
+    let model = zhir::models::decorators::EstablishmentRetryModel::new(
         Arc::new(model),
         zhir::policies::RetryPolicy::new(2)?.backoff(zhir::policies::Backoff::fixed(
             std::time::Duration::from_millis(50),

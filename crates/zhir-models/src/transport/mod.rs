@@ -10,8 +10,20 @@ use zhir_core::error::Failure;
     feature = "openai-responses",
     feature = "anthropic"
 ))]
+/// A connection failure is certain to have sent nothing; any later failure may have
+/// reached the service.
 pub(crate) fn request_error(error: reqwest::Error) -> Error {
-    Error::Uncertain(error.to_string())
+    if error.is_connect() {
+        Error::Model(Failure {
+            code: "http_connect".into(),
+            message: error.to_string(),
+            retryable: true,
+        })
+    } else if error.is_builder() {
+        Error::Invalid(error.to_string())
+    } else {
+        Error::Uncertain(error.to_string())
+    }
 }
 #[cfg(any(
     feature = "openai-chat",

@@ -3,6 +3,8 @@ use zhir_core::{
     Result,
     tool::{Admission, RuntimeToolCall, RuntimeToolSpec, SchedulingPolicy},
 };
+/// Admits the leading serial call alone, or the leading run of parallel calls.
+/// A serial call is a barrier: calls emitted after it wait until it settles.
 pub(crate) struct DefaultScheduling;
 impl SchedulingPolicy for DefaultScheduling {
     fn select(
@@ -10,28 +12,30 @@ impl SchedulingPolicy for DefaultScheduling {
         candidates: &[RuntimeToolCall],
         specs: &BTreeMap<String, RuntimeToolSpec>,
     ) -> Result<Admission> {
+        let parallel = |call: &RuntimeToolCall| {
+            specs
+                .get(&call.name)
+                .is_some_and(|spec| spec.execution.parallel)
+        };
         let Some(first) = candidates.first() else {
             return Ok(Admission {
                 calls: vec![],
                 parallel: false,
             });
         };
-        let parallel = specs
-            .get(&first.name)
-            .is_some_and(|spec| spec.execution.parallel);
-        let calls = if parallel {
-            candidates
+        if !parallel(first) {
+            return Ok(Admission {
+                calls: vec![first.clone()],
+                parallel: false,
+            });
+        }
+        Ok(Admission {
+            calls: candidates
                 .iter()
-                .filter(|call| {
-                    specs
-                        .get(&call.name)
-                        .is_some_and(|spec| spec.execution.parallel)
-                })
+                .take_while(|call| parallel(call))
                 .cloned()
-                .collect()
-        } else {
-            vec![first.clone()]
-        };
-        Ok(Admission { calls, parallel })
+                .collect(),
+            parallel: true,
+        })
     }
 }

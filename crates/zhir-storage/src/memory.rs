@@ -30,8 +30,8 @@ impl RunStore for MemoryRunStore {
                 .lock()
                 .map_err(|_| Error::Storage("poisoned memory store".into()))?;
             let key = (
-                commit.checkpoint.context.run_id.clone(),
-                commit.checkpoint.id.clone(),
+                commit.checkpoint().context.run_id.clone(),
+                commit.checkpoint().id.clone(),
             );
             let digest = commit.digest()?;
             if let Some(old) = state.ids.get(&key) {
@@ -48,9 +48,10 @@ impl RunStore for MemoryRunStore {
                 .map(|head| zhir_core::wire::CheckpointCore::from(head.as_ref()));
             commit.validate_against(previous.as_ref())?;
             state.ids.insert(key, digest);
-            state
-                .heads
-                .insert(commit.checkpoint.context.run_id.clone(), commit.checkpoint);
+            state.heads.insert(
+                commit.checkpoint().context.run_id.clone(),
+                commit.into_checkpoint(),
+            );
             Ok(())
         })
     }
@@ -64,6 +65,18 @@ impl RunStore for MemoryRunStore {
                 .heads
                 .get(&id)
                 .cloned())
+        })
+    }
+    fn delete(&self, run_id: &str) -> BoxFuture<'_, Result<()>> {
+        let id = run_id.to_owned();
+        Box::pin(async move {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| Error::Storage("poisoned memory store".into()))?;
+            state.heads.remove(&id);
+            state.ids.retain(|(run, _), _| run != &id);
+            Ok(())
         })
     }
 }

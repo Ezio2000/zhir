@@ -1,6 +1,11 @@
 use super::*;
 
 impl Engine {
+    /// The session is a local projection rebuilt from committed history.
+    pub(super) fn local_projection(&self) -> bool {
+        self.session_capabilities()
+            .supports(Capability::LocalProjection)
+    }
     pub(super) fn session_capabilities(&self) -> &CapabilitySet {
         self.session_control.as_ref().map_or_else(
             || {
@@ -23,14 +28,12 @@ impl Engine {
             |control| control.negotiate(request),
         )
     }
-    pub(super) fn model_request(&self, history_count: usize) -> ModelRequest {
-        let messages = zhir_core::model::conversation(
-            self.current
-                .history
-                .entries()
-                .into_iter()
-                .take(history_count),
-        );
+    /// A request over `entries`, which may include history staged but not yet committed.
+    pub(super) fn model_request<'a>(
+        &self,
+        entries: impl IntoIterator<Item = &'a zhir_core::run::HistoryEntry>,
+    ) -> ModelRequest {
+        let messages = zhir_core::model::conversation(entries);
         ModelRequest {
             messages,
             runtime_tools: self.catalog.specs(),
@@ -76,15 +79,14 @@ impl Engine {
             let produced: std::collections::BTreeSet<_> = self
                 .current
                 .history
-                .entries()
-                .into_iter()
+                .iter()
                 .skip(self.current.active.session.run_start)
-                .map(|entry| entry.id)
+                .map(|entry| entry.id.as_str())
                 .collect();
             next.active.session.run_start = rewrite
                 .entries
                 .iter()
-                .take_while(|entry| !produced.contains(&entry.id))
+                .take_while(|entry| !produced.contains(entry.id.as_str()))
                 .count();
             next.history = History::from_entries(rewrite.entries.clone())?;
             next.active.session.response_start = next.history.len();
@@ -126,7 +128,10 @@ impl Engine {
                 input_position: next.active.session.input_position,
                 profile_revision: next.active.session.profile_revision,
             },
-            sent: false,
+            // Before its send, a local generation has no effect a crash could leave behind:
+            // the committed need to generate reproduces it. Its send boundary is therefore
+            // recorded with the command, and dispatch follows without another commit.
+            sent: self.local_projection(),
         });
         self.commit(
             next,
@@ -158,7 +163,7 @@ impl Engine {
                         return Ok(());
                     }
                 },
-                _ = tokio::time::sleep(Duration::from_millis(10)) => self.check()?,
+                _ = interruption(self.cancellation.clone(), self.deadline) => self.check()?,
             }
         }
         Ok(())
@@ -182,17 +187,21 @@ impl Engine {
                 "model does not support context replacement required by the history reducer".into(),
             ));
         }
-        let mut next = self.current.as_ref().clone();
-        next.active.session.establishment = SessionEstablishment::Opening;
-        next.active.session.ready = false;
-        self.commit(
-            next,
-            Fact::Command {
-                command_id: new_id(),
-            },
-            HistoryDelta::Unchanged,
-        )
-        .await?;
+        // Opening a local projection has no external effect, so it needs no boundary of
+        // its own; the commit after opening records the session.
+        if !self.local_projection() {
+            let mut next = self.current.as_ref().clone();
+            next.active.session.establishment = SessionEstablishment::Opening;
+            next.active.session.ready = false;
+            self.commit(
+                next,
+                Fact::Command {
+                    command_id: new_id(),
+                },
+                HistoryDelta::Unchanged,
+            )
+            .await?;
+        }
         let seed_end = self
             .current
             .active
@@ -226,7 +235,7 @@ impl Engine {
             .unwrap_or(self.current.active.session.input_position);
         let open = SessionOpen {
             binding: self.current.active.session.binding.clone(),
-            request: self.model_request(seed_end),
+            request: self.model_request(self.current.history.iter().take(seed_end)),
             context_revision: self.current.active.session.acknowledged_context_revision,
             input_position: seed_input_position,
             profile_revision: self.current.active.session.profile_revision,
@@ -268,10 +277,12 @@ impl Engine {
                         return Ok(());
                     }
                 },
-                _ = tokio::time::sleep(Duration::from_millis(10)) => self.check()?,
+                _ = interruption(self.cancellation.clone(), self.deadline) => self.check()?,
             }
         };
         let mut next = self.current.as_ref().clone();
+        next.active.session.establishment = SessionEstablishment::Opening;
+        next.active.session.ready = false;
         if next.active.session.recovery.is_some()
             && next
                 .active

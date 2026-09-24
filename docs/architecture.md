@@ -2,7 +2,7 @@
 
 zhir is a Rust SDK with one execution state machine. Public contracts describe
 sessions, operations and resources independently of an endpoint, executor or product.
-The 0.3.0 API and v4 wire/storage formats are the only supported contracts.
+The 0.4.0 API and v5 wire/storage formats are the only supported contracts.
 
 ## Ownership
 
@@ -100,7 +100,7 @@ Session IDs and sideband attachments alone do not
 satisfy recovery: an adapter must also restore media and reconcile pending commands.
 HTTP-only codec/streaming helpers remain feature-isolated. No second `invoke` or stream runtime is retained.
 
-RetryingModel retries establishment only. FallbackModel negotiates candidates
+EstablishmentRetryModel retries establishment only. FallbackModel negotiates candidates
 independently, binds the selected session and wraps recovery references with a
 stable candidate ID. Recovery works after candidate reordering and fails explicitly
 if that candidate is missing. A sent command never switches models or transparently
@@ -118,6 +118,9 @@ A recovered invocation wins an Attached CAS before opening catalogs, model sessi
 or recovering tools. Already-sent outbox entries wait for recovered acknowledgements;
 they are not dispatched again. Unknown work requires reconciliation through adapter
 recovery or explicit operation Attach/Complete/Abandon resolutions.
+A run has at most one live executor, and the host guarantees it: revision CAS rejects a
+stale checkpoint but cannot stop an executor that is still running. The SDK has no lease
+port; a multi-worker host provides the lease.
 
 Only final Success/Failure/Cancelled outcomes produce runtime-tool history results.
 The result, operation state and result-delivery command share one commit. Adapter
@@ -132,18 +135,30 @@ output includes assistant content from the run. Both retain full committed histo
 
 The establishment state and all decisions about context, input coverage and generation
 are persisted. An uncertain open or send cannot be retried as a fresh remote session.
-Local projection reconstruction requires the bound LocalProjection capability and a safe boundary; otherwise recovery
-must prove attachment. `max_generation_requests` counts explicit host requests;
+Local projection reconstruction requires the bound LocalProjection capability. Such a
+session commits no boundary before opening, records Generate with its send boundary in
+one checkpoint, and replays its other commands into the rebuilt projection, submitting
+consecutive ones together. A sent or started generation without a response stays uncertain
+until the host abandons it with `AbandonGeneration` or recovery proves attachment.
+HttpModel retries retryable rejections (connection failure, 429, 5xx) before reading a
+response body, within the run deadline; a shared `RequestLimit` bounds whole requests. `max_generation_requests` counts explicit host requests;
 `observed_responses` is unknown until real response events are received.
 
-History uses immutable chunks and incremental digests. Storage persists a compact
-CheckpointCore plus a history delta. Rewrites are allowed only without active
+History uses immutable chunks and incremental digests. Chunks share their entries, so appending
+or cloning a history never copies existing entries. Storage persists a compact
+CheckpointCore plus a history delta. A Commit derives that core and its digest once;
+validation and every store reuse them. Session events queued behind one another
+share one checkpoint, so a local text turn commits single-digit checkpoints rather
+than one per event. Rewrites are allowed only without active
 operations, pending commands or media cursors. Commit validation enforces revision,
 parent, frozen options, immutable context, history integrity and active-state bounds.
 A commit timeout returns the last known checkpoint and requires a durable-head reload;
 the kernel does not pretend that the write was rolled back.
 
 Execution deadlines use monotonic time, including catalog/model establishment.
+`Cancellation::cancelled` wakes waiters when cancellation is requested; the kernel,
+session schedulers and built-in tools wait on it together with a deadline timer, so
+an idle run performs no periodic work.
 Commit timeout is a separate bounded settlement budget. Queue limits, tool
 concurrency and media byte budgets are explicit run options. Observer events may be
 dropped with ObservationGap; they are not the durable source of truth.
@@ -164,15 +179,22 @@ kernel history. Native replay positions are explicit adapter bindings; unbound
 copies of sealed media data are rejected.
 
 MediaChunk carries session, stream, epoch, sequence, timestamp and end metadata. Separate
-byte-bounded channels apply backpressure. Payload and linked stream-manifest nodes
+channels bounded by bytes and packets (`max_buffered_media_packets`) apply backpressure.
+Chunks of one stream already queued behind one another are sealed as one segment: one
+data resource plus a SealedMedia node listing each chunk's offset and length, committed
+once and then delivered in order. Slow storage therefore costs fewer commits instead of
+more latency; an idle stream still seals each chunk alone. The kernel reads the archive
+chain once and tracks ended streams in memory. Payload and linked segment nodes
 are sealed before committing cursors and before external input/output delivery.
 InterruptOutput advances the output epoch in the same commit as its outbox command;
 the command carries that exact epoch to the adapter. Providers do not allocate a
-second independent epoch. Late rejected media cannot mutate the current manifest chain. SealUserInput
+second independent epoch. Late rejected media cannot mutate the current segment chain. SealUserInput
 closes admission and drains accepted input before sending the endpoint command.
 Older output epochs cannot advance a stream; input epoch is zero. Checkpoints keep the latest sealed reference,
 not an ever-growing media transcript. Resource retention/collection belongs to the
-host; the SDK does not delete resources automatically.
+host; the SDK does not delete resources automatically. `resources::reachable` walks a
+checkpoint, its active cursors and the archive chain to list every stored resource it
+still references.
 
 CredentialProvider is injected into adapters. StaticCredential and
 RefreshingCredential implement static values and refresh with generation-aware
@@ -196,10 +218,19 @@ The explicit MiniMax live test separately checks TTS drain, flush/continue and i
 it does not establish video support, audio input, transport recovery or load guarantees.
 
 A language binding wraps core values and the SDK invocation/control interfaces. It
-must use v4 DTOs and preserve identities, revisions, cancellation and backpressure.
+must use v5 DTOs and preserve identities, revisions, cancellation and backpressure.
 There is no Python wire compatibility layer, alternate scheduler or migration reader.
-SQL stores require format 4 in a new database; Redis requires a new format-4 namespace.
-Filesystem resources use their current format in a new directory. Older layouts are
+SQL stores require format 5 in a new database; Redis requires a new format-5 namespace.
+SQLite uses one writer connection with WAL and a busy timeout; MySQL uses a pool
+(8 connections by default, `MysqlRunStore::connect_with` to choose) whose acquisition is
+bounded by the commit deadline. Redis shares one multiplexed connection and reconnects
+after an error; a failed commit remains uncertain and is not replayed. A history rewrite
+removes the previous generation in the same write. `RunStore::delete`,
+`ResourceStore::delete` and `zhir_storage::resources::reachable` let the host implement
+retention; nothing is collected automatically.
+FilesystemResourceStore marks its root with format 5 and shards resources by the first
+two hex digits of their id; a root with another marker or unsharded resource files is
+rejected. Older layouts are
 rejected rather than translated.
 
 ## Execution and protocol implementation boundaries
@@ -222,8 +253,9 @@ Built-in HTTP protocols implement one internal ProtocolAdapter per protocol. Eac
 endpoint/authentication, capabilities, encoding/decoding, usage normalization, replay
 shape and stream state construction. Transport uses this interface without its own
 protocol branches. External protocols still implement core Model; ProtocolExtension and
-ProviderToolAdapter customize the built-ins. Retry deadlines and the waiting loop are
-shared in policies::timing; adapters supply their executor's timer. Core profile::keys
+ProviderToolAdapter customize the built-ins. Retry deadlines, cancellable waits and
+interruption (`timing::wait`, `timing::interrupted`) are shared in policies::timing;
+adapters supply their executor's timer. Core profile::keys
 owns construction and recognition of built-in negotiation dimension names.
 
 ## Independent conversation items and delegated work
@@ -309,6 +341,8 @@ media termination and protocol completion. Queue emptiness alone is not completi
 The models `websocket` and `webrtc` features select transport infrastructure.
 MiniMax TTS selects WebSocket; OpenAI Live selects WebRTC. Neither transport feature
 selects a service implementation, model, endpoint or credentials.
+Peer, codec and connection-state values are models-owned types; service packages do
+not depend on `webrtc` or `tokio-tungstenite` directly, which the dependency test checks.
 Control receive processing continues under public event backpressure; bounded native
 staging reserves room for command receipts, and overflow is an explicit capacity
 failure. It cannot turn an already returned receipt into a remote timeout merely
@@ -341,7 +375,7 @@ and uncertain-command reconciliation must be established before advertising Resu
 
 `ModelBinding` records stable adapter selection independently of a remote
 `RecoveryRef`. The kernel persists the bound control identity before consuming
-session events and supplies it when rebuilding an idle local projection.
+session events and supplies it when rebuilding a local projection.
 Fallback unwraps each binding layer and reopens only the original candidate;
 reordering, temporary availability changes or missing candidates cannot cause
 silent reselection. Transparent control decorators forward the binding.

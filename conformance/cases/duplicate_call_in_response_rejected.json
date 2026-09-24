@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "name": "duplicate_call_in_response_rejected",
   "kind": "runtime",
   "case": {

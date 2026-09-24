@@ -29,7 +29,7 @@ const CHUNK_SIZE: usize = 64;
 #[derive(Debug)]
 struct Node {
     previous: Option<Arc<Node>>,
-    messages: Vec<HistoryEntry>,
+    messages: Vec<Arc<HistoryEntry>>,
     prefix_digests: Vec<[u8; 32]>,
     len: usize,
     digest: [u8; 32],
@@ -45,7 +45,8 @@ impl Drop for Node {
         }
     }
 }
-/// Persistent append-only chunks. Cloning a history does not clone its messages.
+/// Persistent append-only chunks of shared entries. Cloning or appending to a history
+/// does not clone its existing entries.
 #[derive(Debug, Clone, Default)]
 pub struct History {
     head: Option<Arc<Node>>,
@@ -184,17 +185,14 @@ impl History {
         while let Some(n) = node {
             let start = n.len - n.messages.len();
             if index >= start {
-                return n.messages.get(index - start);
+                return n.messages.get(index - start).map(Arc::as_ref);
             }
             node = n.previous.as_ref();
         }
         None
     }
     pub fn messages(&self) -> Vec<Message> {
-        self.entries()
-            .into_iter()
-            .map(|entry| entry.message)
-            .collect()
+        self.iter().map(|entry| entry.message.clone()).collect()
     }
 
     pub fn len(&self) -> usize {
@@ -220,7 +218,7 @@ impl History {
                 ),
                 _ => (result.head.clone(), Vec::new(), Vec::new()),
             };
-            chunk.push(message);
+            chunk.push(Arc::new(message));
             prefix_digests.push(result.digest);
             result.head = Some(Arc::new(Node {
                 previous,
@@ -233,21 +231,24 @@ impl History {
         }
         Ok(result)
     }
-    pub fn entries(&self) -> Vec<HistoryEntry> {
-        let mut chunks = Vec::new();
+    /// Entries in order, borrowed from the shared chunks.
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &HistoryEntry> + '_ {
+        let mut chunks = Vec::with_capacity(self.len.div_ceil(CHUNK_SIZE));
         let mut head = self.head.as_ref();
         while let Some(node) = head {
-            chunks.push(&node.messages);
+            chunks.push(node.messages.as_slice());
             head = node.previous.as_ref();
         }
-        let mut result = Vec::with_capacity(self.len);
-        for chunk in chunks.into_iter().rev() {
-            result.extend(chunk.iter().cloned());
-        }
-        result
+        chunks.into_iter().rev().flatten().map(Arc::as_ref)
+    }
+    pub fn entries(&self) -> Vec<HistoryEntry> {
+        self.iter().cloned().collect()
     }
     pub fn last(&self) -> Option<&HistoryEntry> {
-        self.head.as_ref().and_then(|n| n.messages.last())
+        self.head
+            .as_ref()
+            .and_then(|n| n.messages.last())
+            .map(Arc::as_ref)
     }
     /// Return just the added messages, verifying the immutable prefix by its
     /// cached incremental digests. Work is proportional to the suffix.
@@ -282,7 +283,12 @@ impl History {
             chunks.push(node.messages.as_slice());
             head = node.previous.as_ref();
         }
-        Ok(chunks.into_iter().rev().flatten().cloned().collect())
+        Ok(chunks
+            .into_iter()
+            .rev()
+            .flatten()
+            .map(|entry| entry.as_ref().clone())
+            .collect())
     }
 }
 pub fn append_digest(previous: [u8; 32], message: &HistoryEntry) -> Result<[u8; 32]> {

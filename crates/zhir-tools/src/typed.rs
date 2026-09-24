@@ -39,7 +39,6 @@ where
         F: Fn(A, RuntimeToolContext) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<ToolReply<O>>> + Send + 'static,
     {
-        execution.validate()?;
         let name = name.into();
         if name.is_empty() {
             return Err(Error::Invalid("empty tool name".into()));

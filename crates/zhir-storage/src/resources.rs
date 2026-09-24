@@ -6,7 +6,10 @@ use std::{
 use zhir_core::{
     BoxFuture, Result,
     error::{Error, ResourceError},
+    message::{Content, Message, Output},
+    operation::OperationUpdate,
     resource::*,
+    run::{Checkpoint, CommandIntent, State},
 };
 fn validate(key: &str, media_type: &str) -> Result<()> {
     if key.is_empty() || media_type.is_empty() {
@@ -15,6 +18,13 @@ fn validate(key: &str, media_type: &str) -> Result<()> {
         ))
     } else {
         Ok(())
+    }
+}
+fn stored_key(reference: &ResourceRef) -> Result<&str> {
+    reference.validate()?;
+    match &reference.source {
+        ResourceSource::Stored { key } => Ok(key),
+        _ => Err(Error::Invalid("resource is not stored".into())),
     }
 }
 fn reference(id: String, key: String, media_type: String) -> ResourceRef {
@@ -127,17 +137,14 @@ impl ResourceStore for MemoryResourceStore {
     }
     fn open(&self, reference: ResourceRef) -> BoxFuture<'_, Result<Box<dyn ResourceReader>>> {
         Box::pin(async move {
-            reference.validate()?;
-            let ResourceSource::Stored { key } = &reference.source else {
-                return Err(Error::Invalid("resource is not stored".into()));
-            };
+            let key = stored_key(&reference)?;
             let stored = self
                 .entries
                 .lock()
                 .expect("resource lock")
                 .get(key)
                 .cloned()
-                .ok_or_else(|| ResourceError::NotFound { id: key.clone() })?;
+                .ok_or_else(|| ResourceError::NotFound { id: key.into() })?;
             if stored.media_type != reference.media_type {
                 return Err(Error::Invalid("resource media type mismatch".into()));
             }
@@ -148,7 +155,139 @@ impl ResourceStore for MemoryResourceStore {
             }) as Box<dyn ResourceReader>)
         })
     }
+    fn delete(&self, reference: ResourceRef) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            let key = stored_key(&reference)?;
+            self.entries.lock().expect("resource lock").remove(key);
+            Ok(())
+        })
+    }
 }
+/// Lists every stored resource a checkpoint can reach: message and outcome content in
+/// history, completed content, pending context, active media cursors and the media
+/// archive chain. Each resource appears once. Reclaiming the others is the host's policy.
+pub async fn reachable(
+    checkpoint: &Checkpoint,
+    store: &dyn ResourceStore,
+) -> Result<Vec<ResourceRef>> {
+    let mut found = Reachable::default();
+    for entry in checkpoint.history.iter() {
+        match &entry.message {
+            Message::System { content }
+            | Message::User { content }
+            | Message::External { content } => found.contents(content),
+            Message::Assistant { output, .. } => {
+                for output in output {
+                    match output {
+                        Output::Content { content } => {
+                            found.contents(std::slice::from_ref(content))
+                        }
+                        Output::ProviderToolCall { call } => found.contents(&call.output),
+                        Output::Delegation { .. } | Output::RuntimeToolCall { .. } => {}
+                    }
+                }
+            }
+            Message::DelegationResult { outcome, .. } | Message::RuntimeTool { outcome, .. } => {
+                found.contents(outcome.content())
+            }
+        }
+    }
+    if let State::Completed { content } = &checkpoint.state {
+        found.contents(content);
+    }
+    for command in &checkpoint.active.commands {
+        if let CommandIntent::DelegationContext { content, .. } = &command.intent {
+            found.contents(content);
+        }
+    }
+    for operation in checkpoint.active.operations.values() {
+        if let Some(OperationUpdate::Context { content }) = &operation.last_update {
+            found.contents(content);
+        }
+    }
+    for cursor in checkpoint.active.media.values() {
+        found.sealed(store, Some(cursor.sealed.clone())).await?;
+    }
+    let mut archive = checkpoint.active.session.media_archive.clone();
+    while let Some(node) = archive.take() {
+        if !found.walk(&node) {
+            break;
+        }
+        let archived: ArchivedMedia = read_node(store, &node).await?;
+        found.sealed(store, Some(archived.sealed)).await?;
+        archive = archived.previous;
+    }
+    Ok(found.resources)
+}
+#[derive(Default)]
+struct Reachable {
+    keys: std::collections::BTreeSet<String>,
+    walked: std::collections::BTreeSet<String>,
+    resources: Vec<ResourceRef>,
+}
+impl Reachable {
+    /// Lists a media node and reports whether its links still need following. A node
+    /// already listed as message content has not been followed yet.
+    fn walk(&mut self, reference: &ResourceRef) -> bool {
+        self.insert(reference);
+        match &reference.source {
+            ResourceSource::Stored { key } => self.walked.insert(key.clone()),
+            _ => false,
+        }
+    }
+    fn insert(&mut self, reference: &ResourceRef) -> bool {
+        let ResourceSource::Stored { key } = &reference.source else {
+            return false;
+        };
+        let new = self.keys.insert(key.clone());
+        if new {
+            self.resources.push(reference.clone());
+        }
+        new
+    }
+    fn contents(&mut self, content: &[Content]) {
+        for reference in content.iter().filter_map(Content::source) {
+            self.insert(reference);
+        }
+    }
+    /// Follows a sealed media chain until it reaches a node already listed.
+    async fn sealed(
+        &mut self,
+        store: &dyn ResourceStore,
+        mut node: Option<ResourceRef>,
+    ) -> Result<()> {
+        while let Some(reference) = node.take() {
+            if !self.walk(&reference) {
+                break;
+            }
+            let sealed: SealedMedia = read_node(store, &reference).await?;
+            self.insert(&sealed.resource);
+            node = sealed.previous;
+        }
+        Ok(())
+    }
+}
+/// Media nodes are small JSON documents; larger values are rejected before decoding.
+async fn read_node<T: serde::de::DeserializeOwned>(
+    store: &dyn ResourceStore,
+    reference: &ResourceRef,
+) -> Result<T> {
+    const LIMIT: usize = 1 << 20;
+    let mut reader = store.open(reference.clone()).await?;
+    let mut bytes = Vec::new();
+    loop {
+        let chunk = reader.read(4096).await?;
+        if chunk.is_empty() {
+            break;
+        }
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() > LIMIT {
+            return Err(Error::Invalid("media node exceeds 1 MiB".into()));
+        }
+    }
+    serde_json::from_slice(&bytes).map_err(|e| Error::Invalid(format!("invalid media node: {e}")))
+}
+
 #[cfg(feature = "resources-filesystem")]
 mod filesystem {
     use super::*;
@@ -164,20 +303,70 @@ mod filesystem {
         }
         .into()
     }
+    const FORMAT: &str = "zhir-resources 5\n";
+    /// Resources live in subdirectories named by the first two hex digits of their id,
+    /// under a root marked with the current format.
     #[derive(Clone)]
     pub struct FilesystemResourceStore {
         root: PathBuf,
     }
     impl FilesystemResourceStore {
+        /// Opens or initializes a store. A root with another format marker, or with
+        /// resource files outside the shard directories, is rejected.
         pub async fn open(root: impl Into<PathBuf>) -> Result<Self> {
             let root = root.into();
             tokio::task::spawn_blocking(move || {
                 std::fs::create_dir_all(&root).map_err(io)?;
+                let marker = root.join("format");
+                let unsupported = || {
+                    Error::Storage(
+                        "unsupported resource directory format; use a fresh directory".into(),
+                    )
+                };
+                match std::fs::read_to_string(&marker) {
+                    Ok(format) if format == FORMAT => {}
+                    Ok(_) => return Err(unsupported()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        let mut temp = tempfile::NamedTempFile::new_in(&root).map_err(io)?;
+                        temp.write_all(FORMAT.as_bytes()).map_err(io)?;
+                        temp.as_file().sync_all().map_err(io)?;
+                        match temp.persist_noclobber(&marker) {
+                            Ok(_) => sync_dir(&root)?,
+                            // Another store initialized the root concurrently.
+                            Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                                if std::fs::read_to_string(&marker).map_err(io)? != FORMAT {
+                                    return Err(unsupported());
+                                }
+                            }
+                            Err(e) => return Err(io(e.error)),
+                        }
+                    }
+                    Err(e) => return Err(io(e)),
+                }
+                for entry in std::fs::read_dir(&root).map_err(io)? {
+                    if entry
+                        .map_err(io)?
+                        .path()
+                        .extension()
+                        .is_some_and(|e| e == "resource")
+                    {
+                        return Err(unsupported());
+                    }
+                }
                 Ok(Self { root })
             })
             .await
             .map_err(io)?
         }
+    }
+    fn sync_dir(path: &std::path::Path) -> Result<()> {
+        std::fs::File::open(path)
+            .and_then(|f| f.sync_all())
+            .map_err(io)
+    }
+    /// `id` is a 64-digit hex key.
+    fn resource_path(root: &std::path::Path, id: &str) -> PathBuf {
+        root.join(&id[..2]).join(format!("{id}.resource"))
     }
     struct Writer {
         root: PathBuf,
@@ -217,13 +406,9 @@ mod filesystem {
                         .take()
                         .ok_or_else(|| Error::Invalid("resource writer finished".into()))?;
                     temp.as_file().sync_all().map_err(io)?;
-                    let path = self.root.join(format!("{}.resource", self.id));
+                    let path = resource_path(&self.root, &self.id);
                     match temp.persist_noclobber(&path) {
-                        Ok(_) => {
-                            std::fs::File::open(&self.root)
-                                .and_then(|f| f.sync_all())
-                                .map_err(io)?;
-                        }
+                        Ok(_) => sync_dir(path.parent().expect("shard directory"))?,
                         Err(mut error)
                             if error.error.kind() == std::io::ErrorKind::AlreadyExists =>
                         {
@@ -245,6 +430,13 @@ mod filesystem {
                 .map_err(io)?
             })
         }
+    }
+    fn file_key(reference: &ResourceRef) -> Result<&str> {
+        let key = stored_key(reference)?;
+        if key.len() != 64 || !key.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return Err(Error::Invalid("invalid stored resource key".into()));
+        }
+        Ok(key)
     }
     fn digest(reader: &mut impl Read) -> Result<Vec<u8>> {
         let mut hash = Sha256::new();
@@ -292,9 +484,14 @@ mod filesystem {
                 validate(&key, &media_type)?;
                 tokio::task::spawn_blocking(move || {
                     let id = format!("{:x}", Sha256::digest(key.as_bytes()));
-                    let mut temp = tempfile::NamedTempFile::new_in(&root).map_err(io)?;
+                    let shard = root.join(&id[..2]);
+                    if !shard.is_dir() {
+                        std::fs::create_dir_all(&shard).map_err(io)?;
+                        sync_dir(&root)?;
+                    }
+                    let mut temp = tempfile::NamedTempFile::new_in(&shard).map_err(io)?;
                     let header = serde_json::to_vec(
-                        &serde_json::json!({"version": 4,"media_type":media_type}),
+                        &serde_json::json!({"version": 5,"media_type":media_type}),
                     )
                     .map_err(io)?;
                     temp.write_all(&(header.len() as u64).to_le_bytes())
@@ -315,16 +512,10 @@ mod filesystem {
         fn open(&self, reference: ResourceRef) -> BoxFuture<'_, Result<Box<dyn ResourceReader>>> {
             let root = self.root.clone();
             Box::pin(async move {
-                reference.validate()?;
+                let key = file_key(&reference)?.to_owned();
                 tokio::task::spawn_blocking(move || {
-                    let ResourceSource::Stored { key } = reference.source else {
-                        return Err(Error::Invalid("resource is not stored".into()));
-                    };
-                    if key.len() != 64 || !key.bytes().all(|c| c.is_ascii_hexdigit()) {
-                        return Err(Error::Invalid("invalid stored resource key".into()));
-                    }
-                    let mut file = std::fs::File::open(root.join(format!("{key}.resource")))
-                        .map_err(|e| {
+                    let mut file =
+                        std::fs::File::open(resource_path(&root, &key)).map_err(|e| {
                             if e.kind() == std::io::ErrorKind::NotFound {
                                 ResourceError::NotFound { id: key.clone() }.into()
                             } else {
@@ -340,7 +531,7 @@ mod filesystem {
                     let mut header = vec![0; length as usize];
                     file.read_exact(&mut header).map_err(io)?;
                     let header: serde_json::Value = serde_json::from_slice(&header).map_err(io)?;
-                    if header["version"] != 4
+                    if header["version"] != 5
                         || header["media_type"].as_str() != Some(&reference.media_type)
                     {
                         return Err(Error::Invalid(
@@ -348,6 +539,22 @@ mod filesystem {
                         ));
                     }
                     Ok(Box::new(Reader(Arc::new(Mutex::new(file)))) as Box<dyn ResourceReader>)
+                })
+                .await
+                .map_err(io)?
+            })
+        }
+        fn delete(&self, reference: ResourceRef) -> BoxFuture<'_, Result<()>> {
+            let root = self.root.clone();
+            Box::pin(async move {
+                let key = file_key(&reference)?.to_owned();
+                tokio::task::spawn_blocking(move || {
+                    let path = resource_path(&root, &key);
+                    match std::fs::remove_file(&path) {
+                        Ok(()) => sync_dir(path.parent().expect("shard directory")),
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                        Err(e) => Err(io(e)),
+                    }
                 })
                 .await
                 .map_err(io)?

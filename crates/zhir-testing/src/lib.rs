@@ -12,7 +12,7 @@ pub use model::{
     ModelCase, RecordedRequest, RecordingModel, ScriptStep, ScriptedModel, SessionRecord,
 };
 pub use sink::RecordingSink;
-pub use store::RecordingStore;
+pub use store::{CrashingStore, RecordingStore};
 pub use trace::verify_trace;
 
 pub mod session;

@@ -1,12 +1,11 @@
 use super::workspace::*;
-use crate::common::{failure, spec};
+use crate::common::{READ_ONLY, failure, spec};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::Path;
 use std::{path::PathBuf, sync::Arc};
 use zhir_core::{
     Result,
-    error::Error,
     tool::{RuntimeTool, RuntimeToolContext},
 };
 use zhir_tools::function;
@@ -25,14 +24,14 @@ struct GlobArgs {
 pub fn glob(root: impl Into<PathBuf>) -> Result<Arc<dyn RuntimeTool>> {
     let workspace = Workspace::new(root)?;
     Ok(Arc::new(function::structured(
-        spec::<GlobArgs>("glob", "Find workspace paths by glob.", true),
+        spec::<GlobArgs>("glob", "Find workspace paths by glob.", READ_ONLY),
         move |a: GlobArgs, context| {
             let w = workspace.clone();
             async move {
                 blocking(context, move |ctx| {
                     let root = w.path(&a.path, false)?;
                     let pattern = globset::Glob::new(&a.pattern)
-                        .map_err(|e| Error::Invalid(e.to_string()))?
+                        .map_err(|e| failure("invalid_pattern", e))?
                         .compile_matcher();
                     let mut found = Vec::new();
                     for entry in walkdir::WalkDir::new(&root)
@@ -100,7 +99,7 @@ pub fn grep(root: impl Into<PathBuf>) -> Result<Arc<dyn RuntimeTool>> {
         spec::<GrepArgs>(
             "grep",
             "Search UTF-8 files, returning content, paths or counts.",
-            true,
+            READ_ONLY,
         ),
         move |args: GrepArgs, context| {
             let workspace = workspace.clone();
@@ -134,14 +133,14 @@ impl GrepSearch {
         let regex = fancy_regex::RegexBuilder::new(&pattern)
             .backtrack_limit(100_000)
             .build()
-            .map_err(|e| Error::Invalid(e.to_string()))?;
+            .map_err(|e| failure("invalid_pattern", e))?;
         let glob = args
             .glob
             .as_ref()
             .map(|s| {
                 globset::Glob::new(s)
                     .map(|g| g.compile_matcher())
-                    .map_err(|e| Error::Invalid(e.to_string()))
+                    .map_err(|e| failure("invalid_pattern", e))
             })
             .transpose()?;
         Ok(Self {

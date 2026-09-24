@@ -40,6 +40,56 @@ impl Engine {
                 )
                 .await
             }
+            RecoveryResolution::AbandonGeneration {
+                generation_id,
+                reason,
+            } => {
+                let session = &self.current.active.session;
+                if !session
+                    .capabilities
+                    .as_ref()
+                    .is_some_and(|caps| caps.supports(Capability::LocalProjection))
+                {
+                    return Err(Error::Invalid(
+                        "only a local projection session can abandon a generation".into(),
+                    ));
+                }
+                if session.generation_id.as_ref() != Some(&generation_id)
+                    || session.response_status.is_some()
+                {
+                    return Err(Error::Invalid(
+                        "generation resolution has no matching unfinished generation".into(),
+                    ));
+                }
+                // The service can never continue a lost response's own provider jobs;
+                // the host settles them with Complete or Abandon first.
+                if self.current.active.operations.values().any(|op| {
+                    !op.state.terminal()
+                        && matches!(op.owner, OperationOwner::Provider { .. })
+                        && op.origin.generation_id.as_ref() == Some(&generation_id)
+                }) {
+                    return Err(Error::Invalid(
+                        "settle the abandoned generation's provider operations first".into(),
+                    ));
+                }
+                let mut next = self.current.as_ref().clone();
+                next.active.commands.retain(|command| {
+                    !matches!(&command.intent, CommandIntent::Generate { generation_id: id, .. } if *id == generation_id)
+                });
+                // The model is called again; provider jobs of earlier generations continue
+                // through that call as they would after any continuation response.
+                next.active.session.response_status = Some(ResponseStatus::Continuation);
+                next.active.session.needs_generation = true;
+                self.commit(
+                    next,
+                    Fact::GenerationAbandoned {
+                        generation_id,
+                        reason,
+                    },
+                    HistoryDelta::Unchanged,
+                )
+                .await
+            }
         }
     }
     pub(super) async fn insert(&mut self, message: Message, source: String) -> Result<String> {
@@ -190,28 +240,21 @@ impl Engine {
             {
                 return self.suspend(WaitReason::Recovery).await;
             }
+            if self.current.active.session.recovery.is_some() {
+                return Ok(());
+            }
+            // A local projection is rebuilt from committed history; only a generation,
+            // committed with its send boundary, may have reached the service.
+            let local = self
+                .session_capabilities()
+                .supports(Capability::LocalProjection);
             let in_generation = self.current.active.session.generation_id.is_some()
                 && self.current.active.session.response_status.is_none();
-            if (in_generation || self.current.active.commands.iter().any(|c| c.sent))
-                && self.current.active.session.recovery.is_none()
-            {
-                return self.suspend(WaitReason::Recovery).await;
-            }
-            if !self.current.active.media.is_empty()
-                && self.current.active.session.recovery.is_none()
-            {
-                return self.suspend(WaitReason::Recovery).await;
-            }
-            if self.current.active.session.establishment == SessionEstablishment::Opening
-                && self.current.active.session.recovery.is_none()
-            {
-                return self.suspend(WaitReason::Recovery).await;
-            }
-            if self.current.active.session.establishment == SessionEstablishment::Established
-                && self.current.active.session.recovery.is_none()
-                && !self
-                    .session_capabilities()
-                    .supports(Capability::LocalProjection)
+            if in_generation
+                || self.current.active.commands.iter().any(|c| c.sent)
+                || !self.current.active.media.is_empty()
+                || (self.current.active.session.establishment != SessionEstablishment::New
+                    && !local)
             {
                 return self.suspend(WaitReason::Recovery).await;
             }
@@ -233,7 +276,7 @@ impl Engine {
                 "model does not support running profile updates".into(),
             ));
         }
-        let mut request = self.model_request(self.current.history.len());
+        let mut request = self.model_request(self.current.history.iter());
         request.profile = profile.clone();
         self.negotiate(&request)?;
         self.prepare_command(CommandIntent::UpdateProfile {
@@ -299,7 +342,7 @@ impl Engine {
             let opid = id.clone();
             self.tasks.spawn(async move {
                 if let Err(error) = handle.cancel().await {
-                    let _ = tx.send(Work::Started(opid, Err(error))).await;
+                    let _ = tx.send(Work::CancelFailed(opid, error)).await;
                 }
             });
         }

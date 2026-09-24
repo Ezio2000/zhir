@@ -30,18 +30,19 @@ use zhir_core::{
 enum Work {
     Model(Result<Option<SessionEvent>>),
     Started(String, Result<ToolExecution>),
+    CancelFailed(String, Error),
     Operation(String, Result<Option<OperationEvent>>),
     Admitted(
         Vec<(String, Arc<dyn RuntimeToolBinding>)>,
         Result<Vec<ApprovalDecision>>,
     ),
     MediaReady(
-        MediaChunk,
+        zhir_core::resource::SealedMedia,
         zhir_core::resource::ResourceRef,
         oneshot::Sender<bool>,
     ),
     InputReady(
-        MediaChunk,
+        zhir_core::resource::SealedMedia,
         zhir_core::resource::ResourceRef,
         oneshot::Sender<bool>,
     ),
@@ -65,6 +66,9 @@ struct Engine {
     media_output: MediaInput,
     work_tx: mpsc::Sender<Work>,
     work: mpsc::Receiver<Work>,
+    /// Work taken from the queue while batching session events, handled next. Only
+    /// accessed through `get_mut`; the mutex keeps the engine `Sync`.
+    stashed: std::sync::Mutex<Option<Work>>,
     tasks: JoinSet<()>,
     session_control: Option<Arc<dyn SessionControl>>,
     model_media_input: Option<Arc<dyn MediaSender>>,
@@ -74,6 +78,10 @@ struct Engine {
     sent: BTreeSet<String>,
     sending: bool,
     input_sending: bool,
+    /// The first queued host packet that did not join the last input segment.
+    held_input: Option<Packet>,
+    /// Archived stream keys, read from the archive chain on first use.
+    ended_streams: Option<BTreeSet<String>>,
     media_pending: bool,
     pending_replies: BTreeSet<String>,
     pending_starts: BTreeSet<String>,
@@ -95,7 +103,7 @@ mod workers;
 use checkpoint::WaitReason;
 use completion::provider_operation_id;
 pub(crate) use lifecycle::execute;
-use lifecycle::interruptible;
+use lifecycle::{interruptible, interruption};
 
 struct ToolProgress {
     operation_id: String,

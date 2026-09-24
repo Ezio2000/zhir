@@ -776,6 +776,27 @@
             "sequence"
           ],
           "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "generation_id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "generation_abandoned",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "generation_id",
+            "reason"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -905,6 +926,12 @@
           "minimum": 0,
           "type": "integer"
         },
+        "max_buffered_media_packets": {
+          "description": "Media packets queued in each direction between the host and the kernel.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
         "max_control_commands": {
           "format": "uint",
           "minimum": 0,
@@ -968,6 +995,7 @@
         "max_media_streams",
         "max_media_chunk_bytes",
         "max_buffered_media_bytes",
+        "max_buffered_media_packets",
         "max_operation_concurrency",
         "max_observer_events",
         "commit_timeout_ms"
@@ -2917,8 +2945,8 @@
     },
     "version": {
       "format": "uint32",
-      "maximum": 4,
-      "minimum": 4,
+      "maximum": 5,
+      "minimum": 5,
       "type": "integer"
     }
   },

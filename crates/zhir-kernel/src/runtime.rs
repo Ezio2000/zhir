@@ -152,6 +152,9 @@ impl Runtime {
             .load_head(run_id)
             .await
     }
+    /// Continues an active checkpoint left by an interrupted process. The Attached CAS
+    /// rejects a stale checkpoint, but it does not stop an executor that is still alive:
+    /// the host must guarantee that a run has at most one live executor.
     pub fn continue_from(&self, checkpoint: Arc<Checkpoint>) -> Result<Invocation> {
         checkpoint.validate()?;
         if !checkpoint.state.active() {
@@ -167,6 +170,8 @@ impl Runtime {
             },
         ))
     }
+    /// Resumes a Suspended run with host input and recovery resolutions. As with
+    /// `continue_from`, the host must guarantee a single live executor per run.
     pub async fn resume(&self, request: ResumeRequest) -> Result<Invocation> {
         let checkpoint = match request.target {
             ResumeTarget::Checkpoint(checkpoint) => checkpoint,

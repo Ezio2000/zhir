@@ -1,6 +1,6 @@
 # 研发接入 API
 
-0.3.0 统一使用会话、operation 和资源契约。完整可运行示例位于
+0.4.0 统一使用会话、operation 和资源契约。完整可运行示例位于
 [custom_tool.rs](../crates/zhir/examples/custom_tool.rs)、
 [resume.rs](../crates/zhir/examples/resume.rs) 和
 [chat.rs](../crates/zhir/examples/chat.rs)。仓库验收用模型、记录器与消费者测试统一位于不发布的 `zhir-testing`；发布的 SDK 不依赖它。
@@ -27,6 +27,12 @@ let completion = invocation.result().await?;
 启动执行。`result` 返回 RunCompletion；Completed、Suspended、Failed、Cancelled、Limited
 都属于已结算状态。存储错误和 CAS 冲突返回携带最后已知 checkpoint 的 RunError。
 丢弃 Invocation 或未读完的 EventStream 会取消运行；单纯读取结果无需消费观察事件。
+
+RunStore 只保存当前一代历史：历史重写在同一次提交中删除旧一代。`RunStore::delete(run_id)`
+删除运行的全部记录，未知运行也返回成功；存储本身从不自动删除。`SqliteRunStore::connect`
+使用单写连接（WAL 与 busy timeout），`MysqlRunStore::connect` 默认 8 个连接，
+`MysqlRunStore::connect_with(url, max_connections)` 指定连接数；获取连接受提交截止时间约束。
+RedisRunStore 复用一条多路复用连接，出错后下次调用重连，失败的提交仍视为结果不确定。
 
 `RunMode::Task` 在当前轮结束且操作已完成时结算；`Interactive` 等待追加输入，
 调用 `seal_user_input` 后才允许正常完成。运行中的控制接口包括：
@@ -73,6 +79,14 @@ FunctionModel 和 HTTP 适配器不支持原生双向、运行中 steering、异
 HTTP feature 为 `openai-chat`、`openai-responses`、`anthropic`。ModelConfig 接收
 base URL、CredentialProvider 和模型 ID；客户端与超时可由调用方配置。默认
 CapabilitySet 只描述协议默认能力，实际端点能力应显式提供。核心包不硬编码模型列表。
+
+HttpModel 在读取响应体之前重试可重试的拒绝：连接失败（`http_connect`）、429 与 5xx。
+默认最多 3 次尝试，退避从 500ms 指数增长到 8s；服务端给出更长的 `Retry-After` 秒数时
+按它等待。等待受运行截止时间与取消约束，截止时间前无法开始的重试直接返回原拒绝。
+其他请求错误（例如超时或读取响应时断开）可能已被服务处理，记为 Uncertain，不重试。
+`with_retry(RetryPolicy)` 替换策略，`RetryPolicy::new(1)` 关闭重试。
+`RequestLimit::new(n)` 是可在多个模型间共享的请求级并发上限，经
+`with_request_limit` 安装；许可覆盖整个请求，包括重试等待与流式读取，并可被取消。
 
 `ProtocolExtension` 由工厂为每次交换创建，负责请求扩展、输出解析与回放；
 `ExtensionChain` 组合多个扩展。服务端工具通过 ProviderToolAdapter 绑定具体协议项，
@@ -148,6 +162,20 @@ Finished/Unknown 更新生命周期；Waiting 的 prompt 用于展示交互，�
 幂等键。`recover` 必须查询或附着到原任务，不能把无法恢复的任务重新 start。
 无法判断外部结果时报告 Unknown，由调用方明确解决。
 
+`start` 返回的错误按是否确定外部结果结算：
+
+| 错误 | 结果 |
+|---|---|
+| `RuntimeTool(failure)` | Failure，保留工具给出的错误码 |
+| `Invalid`、`Validation`、`Catalog`、`Model` 等确定错误 | Failure（如 `invalid_arguments`），模型下一轮可见 |
+| 已请求取消后返回 `Cancelled` | Cancelled |
+| `Uncertain`、`Storage`、`Conflict`、`Protocol`、`Deadline`，或未请求取消时的 `Cancelled` | Unknown，运行以 RecoveryRequired 挂起 |
+| 工具或委派的 `recover` 返回任何错误 | Unknown：无法判断外部工作是否仍在运行 |
+
+`Execution.parallel` 为 false 的调用单独执行：它等待所有更早发出的调用结束，之后的
+调用也等它结束才开始。连续的并行调用成组执行，受 `max_operation_concurrency` 约束。
+排队调用始终按模型发出顺序准入；审批决定返回前不会准入新的一组。
+
 RuntimeToolRegistry 校验目录、输入与最终输出，也校验 Active 事件里的最终输出。
 Catalog 是不可变快照，bind 必须返回与声明一致的 specification。输入显式区分
 `RuntimeToolInput::Structured` 和 `Freeform`。
@@ -164,12 +192,14 @@ let tool = TypedTool::<EchoArgs, String>::new(
 
 `ToolReply::content` 可以指定资源或文本展示。无类型 JSON 结果使用
 `runtime_tools::reply::json`；复杂异步生命周期直接实现 RuntimeTool。
+`recover` 返回的事件流可以从序号 0 重放：早于已记录 `last_sequence` 的事件视为已应用而被忽略，
+与记录序号相同的事件必须重复记录的更新，更大的序号继续推进操作。
 重试装饰器只按显式执行事实重试，不能把 Active 工作视为失败后重新发起。
 
 ## 恢复与子 Agent
 
 RunCompletion 可提取不可变 checkpoint。`wire::encode_checkpoint/decode_checkpoint`
-使用 v4。持久化运行可生成 SuspensionTicket，通过
+使用 v5。持久化运行可生成 SuspensionTicket，通过
 `ResumeRequest::from_ticket` 校验 run、revision、checkpoint 与 suspension。
 
 用 `ResumeRequest::resolve` 为未完成操作提供明确处置：
@@ -179,11 +209,37 @@ RunCompletion 可提取不可变 checkpoint。`wire::encode_checkpoint/decode_ch
 | `Attach { operation_id, reference }` | 提供适配器恢复引用，附着到已有工作 |
 | `Complete { operation_id, outcome }` | 提交外部已经核实的最终结果 |
 | `Abandon { operation_id, reason }` | 明确放弃，产生取消结果 |
+| `AbandonGeneration { generation_id, reason }` | 放弃本地投影会话中不确定的生成，重新生成 |
 
 `resume` 只接受 Suspended；进程中断留下的 Running checkpoint 使用 `continue_from`。
 两者在打开适配器和恢复工具前提交 Attached CAS。运行不会重发已标记 sent 的命令。
-没有可用会话恢复引用的未确认请求会保持 RecoveryRequired，普通 HTTP 轮次服务无法
-凭空恢复远端请求。提供具备恢复能力的会话适配器，或在产品层完成外部核对与处置。
+同一运行在任一时刻只能有一个存活的执行者，由宿主保证：Attached CAS 能拒绝过期的 checkpoint，
+但不能阻止仍在运行的旧执行者继续驱动工具或会话。多 worker 部署需在宿主层加租约。
+
+LocalProjection 会话（HttpModel、FunctionModel）从已提交历史重建投影：打开前不单独提交边界，
+建立中断或 Generate 提交前崩溃都在恢复后照常重建；Append 等本地命令照常派发，连续的几条一起提交给会话，
+确认合并为一次提交。只有 Generate 持久化 sent 边界，并与命令本身在同一次提交中记录。
+已发送或已开始、但响应未结束的生成可能已到达服务，恢复时以 RecoveryRequired 挂起。
+宿主核对后可用 `AbandonGeneration` 放弃它：内核移除该 Generate，把响应记为
+Continuation 并重新调用模型；已提交的输出保留在历史中，之前各代仍在运行的 provider 操作
+随新调用继续。处置要求持久化能力包含 LocalProjection 且 `generation_id` 与进行中的生成一致；
+被放弃这一代自己发起、尚未结束的 provider 操作须先用 `Complete` 或 `Abandon` 结算，
+否则运行以 Failed 结束。
+
+```rust
+let generation_id = checkpoint.active.session.generation_id.clone().unwrap();
+runtime
+    .resume(ResumeRequest::from_checkpoint(checkpoint).resolve(
+        RecoveryResolution::AbandonGeneration {
+            generation_id,
+            reason: "provider reports no billed request".into(),
+        },
+    ))
+    .await?;
+```
+
+远端会话没有可用恢复引用时同样保持 RecoveryRequired，只能凭 RecoveryRef 附着恢复；
+提供具备恢复能力的会话适配器，或在产品层完成外部核对与处置。
 
 内置 `ask_question` 产生 Waiting operation。
 `builtins::interaction::response(checkpoint, operation_id, answers)` 校验答案并创建
@@ -212,7 +268,7 @@ Preferred 只允许使用调用方列出的替代值，未满足项记录原因�
 服务端信息或已验证证据填入确认；不能复制请求值假装服务已执行。原始图像、服务
 等级与推理选项仍需要具体账号/模型/端点支持。
 
-RetryingModel 仅重试尚未发送命令的会话建立。FallbackModel 接收
+EstablishmentRetryModel 仅重试尚未发送命令的会话建立。FallbackModel 接收
 `FallbackCandidate::new(stable_id, model)` 列表，各候选独立协商；恢复绑定原 ID，
 顺序变化不会把任务迁移到另一服务。ConcurrencyLimitedModel 的共享许可覆盖会话寿命。
 TransformModel 的 prepare 处理打开上下文和 ReplaceContext；命令与事件可以单独变换。
@@ -229,7 +285,9 @@ Content::resource 接收 ResourceRef，或用 ResourceInput 同时指定 Resourc
 ResourceStore::create 返回分块 writer，append 接收顺序号，finish 封存不可变引用。
 ResourceStore::open 返回 reader，每次 read 指定最大字节数。MemoryResourceStore 总是
 可用；FilesystemResourceStore 需要 `resources-filesystem`。同 key 相同数据幂等，
-不同数据明确冲突。
+不同数据明确冲突。`ResourceStore::delete` 删除已存储资源，未知资源也返回成功。
+`zhir_storage::resources::reachable(&checkpoint, &store)` 列出 checkpoint 仍引用的全部存储
+资源：历史与完成内容、待投递上下文、活动媒体游标及归档链。哪些资源可以回收由宿主决定。
 
 `ResourceModel::new(model, store, max_input_bytes)` 在打开上下文、ReplaceContext 和
 Append（包括工具结果及确认输出）中解析资源。一个请求/命令内按实际物化字节消耗总预算；原生回放中同一
@@ -242,7 +300,12 @@ session_id、stream_id、epoch、sequence、timestamp_us、media_type、bytes、
 媒体序号在同一流内递增。输入 epoch 固定为 0；输出打断后使用新的 output_epoch，过期输出不会交付给宿主。结束的流从活动表移出，通过 media_archive 保留资源引用。
 
 媒体在存储完成和 cursor 提交后才交付，输出消费者变慢会向上游施加背压。
-checkpoint 只记录最新封存节点；SealedMedia 的 previous 引用链接历史节点。
+同一流、epoch 与媒体类型中已经排队的多个包合并为一段封存：一个数据资源加一个 SealedMedia
+节点，`chunks` 记录每个包的 sequence、timestamp_us、offset、length 与 end；该段提交一次后按序交付。
+每个方向的排队包数受 `Limits.max_buffered_media_packets`（默认 256）约束，字节数受
+`max_buffered_media_bytes` 约束，宿主的 send 在任一上限处等待。
+checkpoint 只记录最新封存段；SealedMedia 的 previous 引用链接更早的段。
+FilesystemResourceStore 在根目录写入格式 5 标记，并按 id 前两位十六进制分目录存放资源。
 长期资源保留、检索索引、解码/转码与播放界面由产品层负责。
 
 ## 凭据与跨供应商能力
@@ -263,7 +326,7 @@ provider operation 或媒体流。供应商任务 ID、轮询/推送、取消和
 ## 历史、输出与观察
 
 HistoryEntry 保存稳定 ID、CallRef 与 Message。History::messages 是到达顺序视图；
-`model::conversation(history.entries())` 才是新一轮模型的逻辑会话投影。后者合并同轮
+`model::conversation(history.iter())` 才是新一轮模型的逻辑会话投影，按引用读取条目。后者合并同轮
 assistant 输出与完成信息，把异步 provider 更新归回原始调用。用持久化 checkpoint
 分析因果，不要用观察事件重建事实。
 

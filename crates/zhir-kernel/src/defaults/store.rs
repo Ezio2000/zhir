@@ -39,7 +39,7 @@ impl RunStore for Ephemeral {
                 .lock()
                 .map_err(|_| Error::Storage("poisoned ephemeral store".into()))?;
             let digest = commit.digest()?;
-            if let Some(old) = state.ids.get(&commit.checkpoint.id) {
+            if let Some(old) = state.ids.get(&commit.checkpoint().id) {
                 return if old == &digest {
                     Ok(())
                 } else {
@@ -52,8 +52,8 @@ impl RunStore for Ephemeral {
                 .as_deref()
                 .map(zhir_core::wire::CheckpointCore::from);
             commit.validate_against(previous.as_ref())?;
-            state.ids.insert(commit.checkpoint.id.clone(), digest);
-            state.head = Some(commit.checkpoint);
+            state.ids.insert(commit.checkpoint().id.clone(), digest);
+            state.head = Some(commit.into_checkpoint());
             Ok(())
         })
     }
@@ -68,6 +68,24 @@ impl RunStore for Ephemeral {
                 .as_ref()
                 .filter(|c| c.context.run_id == run_id)
                 .cloned())
+        })
+    }
+    fn delete(&self, run_id: &str) -> BoxFuture<'_, Result<()>> {
+        let run_id = run_id.to_owned();
+        Box::pin(async move {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| Error::Storage("poisoned ephemeral store".into()))?;
+            if state
+                .head
+                .as_ref()
+                .is_some_and(|c| c.context.run_id == run_id)
+            {
+                state.head = None;
+                state.ids.clear();
+            }
+            Ok(())
         })
     }
 }

@@ -1,8 +1,12 @@
 use crate::{Protocol, ProtocolExtension, codec, streaming, transport};
 use serde_json::Value;
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use zhir_core::{
     BoxFuture, Result,
+    error::Error,
     model::{CapabilitySet, GenerationOutput, Model, ModelContext, ModelRequest},
 };
 
@@ -43,6 +47,8 @@ pub struct HttpModel {
     capabilities: CapabilitySet,
     extension: Option<Arc<ExtensionFactory>>,
     mappings: Vec<crate::profiles::ProfileMapping>,
+    retry: zhir_policies::RetryPolicy,
+    request_limit: Option<crate::RequestLimit>,
 }
 impl HttpModel {
     #[cfg(any(
@@ -70,6 +76,13 @@ impl HttpModel {
             capabilities,
             extension: None,
             mappings: vec![],
+            retry: zhir_policies::RetryPolicy::new(3)?.backoff(
+                zhir_policies::Backoff::exponential(
+                    Duration::from_millis(500),
+                    Duration::from_secs(8),
+                )?,
+            ),
+            request_limit: None,
         })
     }
     pub fn with_profile_mapping(
@@ -102,6 +115,18 @@ impl HttpModel {
             zhir_core::model::Capability::ProfileUpdates,
         ]);
         self.capabilities = capabilities;
+        self
+    }
+    /// Replaces the request retry policy. Only retryable rejections received before the
+    /// response body is read are retried; the default makes 3 attempts with exponential
+    /// backoff from 500ms to 8s, and a longer `Retry-After` delay takes precedence.
+    pub fn with_retry(mut self, policy: zhir_policies::RetryPolicy) -> Self {
+        self.retry = policy;
+        self
+    }
+    /// Shares one request bound with every model holding the same limit.
+    pub fn with_request_limit(mut self, limit: crate::RequestLimit) -> Self {
+        self.request_limit = Some(limit);
         self
     }
     /// Install a factory for an independent extension session on each invocation.
@@ -163,7 +188,12 @@ impl HttpModel {
                 body,
                 mut extension,
             } = self.prepare(request, &context)?;
-            let response = self.send(&body).await?;
+            let deadline = zhir_policies::timing::deadline(&context.run)?;
+            let _permit = match &self.request_limit {
+                Some(limit) => Some(limit.acquire(&context.cancellation, deadline).await?),
+                None => None,
+            };
+            let response = self.send(&body, &context, deadline).await?;
             let value: Value = if request.stream {
                 streaming::receive(self.protocol, response, &context, &mut extension).await?
             } else {
@@ -242,7 +272,41 @@ impl HttpModel {
             extension,
         })
     }
-    async fn send(&self, body: &Value) -> Result<reqwest::Response> {
+    async fn send(
+        &self,
+        body: &Value,
+        context: &ModelContext,
+        deadline: Option<Instant>,
+    ) -> Result<reqwest::Response> {
+        let mut failed = 0;
+        loop {
+            let (error, retry_after) = match self.attempt(body).await {
+                Ok(response) => return Ok(response),
+                Err(rejection) => rejection,
+            };
+            failed += 1;
+            let retryable = matches!(&error, Error::Model(failure) if failure.retryable);
+            let Some(delay) = self.retry.delay_after(failed).filter(|_| retryable) else {
+                return Err(error);
+            };
+            let delay = retry_after.map_or(delay, |after| after.max(delay));
+            // A retry that cannot start before the deadline reports the real rejection.
+            if deadline.is_some_and(|at| Instant::now().checked_add(delay).is_none_or(|t| t >= at))
+            {
+                return Err(error);
+            }
+            zhir_policies::timing::wait(delay, &context.cancellation, deadline, |at| {
+                tokio::time::sleep_until(at.into())
+            })
+            .await?;
+        }
+    }
+    /// Sends one request, refreshing a rejected credential once. A rejection carries the
+    /// server's `Retry-After` delay in seconds when present.
+    async fn attempt(
+        &self,
+        body: &Value,
+    ) -> std::result::Result<reqwest::Response, (Error, Option<Duration>)> {
         let path = self.protocol.adapter().endpoint();
         for attempt in 0..2 {
             let credential = self
@@ -252,10 +316,11 @@ impl HttpModel {
                     audience: self.config.base_url.clone(),
                     now_ms: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
-                        .map_err(|e| zhir_core::error::Error::Invalid(e.to_string()))?
+                        .map_err(|e| (Error::Invalid(e.to_string()), None))?
                         .as_millis() as u64,
                 })
-                .await?;
+                .await
+                .map_err(|e| (e, None))?;
             let mut builder = self
                 .config
                 .client
@@ -272,16 +337,26 @@ impl HttpModel {
                     builder = builder.header(header, value);
                 }
             }
-            let received = builder.send().await.map_err(transport::request_error)?;
+            let received = builder
+                .send()
+                .await
+                .map_err(|e| (transport::request_error(e), None))?;
             if received.status() == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 {
                 self.config
                     .credentials
                     .invalidate(&credential.generation)
-                    .await?;
+                    .await
+                    .map_err(|e| (e, None))?;
                 continue;
             }
             if !received.status().is_success() {
-                return Err(transport::http_error(received).await);
+                let retry_after = received
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.trim().parse().ok())
+                    .map(Duration::from_secs);
+                return Err((transport::http_error(received).await, retry_after));
             }
             return Ok(received);
         }

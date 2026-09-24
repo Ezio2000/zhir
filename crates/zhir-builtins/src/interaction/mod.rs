@@ -1,5 +1,5 @@
 //! Host questions are resumable waiting operations, not completed tool replies.
-use crate::common::spec;
+use crate::common::{MUTATING, spec};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -33,7 +33,7 @@ pub fn ask_question() -> Result<Arc<dyn RuntimeTool>> {
         spec: spec::<Args>(
             NAME,
             "Ask the host questions and wait for its response.",
-            false,
+            MUTATING,
         ),
     }))
 }

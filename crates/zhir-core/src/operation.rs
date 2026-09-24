@@ -199,6 +199,11 @@ pub enum RecoveryResolution {
         operation_id: String,
         reason: String,
     },
+    /// Gives up an unfinished generation of a local projection session so it is generated again.
+    AbandonGeneration {
+        generation_id: String,
+        reason: String,
+    },
 }
 
 impl From<&OperationOutcome> for OperationState {

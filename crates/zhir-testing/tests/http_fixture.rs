@@ -16,7 +16,8 @@ use zhir::{
     error::{Error, Failure},
     model::{ModelContext, ModelRequest},
     models::{
-        ModelConfig, Protocol, ProtocolExtension, anthropic, decorators::RetryingModel, openai,
+        ModelConfig, Protocol, ProtocolExtension, anthropic, decorators::EstablishmentRetryModel,
+        openai,
     },
 };
 use zhir_testing::http::{HttpFixture, HttpReply};
@@ -86,6 +87,8 @@ async fn contextual_factories_and_http_errors_are_explicit_without_command_repla
             Protocol::Messages => anthropic::messages::model(config),
         }
         .unwrap()
+        // Isolate establishment retry from request retry.
+        .with_retry(zhir_policies::RetryPolicy::new(1).unwrap())
         .with_extension(move |ctx| {
             assert_eq!(ctx.protocol, protocol);
             assert_eq!(
@@ -113,7 +116,7 @@ async fn contextual_factories_and_http_errors_are_explicit_without_command_repla
             .entry("consumer".into())
             .or_default()
             .insert("marker".into(), json!("caller"));
-        let model = RetryingModel::new(
+        let model = EstablishmentRetryModel::new(
             Arc::new(model),
             zhir_policies::RetryPolicy::new(3)
                 .unwrap()

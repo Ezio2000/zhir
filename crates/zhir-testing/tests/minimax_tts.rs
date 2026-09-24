@@ -48,6 +48,57 @@ async fn wait_stats(stats: &mut watch::Receiver<Stats>, predicate: impl Fn(&Stat
         );
     }
 }
+/// Records every created resource so the final checkpoint can be shown to reach them all.
+#[derive(Default)]
+struct CreatedResources {
+    inner: MemoryResourceStore,
+    created: std::sync::Mutex<Vec<(String, String)>>,
+}
+impl ResourceStore for CreatedResources {
+    fn create(
+        &self,
+        key: String,
+        media_type: String,
+    ) -> zhir_core::BoxFuture<'_, zhir_core::Result<Box<dyn zhir_core::resource::ResourceWriter>>>
+    {
+        self.created
+            .lock()
+            .unwrap()
+            .push((key.clone(), media_type.clone()));
+        self.inner.create(key, media_type)
+    }
+    fn open(
+        &self,
+        reference: ResourceRef,
+    ) -> zhir_core::BoxFuture<'_, zhir_core::Result<Box<dyn zhir_core::resource::ResourceReader>>>
+    {
+        self.inner.open(reference)
+    }
+    fn delete(&self, reference: ResourceRef) -> zhir_core::BoxFuture<'_, zhir_core::Result<()>> {
+        self.inner.delete(reference)
+    }
+}
+impl CreatedResources {
+    /// Keys of created resources that were finished and are stored.
+    async fn stored(&self) -> std::collections::BTreeSet<String> {
+        let created = self.created.lock().unwrap().clone();
+        let mut stored = std::collections::BTreeSet::new();
+        for (key, media_type) in created {
+            let reference = ResourceRef {
+                id: key.clone(),
+                media_type,
+                name: None,
+                source: zhir_core::resource::ResourceSource::Stored { key: key.clone() },
+                metadata: Default::default(),
+            };
+            if self.inner.open(reference).await.is_ok() {
+                stored.insert(key);
+            }
+        }
+        stored
+    }
+}
+
 async fn read_resource(store: &dyn ResourceStore, reference: ResourceRef) -> Vec<u8> {
     let mut reader = store.open(reference).await.unwrap();
     let mut bytes = vec![];
@@ -67,7 +118,7 @@ async fn exercise(
     chunk_limit: usize,
 ) -> Evidence {
     let (model, mut stats) = TtsModel::new(config);
-    let resources = Arc::new(MemoryResourceStore::new());
+    let resources = Arc::new(CreatedResources::default());
     let store = Arc::new(RecordingStore::new(Arc::new(MemoryRunStore::new())));
     let runtime = Runtime::builder(Arc::new(model))
         .resources(resources.clone())
@@ -96,10 +147,23 @@ async fn exercise(
             // Prove durability at delivery time, not just at eventual completion.
             let commits = store.commits();
             let key = format!("output:{}:{}", chunk.stream_id, chunk.epoch);
-            let reference = if chunk.end {
+            // The earliest cursor at or past this chunk names its segment; a chunk in the
+            // final segment is reachable only from the archive.
+            let cursor = commits.iter().find_map(|commit| {
+                commit
+                    .checkpoint()
+                    .active
+                    .media
+                    .get(&key)
+                    .filter(|cursor| cursor.sequence >= chunk.sequence)
+                    .map(|cursor| cursor.sealed.clone())
+            });
+            let reference = if let Some(reference) = cursor {
+                Some(reference)
+            } else {
                 let mut found = None;
                 for commit in &commits {
-                    if let Some(reference) = &commit.checkpoint.active.session.media_archive {
+                    if let Some(reference) = &commit.checkpoint().active.session.media_archive {
                         let node: ArchivedMedia = serde_json::from_slice(
                             &read_resource(resources.as_ref(), reference.clone()).await,
                         )
@@ -111,28 +175,21 @@ async fn exercise(
                     }
                 }
                 found
-            } else {
-                commits.iter().find_map(|commit| {
-                    commit
-                        .checkpoint
-                        .active
-                        .media
-                        .get(&key)
-                        .filter(|cursor| cursor.sequence == chunk.sequence)
-                        .map(|cursor| cursor.sealed.clone())
-                })
             }
             .expect("media escaped before its checkpoint commit");
             let manifest: SealedMedia =
                 serde_json::from_slice(&read_resource(resources.as_ref(), reference).await)
                     .unwrap();
-            assert_eq!(manifest.sequence, chunk.sequence);
+            let sealed = manifest
+                .chunks
+                .iter()
+                .find(|sealed| sealed.sequence == chunk.sequence)
+                .expect("delivered chunk is not in its segment");
             assert_eq!(manifest.epoch, chunk.epoch);
-            assert_eq!(manifest.end, chunk.end);
-            assert_eq!(
-                read_resource(resources.as_ref(), manifest.resource).await,
-                chunk.bytes
-            );
+            assert_eq!(sealed.end, chunk.end);
+            let data = read_resource(resources.as_ref(), manifest.resource).await;
+            let range = sealed.offset as usize..(sealed.offset + sealed.length) as usize;
+            assert_eq!(data[range], chunk.bytes);
             if !chunk.bytes.is_empty() {
                 first_audio_ms.get_or_insert(started.elapsed().as_millis());
             }
@@ -239,15 +296,28 @@ async fn exercise(
         while let Some(current) = reference {
             let node: SealedMedia =
                 serde_json::from_slice(&read_resource(resources.as_ref(), current).await).unwrap();
-            if let Some(previous) = previous_sequence {
-                assert!(node.sequence < previous);
+            for sealed in node.chunks.iter().rev() {
+                if let Some(previous) = previous_sequence {
+                    assert!(sealed.sequence < previous);
+                }
+                previous_sequence = Some(sealed.sequence);
             }
-            previous_sequence = Some(node.sequence);
             reference = node.previous;
         }
         streams += 1;
     }
     assert!(streams > 0);
+    // Nothing the run stored is orphaned: the final checkpoint reaches every resource.
+    let reachable = zhir_storage::resources::reachable(&checkpoint, resources.as_ref())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| match r.source {
+            zhir_core::resource::ResourceSource::Stored { key } => key,
+            _ => unreachable!(),
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(reachable, resources.stored().await);
     let commits = store.verify_traces().unwrap();
     Evidence {
         checkpoint,
