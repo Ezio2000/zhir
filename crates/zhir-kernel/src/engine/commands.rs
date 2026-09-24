@@ -101,7 +101,8 @@ impl Engine {
         let durable = matches!(command.intent, CommandIntent::Generate { .. })
             || !control.capabilities().supports(Capability::LocalProjection);
         let body = self.command_body(command.intent)?;
-        if durable {
+        // A local Generate is prepared with its send boundary already committed.
+        if durable && !command.sent {
             // A crash after this commit is an explicitly uncertain send, never an implicit retry.
             let mut next = self.current.as_ref().clone();
             next.active
@@ -120,16 +121,41 @@ impl Engine {
             .await?;
         }
         self.check()?;
-        self.sent.insert(command.id.clone());
+        let first = command.id;
+        let mut batch = vec![SessionCommand {
+            id: first.clone(),
+            body,
+        }];
+        // Local commands without a durable boundary that follow are submitted in the same
+        // pass, in order, so their acknowledgements arrive together and share a commit.
+        if !durable {
+            for next in self
+                .current
+                .active
+                .commands
+                .iter()
+                .filter(|c| !self.sent.contains(&c.id) && c.id != first)
+            {
+                if matches!(next.intent, CommandIntent::Generate { .. }) || !self.can_send(next) {
+                    break;
+                }
+                batch.push(SessionCommand {
+                    id: next.id.clone(),
+                    body: self.command_body(next.intent.clone())?,
+                });
+            }
+        }
+        self.sent.extend(batch.iter().map(|c| c.id.clone()));
         self.sending = true;
         let tx = self.work_tx.clone();
         self.tasks.spawn(async move {
-            let result = control
-                .submit(SessionCommand {
-                    id: command.id,
-                    body,
-                })
-                .await;
+            let mut result = Ok(());
+            for command in batch {
+                result = control.submit(command).await;
+                if result.is_err() {
+                    break;
+                }
+            }
             let _ = tx.send(Work::CommandSent(result)).await;
         });
         Ok(())

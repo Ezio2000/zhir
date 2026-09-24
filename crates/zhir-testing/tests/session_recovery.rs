@@ -522,7 +522,11 @@ async fn local_projection_runs_continue_after_a_crash_before_the_generation_is_s
                 checkpoint.active.session.establishment
                     == zhir_core::run::SessionEstablishment::Opening
             } else {
-                generate_command(checkpoint).is_some_and(|c| !c.sent)
+                // A local Generate is committed with its send boundary, so the last
+                // commit before the send is the ready session that needs a generation.
+                checkpoint.active.session.ready
+                    && checkpoint.active.session.needs_generation
+                    && generate_command(checkpoint).is_none()
             }
         })
         .await;

@@ -71,6 +71,15 @@ struct Script {
     violations: Vec<String>,
     requests: Vec<RecordedRequest>,
 }
+/// A scripted model declares the capabilities of the exchange sessions it opens
+/// through `FunctionModel`.
+fn exchange_capabilities(capabilities: CapabilitySet) -> CapabilitySet {
+    zhir_models::function::FunctionModel::new(capabilities, |_, _| async {
+        Err(Error::Invalid("capability probe".into()))
+    })
+    .capabilities()
+    .clone()
+}
 pub struct ScriptedModel {
     capabilities: CapabilitySet,
     script: Arc<Mutex<Script>>,
@@ -78,7 +87,7 @@ pub struct ScriptedModel {
 impl ScriptedModel {
     pub fn new(steps: impl IntoIterator<Item = ScriptStep>) -> Self {
         Self {
-            capabilities: crate::model_capabilities(),
+            capabilities: exchange_capabilities(crate::model_capabilities()),
             script: Arc::new(Mutex::new(Script {
                 steps: Steps::Ordered(steps.into_iter().collect()),
                 violations: vec![],
@@ -97,7 +106,7 @@ impl ScriptedModel {
             }
         }
         Ok(Self {
-            capabilities: crate::model_capabilities(),
+            capabilities: exchange_capabilities(crate::model_capabilities()),
             script: Arc::new(Mutex::new(Script {
                 steps: Steps::Matching(cases),
                 requests: vec![],
@@ -135,7 +144,7 @@ impl ScriptedModel {
         Self::new(responses.into_iter().map(ScriptStep::response))
     }
     pub fn with_capabilities(mut self, capabilities: CapabilitySet) -> Self {
-        self.capabilities = capabilities;
+        self.capabilities = exchange_capabilities(capabilities);
         self
     }
     pub fn requests(&self) -> Vec<RecordedRequest> {

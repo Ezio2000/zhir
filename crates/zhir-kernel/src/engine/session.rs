@@ -1,6 +1,11 @@
 use super::*;
 
 impl Engine {
+    /// The session is a local projection rebuilt from committed history.
+    pub(super) fn local_projection(&self) -> bool {
+        self.session_capabilities()
+            .supports(Capability::LocalProjection)
+    }
     pub(super) fn session_capabilities(&self) -> &CapabilitySet {
         self.session_control.as_ref().map_or_else(
             || {
@@ -123,7 +128,10 @@ impl Engine {
                 input_position: next.active.session.input_position,
                 profile_revision: next.active.session.profile_revision,
             },
-            sent: false,
+            // Before its send, a local generation has no effect a crash could leave behind:
+            // the committed need to generate reproduces it. Its send boundary is therefore
+            // recorded with the command, and dispatch follows without another commit.
+            sent: self.local_projection(),
         });
         self.commit(
             next,
@@ -179,17 +187,21 @@ impl Engine {
                 "model does not support context replacement required by the history reducer".into(),
             ));
         }
-        let mut next = self.current.as_ref().clone();
-        next.active.session.establishment = SessionEstablishment::Opening;
-        next.active.session.ready = false;
-        self.commit(
-            next,
-            Fact::Command {
-                command_id: new_id(),
-            },
-            HistoryDelta::Unchanged,
-        )
-        .await?;
+        // Opening a local projection has no external effect, so it needs no boundary of
+        // its own; the commit after opening records the session.
+        if !self.local_projection() {
+            let mut next = self.current.as_ref().clone();
+            next.active.session.establishment = SessionEstablishment::Opening;
+            next.active.session.ready = false;
+            self.commit(
+                next,
+                Fact::Command {
+                    command_id: new_id(),
+                },
+                HistoryDelta::Unchanged,
+            )
+            .await?;
+        }
         let seed_end = self
             .current
             .active
@@ -269,6 +281,8 @@ impl Engine {
             }
         };
         let mut next = self.current.as_ref().clone();
+        next.active.session.establishment = SessionEstablishment::Opening;
+        next.active.session.ready = false;
         if next.active.session.recovery.is_some()
             && next
                 .active

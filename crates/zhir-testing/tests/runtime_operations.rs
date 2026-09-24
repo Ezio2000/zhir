@@ -611,8 +611,10 @@ async fn recovered_tools_may_replay_their_events_from_the_beginning() {
     }
 }
 
-/// Session events queued behind one another share a checkpoint. Without batching these
-/// runs commit 16 and 27 checkpoints.
+/// Session events queued behind one another share a checkpoint, a local session opens
+/// and sends Generate without separate boundaries, and consecutive local commands share
+/// one acknowledgement commit. A text turn commits: start, open, ready, generate,
+/// response, acknowledgements, close, closed and finished.
 #[tokio::test]
 async fn turns_commit_a_bounded_number_of_checkpoints() {
     let (text, store) = Harness::new(vec![])
@@ -620,11 +622,11 @@ async fn turns_commit_a_bounded_number_of_checkpoints() {
         .await;
     assert!(matches!(text.state, State::Completed { .. }));
     store.verify_traces().unwrap();
-    assert!(store.commits().len() <= 12, "{}", store.commits().len());
+    assert!(store.commits().len() <= 9, "{}", store.commits().len());
     let (tool, store) = Harness::new(vec![probe("serial", SERIAL, Log::default())])
         .run(calls(&["serial"]))
         .await;
     assert!(matches!(tool.state, State::Completed { .. }));
     store.verify_traces().unwrap();
-    assert!(store.commits().len() <= 20, "{}", store.commits().len());
+    assert!(store.commits().len() <= 15, "{}", store.commits().len());
 }

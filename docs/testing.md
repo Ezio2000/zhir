@@ -31,7 +31,7 @@ cargo run -p zhir-conformance --bin schemas --locked -- --check
 | `session_semantics` | 委派与会话语义、流归档；2000 条流不重扫归档链、慢存储下排队包合并为一段且提交少于包数、宿主媒体输入在包数上限处阻塞 |
 | `session_recovery` | 未确认 outbox 不重发、竞争恢复 CAS、跨轮 provider 完成、重复/冲突完成、双向流、中断及 SealUserInput；本地投影在建立中或 Generate 发出前崩溃后可续跑，已发出的生成需 AbandonGeneration，处置不符即失败，被放弃这一代的 provider 操作须先结算、之前各代的 provider 操作随重新生成继续，批内 profile 协商覆盖尚未提交的输出，连接被拒以 `http_connect` 失败 |
 | `runtime_deadlines` | catalog/model 建立阶段截止时间、未确认 commit 超时；虚拟时钟下空闲运行零轮询、取消无需推进时间即结算、截止时间由定时器触发 |
-| `runtime_operations` | 工具按发出顺序准入、纯文本一轮与一次工具调用一轮的提交次数上限、串行屏障与并行分组、审批期间不再准入、start 错误结算、取消运行中工具、OperationChanged 完整序列、恢复后工具从序号 0 重放与同序号冲突 |
+| `runtime_operations` | 工具按发出顺序准入、纯文本一轮（9 次）与一次工具调用一轮（15 次）的提交次数上限、串行屏障与并行分组、审批期间不再准入、start 错误结算、取消运行中工具、OperationChanged 完整序列、恢复后工具从序号 0 重放与同序号冲突 |
 | `refactoring` | provider operation 结算后的跨轮 replay 与 wire 往返、4096 项历史合并顺序、虚拟时钟下有界并发取消及统一退出预算 |
 | `minimax_tts`（feature `minimax`） | 生产 WebSocket TTS：分句封存、中断、尾音、背压、凭据刷新与连接生命周期、运行写入的全部资源都能从最终 checkpoint 到达；ignored 测试访问真实服务 |
 | `webrtc_driver`（feature `webrtc`） | 生产骨架配确定性传输与非 Live 适配器：无 Peer 命令、主动建连、排水期间确认与期限、发送顺序、媒体预算与关闭边界 |

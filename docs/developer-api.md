@@ -215,8 +215,9 @@ RunCompletion 可提取不可变 checkpoint。`wire::encode_checkpoint/decode_ch
 同一运行在任一时刻只能有一个存活的执行者，由宿主保证：Attached CAS 能拒绝过期的 checkpoint，
 但不能阻止仍在运行的旧执行者继续驱动工具或会话。多 worker 部署需在宿主层加租约。
 
-LocalProjection 会话（HttpModel、FunctionModel）从已提交历史重建投影：建立中断、
-未发送的 Generate 与 Append 等本地命令在恢复后照常派发，只有 Generate 持久化 sent 边界。
+LocalProjection 会话（HttpModel、FunctionModel）从已提交历史重建投影：打开前不单独提交边界，
+建立中断或 Generate 提交前崩溃都在恢复后照常重建；Append 等本地命令照常派发，连续的几条一起提交给会话，
+确认合并为一次提交。只有 Generate 持久化 sent 边界，并与命令本身在同一次提交中记录。
 已发送或已开始、但响应未结束的生成可能已到达服务，恢复时以 RecoveryRequired 挂起。
 宿主核对后可用 `AbandonGeneration` 放弃它：内核移除该 Generate，把响应记为
 Continuation 并重新调用模型；已提交的输出保留在历史中，之前各代仍在运行的 provider 操作

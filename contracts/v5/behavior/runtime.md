@@ -37,8 +37,10 @@ implementations belong to testing modules and are not exported by production cra
    reference. Loss of a session before completion, or an uncertain external result,
    suspends with RecoveryRequired when its outcome cannot be established. A
    LocalProjection session is rebuilt from committed history, so only Generate
-   persists sent=true; its other commands are dispatched again into the rebuilt
-   projection.
+   persists sent=true, in the same checkpoint that records its intent; its other
+   commands are dispatched again into the rebuilt projection, and consecutive ones are
+   submitted together so their acknowledgements share a checkpoint. Opening such a
+   session has no external effect and commits no boundary before it opens.
 7. Complete output items are durable immediately; deltas are observations. The
    kernel may dispatch local tools before ResponseFinished. Append carries submitted inputs,
    host results or kernel-accepted canonical outputs. Ordinary adapters maintain their own

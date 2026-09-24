@@ -243,17 +243,13 @@ impl Engine {
             if self.current.active.session.recovery.is_some() {
                 return Ok(());
             }
-            // A local projection is rebuilt from committed history; only a generation
-            // that may have reached the service is uncertain.
+            // A local projection is rebuilt from committed history; only a generation,
+            // committed with its send boundary, may have reached the service.
             let local = self
                 .session_capabilities()
                 .supports(Capability::LocalProjection);
-            let unsent_generation = self.current.active.commands.iter().any(|command| {
-                !command.sent && matches!(command.intent, CommandIntent::Generate { .. })
-            });
             let in_generation = self.current.active.session.generation_id.is_some()
-                && self.current.active.session.response_status.is_none()
-                && !(local && unsent_generation);
+                && self.current.active.session.response_status.is_none();
             if in_generation
                 || self.current.active.commands.iter().any(|c| c.sent)
                 || !self.current.active.media.is_empty()

@@ -136,8 +136,9 @@ output includes assistant content from the run. Both retain full committed histo
 The establishment state and all decisions about context, input coverage and generation
 are persisted. An uncertain open or send cannot be retried as a fresh remote session.
 Local projection reconstruction requires the bound LocalProjection capability. Such a
-session persists a send boundary only for Generate and replays its other commands into
-the rebuilt projection. A sent or started generation without a response stays uncertain
+session commits no boundary before opening, records Generate with its send boundary in
+one checkpoint, and replays its other commands into the rebuilt projection, submitting
+consecutive ones together. A sent or started generation without a response stays uncertain
 until the host abandons it with `AbandonGeneration` or recovery proves attachment.
 HttpModel retries retryable rejections (connection failure, 429, 5xx) before reading a
 response body, within the run deadline; a shared `RequestLimit` bounds whole requests. `max_generation_requests` counts explicit host requests;
@@ -147,7 +148,7 @@ History uses immutable chunks and incremental digests. Chunks share their entrie
 or cloning a history never copies existing entries. Storage persists a compact
 CheckpointCore plus a history delta. A Commit derives that core and its digest once;
 validation and every store reuse them. Session events queued behind one another
-share one checkpoint, so a text turn commits a bounded number of checkpoints rather
+share one checkpoint, so a local text turn commits single-digit checkpoints rather
 than one per event. Rewrites are allowed only without active
 operations, pending commands or media cursors. Commit validation enforces revision,
 parent, frozen options, immutable context, history integrity and active-state bounds.
