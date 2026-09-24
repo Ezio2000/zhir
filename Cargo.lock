@@ -4392,7 +4392,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "webrtc",
  "zhir",
  "zhir-core",
  "zhir-models",

@@ -724,8 +724,8 @@ async fn audio_control_needs_a_matching_remote_confirmation() {
 mod live_connection;
 #[tokio::test(start_paused = true)]
 async fn live_connection_policy_has_fixed_grace_and_drains_queued_confirmations() {
-    use ::webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState as State;
     use zhir_core::error::Error;
+    use zhir_models::webrtc::ConnectionState as State;
     use zhir_models::webrtc::WebRtcConnectionPolicy;
     let policy = live_connection::LiveConnection {
         grace: Duration::from_secs(10),

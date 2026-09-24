@@ -7,7 +7,7 @@ use super::{
 };
 use std::sync::Arc;
 use zhir_core::{BoxFuture, Result, error::Error, model::*, profile::NegotiatedProfile};
-use zhir_models::webrtc::{PeerSettings, WebRtcAdapter, WebRtcSession};
+use zhir_models::webrtc::{IceServer, PeerSettings, WebRtcAdapter, WebRtcSession};
 
 #[path = "connection.rs"]
 mod connection;
@@ -81,18 +81,14 @@ impl WebRtcAdapter for Adapter {
                 grace: self.config.reconnect_timeout,
             }),
             peer: PeerSettings {
-                connection: webrtc::peer_connection::configuration::RTCConfiguration {
-                    ice_servers: self
-                        .config
-                        .ice_servers
-                        .iter()
-                        .map(|url| webrtc::ice_transport::ice_server::RTCIceServer {
-                            urls: vec![url.clone()],
-                            ..Default::default()
-                        })
-                        .collect(),
-                    ..Default::default()
-                },
+                ice_servers: self
+                    .config
+                    .ice_servers
+                    .iter()
+                    .map(|url| IceServer {
+                        urls: vec![url.clone()],
+                    })
+                    .collect(),
                 channel_label: "oai-events",
                 audio_codec: audio::codec(),
                 max_event_bytes: self.config.max_event_bytes,

@@ -18,7 +18,6 @@ serde_json.workspace = true
 tokio.workspace = true
 serde.workspace = true
 reqwest.workspace = true
-webrtc = "0.17.1"
 
 [dev-dependencies]
 zhir = { workspace = true, features = ["memory"] }

@@ -149,6 +149,18 @@ fn production_dependencies_follow_sdk_boundaries() {
             };
             assert_eq!(models["features"], serde_json::json!([transport]));
             assert_eq!(models["uses_default_features"], false);
+            // Transport stacks stay behind zhir-models' own types.
+            for dependency in package["dependencies"].as_array().unwrap() {
+                assert!(
+                    dependency["kind"] == "dev"
+                        || !matches!(
+                            dependency["name"].as_str(),
+                            Some("webrtc" | "tokio-tungstenite")
+                        ),
+                    "{name} depends directly on {}",
+                    dependency["name"]
+                );
+            }
         }
         checked += 1;
     }

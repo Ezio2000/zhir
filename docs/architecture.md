@@ -118,6 +118,9 @@ A recovered invocation wins an Attached CAS before opening catalogs, model sessi
 or recovering tools. Already-sent outbox entries wait for recovered acknowledgements;
 they are not dispatched again. Unknown work requires reconciliation through adapter
 recovery or explicit operation Attach/Complete/Abandon resolutions.
+A run has at most one live executor, and the host guarantees it: revision CAS rejects a
+stale checkpoint but cannot stop an executor that is still running. The SDK has no lease
+port; a multi-worker host provides the lease.
 
 Only final Success/Failure/Cancelled outcomes produce runtime-tool history results.
 The result, operation state and result-delivery command share one commit. Adapter
@@ -337,6 +340,8 @@ media termination and protocol completion. Queue emptiness alone is not completi
 The models `websocket` and `webrtc` features select transport infrastructure.
 MiniMax TTS selects WebSocket; OpenAI Live selects WebRTC. Neither transport feature
 selects a service implementation, model, endpoint or credentials.
+Peer, codec and connection-state values are models-owned types; service packages do
+not depend on `webrtc` or `tokio-tungstenite` directly, which the dependency test checks.
 Control receive processing continues under public event backpressure; bounded native
 staging reserves room for command receipts, and overflow is an explicit capacity
 failure. It cannot turn an already returned receipt into a remote timeout merely

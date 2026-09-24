@@ -1,10 +1,6 @@
 //! Deterministic transport for the production driver: writes complete only when
 //! the test accepts them. No network timing is needed to exercise stalled I/O.
 use crate::native::{Buffered, MediaBudget};
-use ::webrtc::{
-    peer_connection::configuration::RTCConfiguration,
-    rtp_transceiver::rtp_codec::RTCRtpCodecParameters,
-};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex, OnceLock},
@@ -12,9 +8,11 @@ use std::{
 };
 use tokio::sync::{mpsc, oneshot, watch};
 use zhir_core::{BoxFuture, Result, error::Error};
+// The WebRTC-stack conversions are unused without a real peer.
+#[allow(dead_code)]
 #[path = "../../../zhir-models/src/transport/webrtc/connection.rs"]
 mod connection;
-pub use connection::Connection;
+pub use connection::{AudioCodec, Connection, ConnectionState, IceServer};
 #[path = "../../../zhir-models/src/transport/rtp.rs"]
 mod rtp;
 pub use rtp::RtpTimeline;
@@ -26,9 +24,9 @@ pub struct AudioPacket {
     pub ssrc: u32,
 }
 pub(crate) struct PeerConfig {
-    pub connection: RTCConfiguration,
+    pub ice_servers: Vec<IceServer>,
     pub channel_label: &'static str,
-    pub audio_codec: RTCRtpCodecParameters,
+    pub audio_codec: AudioCodec,
     pub event_capacity: usize,
     pub max_event_bytes: usize,
     pub max_audio_bytes: usize,
@@ -94,10 +92,7 @@ impl Harness {
             .try_send(text.into())
             .unwrap();
     }
-    pub fn connection(
-        &self,
-        state: ::webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState,
-    ) {
+    pub fn connection(&self, state: ConnectionState) {
         self.state
             .connection
             .lock()
@@ -150,17 +145,16 @@ impl Peer {
             .unwrap()
             .remove(config.channel_label)
             .expect("registered fixture");
-        assert!(config.connection.ice_servers.is_empty());
-        assert_eq!(config.audio_codec.capability.mime_type, "audio/PCMU");
-        assert_eq!(config.audio_codec.capability.clock_rate, 8000);
+        assert!(config.ice_servers.is_empty());
+        assert_eq!(config.audio_codec.mime_type, "audio/PCMU");
+        assert_eq!(config.audio_codec.clock_rate, 8000);
         assert_eq!(config.max_event_bytes, 1024);
         assert_eq!(config.max_audio_bytes, 3);
         let (event_tx, events) = mpsc::channel(config.event_capacity);
         let (audio_tx, audio) = mpsc::unbounded_channel();
         let (failure_tx, failure) = watch::channel(None);
-        let (connection_tx, connection) = watch::channel(Connection::new(
-            ::webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected,
-        ));
+        let (connection_tx, connection) =
+            watch::channel(Connection::new(ConnectionState::Connected));
         *setup.state.connection.lock().unwrap() = Some(connection_tx.clone());
         *setup.state.ingress.lock().unwrap() = Some(Ingress {
             events: event_tx,

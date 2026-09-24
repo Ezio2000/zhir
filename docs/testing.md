@@ -25,7 +25,7 @@ cargo run -p zhir-conformance --bin schemas --locked -- --check
 
 | 测试入口（均位于测试模块） | 验收重点 |
 | --- | --- |
-| `conformance/tests/dependencies.rs` | 生产依赖图、feature 边界、验收代码位置 |
+| `conformance/tests/dependencies.rs` | 生产依赖图、feature 边界、接入包不直接依赖 webrtc/tokio-tungstenite、验收代码位置 |
 | `core_values`、`core_boundaries` | 值、history（追加后共享已有条目）、wire、运行参数、目录与绑定 |
 | `session_runtime` | 原生会话早发工具、provider 任务、等待恢复、媒体封存 |
 | `session_semantics` | 委派与会话语义、流归档；2000 条流不重扫归档链、慢存储下排队包合并为一段且提交少于包数、宿主媒体输入在包数上限处阻塞 |

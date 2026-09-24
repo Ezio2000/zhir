@@ -20,18 +20,14 @@ async fn subscription_remaining_probe() {
         .build()
         .unwrap();
     let mut peer = transport::Peer::new(transport::PeerConfig {
-        connection: Default::default(),
+        ice_servers: vec![],
         channel_label: "oai-events",
-        audio_codec: webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters {
-            capability: webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
-                mime_type: "audio/opus".into(),
-                clock_rate: 48000,
-                channels: 2,
-                sdp_fmtp_line: "minptime=10;useinbandfec=1".into(),
-                rtcp_feedback: vec![],
-            },
+        audio_codec: transport::AudioCodec {
+            mime_type: "audio/opus".into(),
+            clock_rate: 48000,
+            channels: 2,
+            fmtp: "minptime=10;useinbandfec=1".into(),
             payload_type: 111,
-            ..Default::default()
         },
         event_capacity: 8192,
         max_event_bytes: 1024 * 1024,

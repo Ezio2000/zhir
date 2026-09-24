@@ -55,14 +55,6 @@ pub struct Execution {
     pub read_only: bool,
     pub idempotent: bool,
 }
-impl Execution {
-    pub fn validate(&self) -> Result<()> {
-        Ok(())
-    }
-    pub fn parallel_safe(&self) -> bool {
-        self.parallel
-    }
-}
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

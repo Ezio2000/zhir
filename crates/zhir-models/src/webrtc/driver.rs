@@ -76,7 +76,7 @@ impl Driver {
             let settings = &self.session.peer;
             self.peer = Some(
                 Peer::new(PeerConfig {
-                    connection: settings.connection.clone(),
+                    ice_servers: settings.ice_servers.clone(),
                     channel_label: settings.channel_label,
                     audio_codec: settings.audio_codec.clone(),
                     event_capacity: self.open.limits.max_session_events,

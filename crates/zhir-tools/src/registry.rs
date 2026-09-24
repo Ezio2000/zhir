@@ -27,7 +27,6 @@ impl RuntimeToolRegistry {
     }
     pub fn register(&self, tool: Arc<dyn RuntimeTool>) -> Result<()> {
         let spec = tool.spec().clone();
-        spec.execution.validate()?;
         if spec.name.is_empty() {
             return Err(CatalogError::EmptyName.into());
         }

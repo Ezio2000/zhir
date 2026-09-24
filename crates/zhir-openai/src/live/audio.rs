@@ -2,21 +2,16 @@
 use super::AUDIO_TYPE;
 use zhir_core::{Result, error::Error, resource::MediaChunk};
 use zhir_models::webrtc::WebRtcMedia;
-use zhir_models::webrtc::{AudioPacket, RtpTimeline};
+use zhir_models::webrtc::{AudioCodec, AudioPacket, RtpTimeline};
 
 const CLOCK_RATE: u32 = 48000;
-pub(super) fn codec() -> webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters {
-    use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters};
-    RTCRtpCodecParameters {
-        capability: RTCRtpCodecCapability {
-            mime_type: "audio/opus".into(),
-            clock_rate: CLOCK_RATE,
-            channels: 2,
-            sdp_fmtp_line: "minptime=10;useinbandfec=1".into(),
-            rtcp_feedback: vec![],
-        },
+pub(super) fn codec() -> AudioCodec {
+    AudioCodec {
+        mime_type: "audio/opus".into(),
+        clock_rate: CLOCK_RATE,
+        channels: 2,
+        fmtp: "minptime=10;useinbandfec=1".into(),
         payload_type: 111,
-        ..Default::default()
     }
 }
 pub(super) struct Audio {

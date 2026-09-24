@@ -212,6 +212,8 @@ RunCompletion 可提取不可变 checkpoint。`wire::encode_checkpoint/decode_ch
 
 `resume` 只接受 Suspended；进程中断留下的 Running checkpoint 使用 `continue_from`。
 两者在打开适配器和恢复工具前提交 Attached CAS。运行不会重发已标记 sent 的命令。
+同一运行在任一时刻只能有一个存活的执行者，由宿主保证：Attached CAS 能拒绝过期的 checkpoint，
+但不能阻止仍在运行的旧执行者继续驱动工具或会话。多 worker 部署需在宿主层加租约。
 
 LocalProjection 会话（HttpModel、FunctionModel）从已提交历史重建投影：建立中断、
 未发送的 Generate 与 Append 等本地命令在恢复后照常派发，只有 Generate 持久化 sent 边界。

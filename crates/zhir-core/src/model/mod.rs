@@ -196,7 +196,6 @@ impl ModelRequest {
             if tool.name.is_empty() || !runtime_names.insert(&tool.name) {
                 return invalid("runtime tool names must be nonempty and unique");
             }
-            tool.execution.validate()?;
         }
         if matches!(self.response_format, Some(ResponseFormat::Schema { .. }))
             && !c.supports(Capability::StructuredOutput)
