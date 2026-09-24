@@ -248,3 +248,74 @@ async fn parent_detach_suspends_child_and_cancelling_recovered_wait_is_durable()
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
+#[tokio::test]
+async fn parent_runs_independent_children_concurrently() {
+    use serde_json::json;
+    use zhir_core::{
+        message::{Message, Output},
+        run::State,
+        tool::{RuntimeToolCall, RuntimeToolInput},
+    };
+    let started = Arc::new(Semaphore::new(0));
+    let finish = Arc::new(Semaphore::new(0));
+    let child = Arc::new(zhir_models::FunctionModel::new(
+        zhir_testing::model_capabilities(),
+        {
+            let started = started.clone();
+            let finish = finish.clone();
+            move |_, _| {
+                let started = started.clone();
+                let finish = finish.clone();
+                async move {
+                    started.add_permits(1);
+                    finish.acquire().await.unwrap().forget();
+                    Ok(GenerationOutput::text("child done"))
+                }
+            }
+        },
+    ));
+    let backend = Arc::new(
+        RuntimeAgentBackend::new(zhir_kernel::Runtime::builder(child).build().unwrap(), "", 2)
+            .unwrap(),
+    );
+    let call = |id: &str| Output::RuntimeToolCall {
+        call: RuntimeToolCall {
+            id: id.into(),
+            name: "agent_run".into(),
+            input: RuntimeToolInput::Structured(json!({"prompt": id})),
+        },
+    };
+    let parent = Arc::new(zhir_testing::ScriptedModel::responses([
+        GenerationOutput {
+            output: vec![call("first"), call("second")],
+            ..GenerationOutput::text("")
+        },
+        GenerationOutput::text("parent done"),
+    ]));
+    let tools =
+        zhir_tools::RuntimeToolRegistry::from_tools(zhir_builtins::agent::tools(backend).unwrap())
+            .unwrap();
+    let runtime = zhir_kernel::Runtime::builder(parent)
+        .runtime_tools(Arc::new(tools))
+        .build()
+        .unwrap();
+    let mut invocation = runtime
+        .start(zhir_kernel::RunRequest::new(vec![Message::user(
+            "delegate",
+        )]))
+        .unwrap();
+    let result = tokio::spawn(async move { invocation.result().await });
+    tokio::time::timeout(Duration::from_secs(3), started.acquire_many(2))
+        .await
+        .expect("children did not run concurrently")
+        .unwrap()
+        .forget();
+    finish.add_permits(2);
+    let checkpoint = tokio::time::timeout(Duration::from_secs(3), result)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .into_checkpoint();
+    assert!(matches!(checkpoint.state, State::Completed { .. }));
+}

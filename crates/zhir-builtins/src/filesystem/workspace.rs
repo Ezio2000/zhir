@@ -28,18 +28,18 @@ impl Workspace {
         let resolved = if create && !path.exists() {
             let parent = path
                 .parent()
-                .ok_or_else(|| Error::Invalid("missing parent".into()))?
+                .ok_or_else(|| failure("invalid_path", "missing parent"))?
                 .canonicalize()
                 .map_err(|e| failure("filesystem", e))?;
             parent.join(
                 path.file_name()
-                    .ok_or_else(|| Error::Invalid("missing filename".into()))?,
+                    .ok_or_else(|| failure("invalid_path", "missing filename"))?,
             )
         } else {
             path.canonicalize().map_err(|e| failure("filesystem", e))?
         };
         if !resolved.starts_with(&self.root) {
-            return Err(Error::Invalid("path is outside workspace".into()));
+            return Err(failure("outside_workspace", "path is outside workspace"));
         }
         Ok(resolved)
     }

@@ -148,6 +148,19 @@ Finished/Unknown 更新生命周期；Waiting 的 prompt 用于展示交互，�
 幂等键。`recover` 必须查询或附着到原任务，不能把无法恢复的任务重新 start。
 无法判断外部结果时报告 Unknown，由调用方明确解决。
 
+`start` 返回的错误按是否确定外部结果结算：
+
+| 错误 | 结果 |
+|---|---|
+| `RuntimeTool(failure)` | Failure，保留工具给出的错误码 |
+| `Invalid`、`Validation`、`Catalog`、`Model` 等确定错误 | Failure（如 `invalid_arguments`），模型下一轮可见 |
+| 已请求取消后返回 `Cancelled` | Cancelled |
+| `Uncertain`、`Storage`、`Conflict`、`Protocol`、`Deadline`，或未请求取消时的 `Cancelled` | Unknown，运行以 RecoveryRequired 挂起 |
+
+`Execution.parallel` 为 false 的调用单独执行：它等待所有更早发出的调用结束，之后的
+调用也等它结束才开始。连续的并行调用成组执行，受 `max_operation_concurrency` 约束。
+排队调用始终按模型发出顺序准入；审批决定返回前不会准入新的一组。
+
 RuntimeToolRegistry 校验目录、输入与最终输出，也校验 Active 事件里的最终输出。
 Catalog 是不可变快照，bind 必须返回与声明一致的 specification。输入显式区分
 `RuntimeToolInput::Structured` 和 `Freeform`。

@@ -59,23 +59,27 @@ impl Engine {
         Ok(())
     }
     pub(super) async fn admit(&mut self) -> Result<()> {
+        // A batch awaiting approval keeps its slots and its place in emission order.
+        if !self.admitting.is_empty() {
+            return Ok(());
+        }
+        let active = |o: &&OperationRecord| {
+            !matches!(o.owner, OperationOwner::Provider { .. })
+                && matches!(
+                    o.state,
+                    OperationState::Running | OperationState::Cancelling
+                )
+        };
         let running = self
             .current
             .active
             .operations
             .values()
-            .filter(|o| {
-                !matches!(o.owner, OperationOwner::Provider { .. })
-                    && matches!(
-                        o.state,
-                        OperationState::Running | OperationState::Cancelling
-                    )
-            })
+            .filter(active)
             .count();
-        if running + self.admitting.len() + self.current.active.commands.len()
+        if running + self.current.active.commands.len()
             >= self.current.options.limits.max_control_commands
-            || running + self.admitting.len()
-                >= self.current.options.limits.max_operation_concurrency
+            || running >= self.current.options.limits.max_operation_concurrency
         {
             return Ok(());
         }
@@ -85,11 +89,7 @@ impl Engine {
             .operations
             .values()
             .filter(|o| o.owner == OperationOwner::Delegation && o.state == OperationState::Queued)
-            .take(
-                self.current.options.limits.max_operation_concurrency
-                    - running
-                    - self.admitting.len(),
-            )
+            .take(self.current.options.limits.max_operation_concurrency - running)
             .cloned()
             .collect();
         if !delegated.is_empty() {
@@ -146,24 +146,27 @@ impl Engine {
             }
             return Ok(());
         }
-        let records: Vec<_> = self
+        // Operation IDs are random; the call entry records the model's emission order.
+        let mut records: Vec<_> = self
             .current
             .active
             .operations
             .values()
-            .filter(|o| o.state == OperationState::Queued && !self.admitting.contains(&o.id))
+            .filter(|o| {
+                o.state == OperationState::Queued
+                    && matches!(o.owner, OperationOwner::RuntimeTool { .. })
+            })
             .cloned()
             .collect();
+        records.sort_by(|a, b| (a.call_entry, &a.id).cmp(&(b.call_entry, &b.id)));
         let mut candidates = vec![];
         let mut ids = BTreeMap::new();
         for record in records {
-            if matches!(record.owner, OperationOwner::RuntimeTool { .. }) {
-                let call = self.call(&record)?;
-                let mut candidate = call.clone();
-                candidate.id = record.id.clone();
-                ids.insert(record.id, call);
-                candidates.push(candidate);
-            }
+            let call = self.call(&record)?;
+            let mut candidate = call.clone();
+            candidate.id = record.id.clone();
+            ids.insert(record.id, call);
+            candidates.push(candidate);
         }
         if candidates.is_empty() {
             return Ok(());
@@ -178,9 +181,11 @@ impl Engine {
         let mut bindings = vec![];
         let mut requests = vec![];
         let mut selected = BTreeSet::new();
-        for call in admission.calls.into_iter().take(
-            self.current.options.limits.max_operation_concurrency - running - self.admitting.len(),
-        ) {
+        for call in admission
+            .calls
+            .into_iter()
+            .take(self.current.options.limits.max_operation_concurrency - running)
+        {
             if !candidates.contains(&call) || !selected.insert(call.id.clone()) {
                 return Err(Error::Invalid(
                     "scheduler returned duplicate or unknown call".into(),
@@ -212,7 +217,7 @@ impl Engine {
                     .active
                     .operations
                     .values()
-                    .filter(|o| o.state == OperationState::Running)
+                    .filter(active)
                     .any(|o| match &o.owner {
                         OperationOwner::RuntimeTool { name } => !specs
                             .get(name)

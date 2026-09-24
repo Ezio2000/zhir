@@ -82,7 +82,7 @@ fn wire_rejects_version_drift_unknown_fields_and_corrupt_history() {
     let checkpoint = zhir_testing::checkpoint(vec![Message::user("hello")]);
     let bytes = wire::encode_checkpoint(&checkpoint).unwrap();
     let original: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    for version in [0, 1, 2, 3, 5] {
+    for version in [0, 1, 2, 3, 4, 6] {
         let mut changed = original.clone();
         changed["version"] = json!(version);
         assert!(wire::decode_checkpoint(&serde_json::to_vec(&changed).unwrap()).is_err());

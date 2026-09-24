@@ -91,10 +91,6 @@ impl Engine {
         .await?;
         self.tokens.remove(id);
         self.operation_controls.remove(id);
-        self.emitter.emit(EventData::OperationChanged {
-            operation_id: id.into(),
-            state,
-        });
         Ok(())
     }
     pub(super) async fn finish_provider(

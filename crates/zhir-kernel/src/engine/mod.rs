@@ -30,6 +30,7 @@ use zhir_core::{
 enum Work {
     Model(Result<Option<SessionEvent>>),
     Started(String, Result<ToolExecution>),
+    CancelFailed(String, Error),
     Operation(String, Result<Option<OperationEvent>>),
     Admitted(
         Vec<(String, Arc<dyn RuntimeToolBinding>)>,

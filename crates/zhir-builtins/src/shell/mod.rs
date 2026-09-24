@@ -1,7 +1,12 @@
-use crate::common::{failure, spec};
+use crate::common::{MUTATING, failure, spec};
 use serde::Deserialize;
 use serde_json::json;
-use std::{path::PathBuf, process::Stdio, sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    process::Stdio,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use zhir_core::{Result, tool::RuntimeTool};
 #[derive(Clone)]
@@ -46,20 +51,60 @@ impl Drop for ProcessGroup {
         self.stop();
     }
 }
-async fn drain(mut input: impl AsyncRead + Unpin, limit: usize) -> std::io::Result<(String, bool)> {
-    let mut kept = Vec::new();
-    let mut truncated = false;
+/// Output still open after the process group stops belongs to escaped descendants.
+const DRAIN_GRACE: Duration = Duration::from_millis(500);
+#[derive(Default)]
+struct Captured {
+    kept: Vec<u8>,
+    truncated: bool,
+}
+async fn drain(
+    mut input: impl AsyncRead + Unpin,
+    limit: usize,
+    captured: Arc<Mutex<Captured>>,
+) -> std::io::Result<()> {
     let mut buffer = [0u8; 8192];
     loop {
         let n = input.read(&mut buffer).await?;
         if n == 0 {
-            break;
+            return Ok(());
         }
-        let take = n.min(limit.saturating_sub(kept.len()));
-        kept.extend_from_slice(&buffer[..take]);
-        truncated |= take < n;
+        let mut captured = captured.lock().expect("shell output");
+        let take = n.min(limit.saturating_sub(captured.kept.len()));
+        captured.kept.extend_from_slice(&buffer[..take]);
+        captured.truncated |= take < n;
     }
-    Ok((String::from_utf8_lossy(&kept).into_owned(), truncated))
+}
+struct Stream {
+    captured: Arc<Mutex<Captured>>,
+    task: tokio::task::JoinHandle<std::io::Result<()>>,
+}
+impl Stream {
+    fn spawn(input: impl AsyncRead + Unpin + Send + 'static, limit: usize) -> Self {
+        let captured = Arc::<Mutex<Captured>>::default();
+        let task = tokio::spawn(drain(input, limit, captured.clone()));
+        Self { captured, task }
+    }
+    /// An unfinished stream at `until` keeps its partial output, marked truncated.
+    async fn finish(mut self, until: tokio::time::Instant) -> Result<(String, bool)> {
+        let ended = match tokio::time::timeout_at(until, &mut self.task).await {
+            Ok(result) => {
+                result
+                    .map_err(|e| failure("command_output", e))?
+                    .map_err(|e| failure("command_output", e))?;
+                true
+            }
+            Err(_) => {
+                self.task.abort();
+                false
+            }
+        };
+        let captured = self.captured.lock().expect("shell output");
+        Ok((
+            String::from_utf8_lossy(&captured.kept).into_owned(),
+            captured.truncated || !ended,
+        ))
+    }
 }
 pub fn bash(options: ShellOptions) -> Result<Arc<dyn RuntimeTool>> {
     if !options.cwd.is_dir() || options.timeout.is_zero() || options.max_output_bytes == 0 {
@@ -68,7 +113,11 @@ pub fn bash(options: ShellOptions) -> Result<Arc<dyn RuntimeTool>> {
         ));
     }
     Ok(Arc::new(zhir_tools::function::structured(
-        spec::<Args>("bash", "Execute a shell command in the workspace.", false),
+        spec::<Args>(
+            "bash",
+            "Execute a shell command in the workspace.",
+            MUTATING,
+        ),
         move |a: Args, context| {
             let options = options.clone();
             async move {
@@ -88,8 +137,8 @@ pub fn bash(options: ShellOptions) -> Result<Arc<dyn RuntimeTool>> {
                 let group = ProcessGroup { id: child.id() };
                 let stdout = child.stdout.take().expect("piped stdout");
                 let stderr = child.stderr.take().expect("piped stderr");
-                let output = tokio::spawn(drain(stdout, options.max_output_bytes));
-                let errors = tokio::spawn(drain(stderr, options.max_output_bytes));
+                let output = Stream::spawn(stdout, options.max_output_bytes);
+                let errors = Stream::spawn(stderr, options.max_output_bytes);
                 let cancelled = async {
                     while !context.cancellation.is_cancelled() {
                         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -101,14 +150,9 @@ pub fn bash(options: ShellOptions) -> Result<Arc<dyn RuntimeTool>> {
                     let _ = child.kill().await;
                     let _ = child.wait().await;
                 }
-                let stdout = output
-                    .await
-                    .map_err(|e| failure("command_output", e))?
-                    .map_err(|e| failure("command_output", e))?;
-                let stderr = errors
-                    .await
-                    .map_err(|e| failure("command_output", e))?
-                    .map_err(|e| failure("command_output", e))?;
+                let until = tokio::time::Instant::now() + DRAIN_GRACE;
+                let stdout = output.finish(until).await?;
+                let stderr = errors.finish(until).await?;
                 context.cancellation.check()?;
                 let Some(status) = status else {
                     return Err(failure(

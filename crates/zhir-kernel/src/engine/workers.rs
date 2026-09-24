@@ -36,10 +36,20 @@ impl Engine {
             Work::Started(id, Ok(ToolExecution::Active(handle))) => {
                 self.install_operation(id, handle).await
             }
-            Work::Started(id, Err(Error::RuntimeTool(error))) => {
-                self.finish(&id, OperationOutcome::Failure { error }).await
+            Work::Started(id, Err(error)) => self.start_failed(&id, error).await,
+            Work::CancelFailed(id, error) => {
+                if self
+                    .current
+                    .active
+                    .operations
+                    .get(&id)
+                    .is_some_and(|op| !op.state.terminal())
+                {
+                    self.unknown(&id, format!("cancel failed: {error}")).await
+                } else {
+                    Ok(())
+                }
             }
-            Work::Started(id, Err(error)) => self.unknown(&id, error.to_string()).await,
             Work::Operation(id, Ok(Some(event))) => self.operation_event(&id, event).await,
             Work::Operation(id, _) => {
                 if self
@@ -118,6 +128,44 @@ impl Engine {
                 } else {
                     Ok(())
                 }
+            }
+        }
+    }
+}
+
+impl Engine {
+    /// A start error settles the operation unless the external effect is left unknown.
+    async fn start_failed(&mut self, id: &str, error: Error) -> Result<()> {
+        let cancelling = self
+            .current
+            .active
+            .operations
+            .get(id)
+            .is_some_and(|op| op.state == OperationState::Cancelling);
+        match error {
+            Error::Cancelled if cancelling => {
+                self.finish(
+                    id,
+                    OperationOutcome::Cancelled {
+                        reason: "operation cancelled".into(),
+                    },
+                )
+                .await
+            }
+            Error::Cancelled
+            | Error::Uncertain(_)
+            | Error::Storage(_)
+            | Error::Conflict { .. }
+            | Error::Protocol(_)
+            | Error::Deadline => self.unknown(id, error.to_string()).await,
+            error => {
+                self.finish(
+                    id,
+                    OperationOutcome::Failure {
+                        error: crate::failure::failure(&error),
+                    },
+                )
+                .await
             }
         }
     }

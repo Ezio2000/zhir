@@ -299,7 +299,7 @@ impl Engine {
             let opid = id.clone();
             self.tasks.spawn(async move {
                 if let Err(error) = handle.cancel().await {
-                    let _ = tx.send(Work::Started(opid, Err(error))).await;
+                    let _ = tx.send(Work::CancelFailed(opid, error)).await;
                 }
             });
         }

@@ -58,7 +58,10 @@ implementations belong to testing modules and are not exported by production cra
 11. RuntimeTool is the only executable tool trait. start and recover return Finished
     or Active. OperationRecord identity and Running admission are committed before
     start. recover attaches to existing work; inability to recover is not permission
-    to repeat start. Queued work has not been dispatched.
+    to repeat start. Queued work has not been dispatched. A start error other than
+    Uncertain, Storage, Conflict, Protocol, Deadline or Cancelled settles as a Failure
+    with the error's code; those errors leave the operation Unknown, except Cancelled
+    after a cancellation request, which settles as Cancelled.
 12. OperationOutcome contains only Success, Failure and Cancelled. Running,
     Waiting, Cancelling and Unknown are unfinished operation states. Waiting prompt
     data is not a model-visible final tool result. Only Finished appends a result.
@@ -66,10 +69,14 @@ implementations belong to testing modules and are not exported by production cra
     commit. Output schema failure becomes a final invalid_tool_output failure. An
     identical completion is idempotent; conflicting completion or reuse of an adapter
     event sequence with another update fails. The persisted sequence/update pair is
-    not advanced by kernel-local control transitions.
+    not advanced by kernel-local control transitions. Every committed operation state
+    change is observed once as OperationChanged after its checkpoint.
 14. Catalog binding, input validation and approval precede external start. Scheduling
     is bounded by inflight and concurrent limits and explicit tool execution facts.
-    A batch approval suspension starts none of that admission group. Independent
+    Queued calls are admitted in emission order: a serial call runs alone after all
+    earlier calls, and consecutive parallel calls form one group. No new group is
+    admitted while an approval decision is pending. A batch approval suspension
+    starts none of that admission group. Independent
     operations commit in completion order with causal identities, not batch order.
 15. ProviderToolCall reports provider-owned work. It never invokes a local tool.
     Provider Operation events refer to an introduced call; a model cannot report the

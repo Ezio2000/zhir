@@ -129,10 +129,6 @@ impl Engine {
             HistoryDelta::Unchanged,
         )
         .await?;
-        self.emitter.emit(EventData::OperationChanged {
-            operation_id: id.into(),
-            state,
-        });
         Ok(())
     }
     pub(super) async fn unknown(&mut self, id: &str, reason: String) -> Result<()> {
@@ -169,10 +165,6 @@ impl Engine {
             HistoryDelta::Unchanged,
         )
         .await?;
-        self.emitter.emit(EventData::OperationChanged {
-            operation_id: id.into(),
-            state,
-        });
         Ok(())
     }
 }
