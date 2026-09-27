@@ -2,7 +2,9 @@ name: Rust
 on:
   push:
     branches: [main]
+    paths-ignore: ['.gitignore']
   pull_request:
+    paths-ignore: ['.gitignore']
 
 jobs:
   sdk:

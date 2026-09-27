@@ -48,7 +48,8 @@ cargo run -p zhir-conformance --bin schemas --locked -- --check
 
 ## CI：完整验证
 
-[CI](../.github/workflows/ci.yml) 在 PR 和 main 推送时运行完整检查。以下命令属于 CI
+[CI](../.github/workflows/ci.yml) 在 PR 和 main 推送时运行完整检查；仅修改根目录
+`.gitignore` 时跳过，同时包含其他文件改动时仍运行。以下命令属于 CI
 验证范围，不是本地每次改动的必跑流程：
 
 ```sh

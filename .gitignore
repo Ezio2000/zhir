@@ -37,3 +37,6 @@ deepseek-live.json
 *~
 
 # Cargo.lock is intentionally committed for reproducible workspace checks.
+
+# Promo animations (local, not part of the SDK).
+/docs/promo/
