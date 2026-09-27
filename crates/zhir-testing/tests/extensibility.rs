@@ -1,9 +1,4 @@
 //! Consumer-side acceptance using only public SDK APIs; vendor policies stay here.
-#![cfg(all(
-    feature = "openai-chat",
-    feature = "openai-responses",
-    feature = "anthropic"
-))]
 use serde_json::{Value, json};
 use std::{
     sync::{Arc, Mutex},
@@ -997,7 +992,7 @@ async fn user_model_new_events_and_content_survive_kernel_and_wire() {
     let mut events = invocation.events().unwrap();
     let mut found = false;
     while let Some(event) = events.next().await {
-        if matches!(event.data,zhir::run::EventData::ModelDelta {delta:ModelDelta::ProtocolEvent {ref data,..}} if data["type"]=="consumer.new_event")
+        if matches!(event.data,zhir::run::EventData::ModelDelta {delta:ModelDelta::ProtocolEvent {ref data,..},..} if data["type"]=="consumer.new_event")
         {
             found = true;
         }

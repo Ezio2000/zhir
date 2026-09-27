@@ -1,6 +1,5 @@
 //! Compile the production internal driver with a deterministic transport. The
 //! fixture uses plain control text and PCMU, without a Live adapter or constants.
-#![cfg(feature = "webrtc")]
 #[path = "webrtc_driver/transport.rs"]
 mod fixture;
 #[allow(dead_code, unused_imports)]

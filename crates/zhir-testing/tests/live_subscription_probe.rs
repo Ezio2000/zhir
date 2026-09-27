@@ -1,4 +1,3 @@
-#![cfg(feature = "openai-live")]
 #[allow(dead_code)]
 #[path = "../../zhir-models/src/native/media.rs"]
 mod native;

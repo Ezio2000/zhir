@@ -1,8 +1,3 @@
-#![cfg(all(
-    feature = "openai-responses",
-    feature = "typed-tools",
-    feature = "memory"
-))]
 //! Consumer-owned transcript extension, typed schema and durable operation workflow.
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

@@ -1,9 +1,3 @@
-#![cfg(all(
-    feature = "filesystem",
-    feature = "shell",
-    feature = "interaction",
-    feature = "agent-runtime"
-))]
 use serde_json::{Value, json};
 use std::sync::Arc;
 use zhir_core::{

@@ -14,8 +14,16 @@ capabilities, entitlement, authentication or media quality.
 Part of the zhir workspace, version 0.4.0.
 
 This workspace-only package is not published. Consumer acceptance tests live in tests/;
-SDK feature names forward to zhir for feature-specific tests. Release verification uses
-`uv run conformance/package.py` and packages only the eight production crates.
+SDK feature names forward to zhir for feature-specific tests. Local validation selects
+tests directly affected by the change with explicit targets, filters and required features.
+HTTP, WebSocket, WebRTC and database dependencies are enabled only by their respective
+features; ordinary in-memory runtime tests do not compile those stacks. Test targets
+declare `required-features` in Cargo.toml, so explicitly selecting an unavailable target
+reports the missing features instead of running zero tests. Individual optional cases
+within a target, such as SQLite/MySQL/Redis storage tests, retain their own feature gates.
+CI runs the full suites, smoke examples, integration tests and release verification;
+`uv run conformance/package.py` packages the production crates listed in its allowlist.
+See the [validation policy](../../docs/testing.md) for scope and commands.
 
 ## MiniMax TTS integration tests
 
@@ -26,7 +34,7 @@ output are exposed; microphone input, model tools, profile updates and transport
 recovery are not advertised. The test observer records events without implementing
 any provider protocol, consuming the native SessionEvents rather than installing a DeltaSink.
 
-Run deterministic local WebSocket tests without credentials:
+CI runs the deterministic WebSocket integration suite against a loopback fixture without credentials:
 
 ```sh
 cargo test -p zhir-testing --no-default-features --features minimax --locked --test minimax_tts

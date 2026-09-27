@@ -1,4 +1,3 @@
-#![cfg(all(feature = "models", feature = "typed-tools", feature = "memory"))]
 use futures::future::join_all;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

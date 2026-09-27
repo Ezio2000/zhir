@@ -440,6 +440,7 @@ pub enum EventData {
         state: crate::operation::OperationState,
     },
     ModelDelta {
+        generation_id: Option<String>,
         delta: ModelDelta,
     },
     OperationProgress {

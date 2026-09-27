@@ -291,7 +291,7 @@ async fn tool_case(
     let mut counts = BTreeMap::<String, usize>::new();
     while let Some(event) = events.next().await {
         let kind = match &event.data {
-            EventData::ModelDelta { delta } => format!("delta_{}", delta_name(delta)),
+            EventData::ModelDelta { delta, .. } => format!("delta_{}", delta_name(delta)),
             _ => serde_json::to_value(&event.data).unwrap()["kind"]
                 .as_str()
                 .unwrap()

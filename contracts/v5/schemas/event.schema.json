@@ -58,6 +58,12 @@
             "delta": {
               "$ref": "#/$defs/ModelDelta"
             },
+            "generation_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "kind": {
               "const": "model_delta",
               "type": "string"

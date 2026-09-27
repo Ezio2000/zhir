@@ -331,6 +331,8 @@ assistant 输出与完成信息，把异步 provider 更新归回原始调用。
 分析因果，不要用观察事件重建事实。
 
 JsonOutput<T>（`typed-output`）从同一 Schema 构造请求格式并验证最终结果。
+`EventData::ModelDelta` 保留会话 delta 的可选 `generation_id`，用于区分不同生成中重复的
+`output_index`；会话级 delta 保持 `None`，不绑定到当前正在执行的生成。
 `runs` 中的便利函数建立在普通 Invocation 上。观察流可能丢弃事件并发出 ObservationGap；
 审计、回放与统计应使用 checkpoint/RunStore 或测试模块中的 RecordingStore。
 

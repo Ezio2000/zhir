@@ -1,4 +1,3 @@
-#![cfg(feature = "openai-responses")]
 use serde_json::{Value, json};
 use std::sync::Arc;
 use zhir_core::{

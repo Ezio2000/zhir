@@ -344,6 +344,7 @@ async fn redis() {
     assert!(!exists);
 }
 
+#[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_refuses_unversioned_and_other_version_layouts() {
     for version in [None, Some(1), Some(2), Some(3), Some(4)] {
@@ -556,6 +557,7 @@ async fn reachable_lists_the_stored_resources_a_checkpoint_references() {
 }
 /// Two stores on one file stand in for two processes: concurrent writes to different
 /// runs all commit, and racing first commits of one run yield one head and a conflict.
+#[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_writers_sharing_a_file_serialize() {
     let directory = tempfile::tempdir().unwrap();

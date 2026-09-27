@@ -4,6 +4,66 @@ use std::{
 };
 
 #[test]
+fn targeted_tests_only_resolve_selected_heavy_dependencies() {
+    let heavy = [
+        "webrtc",
+        "tokio-tungstenite",
+        "reqwest",
+        "sqlx",
+        "sqlx-sqlite",
+        "sqlx-mysql",
+        "redis",
+    ];
+    for (features, expected) in [
+        ("", vec![]),
+        ("models,tools,memory,interaction", vec![]),
+        ("openai-responses", vec!["reqwest"]),
+        ("sqlite", vec!["sqlx", "sqlx-sqlite"]),
+        ("mysql", vec!["sqlx", "sqlx-mysql"]),
+        ("redis", vec!["redis"]),
+        ("mysql,redis", vec!["sqlx", "sqlx-mysql", "redis"]),
+        ("minimax", vec!["tokio-tungstenite"]),
+        ("webrtc", vec!["webrtc"]),
+        ("openai-live", vec!["webrtc", "reqwest"]),
+    ] {
+        let mut command = Command::new(env!("CARGO"));
+        command.current_dir(env!("CARGO_MANIFEST_DIR")).args([
+            "tree",
+            "-p",
+            "zhir-testing",
+            "--no-default-features",
+            "--locked",
+            "--edges",
+            "normal,build,dev",
+            "--prefix",
+            "none",
+            "--format",
+            "{p}",
+        ]);
+        if !features.is_empty() {
+            command.args(["--features", features]);
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "features {features}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let tree = String::from_utf8(output.stdout).unwrap();
+        let actual: BTreeSet<_> = tree
+            .lines()
+            .filter_map(|line| line.split_whitespace().next())
+            .filter(|name| heavy.contains(name))
+            .collect();
+        assert_eq!(
+            actual,
+            expected.into_iter().collect(),
+            "features {features} pulled in the wrong transport or store dependencies"
+        );
+    }
+}
+
+#[test]
 fn production_dependencies_follow_sdk_boundaries() {
     let output = Command::new(env!("CARGO"))
         .args(["metadata", "--no-deps", "--locked", "--format-version", "1"])

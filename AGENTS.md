@@ -29,7 +29,17 @@ APIs and contracts; do not add legacy API, wire, database, or Python compatibili
   existing documents. Keep generated reports/logs in ignored test-results/ or CI artifacts.
 - Python reference checks and development scripts use uv exclusively.
 
-Validate with cargo fmt --check, cargo clippy --workspace --all-targets
---all-features -- -D warnings, cargo test --workspace --all-features, standalone
-feature builds, conformance, storage integration tests, and package verification.
-Report remaining gaps honestly; passing checks do not establish missing coverage.
+Local validation is scoped to the current change: run new/changed tests and directly
+affected regressions with explicit test targets, filters and the minimum required
+features. Confirm that the selected tests actually run. Check formatting for Rust
+changes; regenerate and check schemas when public DTOs change. Compile affected
+callers when needed for an API change. Documentation-only changes need no Rust tests.
+
+CI owns workspace-wide Clippy and tests, smoke/example runs, standalone feature
+matrices, full conformance, storage/service integration suites and package
+verification. Do not repeat these locally unless the user explicitly requests it.
+A focused regression may live in tests/ and use an in-process fixture; its location
+does not make the whole integration suite part of local validation. CI failure
+investigation starts with its logs; local reproduction follows the same scope rule.
+Report local results and CI results separately; pending CI is not a local validation
+failure. Passing selected tests does not establish untested coverage.

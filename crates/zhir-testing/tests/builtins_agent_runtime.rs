@@ -1,4 +1,3 @@
-#![cfg(feature = "agent-runtime")]
 use std::{
     sync::{
         Arc,

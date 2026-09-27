@@ -1,4 +1,3 @@
-#![cfg(feature = "typed-tools")]
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;

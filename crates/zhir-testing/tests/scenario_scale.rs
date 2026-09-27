@@ -1,13 +1,4 @@
 //! Consumer integration and scale audit. No production adapters are added here.
-#![cfg(all(
-    feature = "tools",
-    feature = "openai-chat",
-    feature = "openai-responses",
-    feature = "anthropic",
-    feature = "memory",
-    feature = "sqlite",
-    feature = "agent-runtime"
-))]
 #[cfg(feature = "typed-tools")]
 #[path = "scenario_scale/ergonomics.rs"]
 mod ergonomics;

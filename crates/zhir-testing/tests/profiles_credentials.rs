@@ -1,4 +1,3 @@
-#![cfg(feature = "openai-responses")]
 use serde_json::json;
 use std::sync::{
     Arc,

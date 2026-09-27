@@ -1,8 +1,3 @@
-#![cfg(all(
-    feature = "openai-chat",
-    feature = "openai-responses",
-    feature = "anthropic"
-))]
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

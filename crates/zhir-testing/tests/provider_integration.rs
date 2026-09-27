@@ -1,8 +1,3 @@
-#![cfg(all(
-    feature = "openai-responses",
-    feature = "typed-tools",
-    feature = "memory"
-))]
 mod provider_fixture;
 use provider_fixture::*;
 use serde_json::{Value, json};

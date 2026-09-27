@@ -137,6 +137,8 @@ implementations belong to testing modules and are not exported by production cra
     bytes to 16 MiB and buffered media packets to 256 per direction. Observer capacity defaults to 256. Configured
     limits are validated before channel/worker creation.
 22. Observer events can be lost; ObservationGap reports loss when capacity returns.
+    ModelDelta preserves the session delta's optional generation_id; output_index is
+    scoped to its source generation, and a session-level delta retains None.
     Committed checkpoint state is the durable source of truth. SDK media sends use
     awaited backpressure and cannot be dropped as observation overflow. Adapters
     document additional transport packet limits. Datagram ingress that cannot apply

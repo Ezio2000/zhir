@@ -40,8 +40,14 @@ impl Engine {
             return Ok(());
         }
         let body = match event.body {
-            SessionEventBody::Delta { delta, .. } => {
-                self.emitter.emit(EventData::ModelDelta { delta });
+            SessionEventBody::Delta {
+                generation_id,
+                delta,
+            } => {
+                self.emitter.emit(EventData::ModelDelta {
+                    generation_id,
+                    delta,
+                });
                 return Ok(());
             }
             SessionEventBody::Operation {
