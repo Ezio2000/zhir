@@ -481,14 +481,15 @@ async fn wire_case(
                 && matches!(
                     event.data,
                     EventData::ModelDelta {
-                        delta: ModelDelta::Text { .. }
+                        delta: ModelDelta::Text { .. },
+                        ..
                     }
                 )
             {
                 control.cancel();
                 cancelled = true;
             }
-            if matches!(&event.data,EventData::ModelDelta {delta:ModelDelta::ProtocolEvent {data,..}} if data["data"]["type"]=="consumer.segment")
+            if matches!(&event.data,EventData::ModelDelta {delta:ModelDelta::ProtocolEvent {data,..},..} if data["data"]["type"]=="consumer.segment")
             {
                 original_custom += 1;
             }

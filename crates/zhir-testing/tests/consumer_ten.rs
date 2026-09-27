@@ -1,4 +1,3 @@
-#![cfg(all(feature = "models", feature = "typed-tools", feature = "memory"))]
 //! Consumer-owned scenarios exercising the public abstractions together.
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

@@ -5,9 +5,51 @@ trace 校验、合成供应商、消费者验收与基准只允许位于 `crates
 `conformance`。所有生产包的 src/tests/benches 中不放验收代码，也不依赖测试包；依赖边界测试检查这一规则。
 日志和报告放在根目录被忽略的 `test-results/` 或 CI artifacts。Python 开发脚本只使用 uv。
 
-## 必需检查
+## 本地：验证本次变更
 
-在仓库根目录运行：
+本地运行新增或修改的测试，以及本次变更直接影响的既有回归；按测试 target、过滤条件和
+最少所需 features 选择范围。测试通过后结束本地验证，不默认追加全 workspace 测试、
+全量 Clippy、烟测、feature 矩阵、完整 conformance、存储/服务集成套件或发布包验证。
+这些完整检查由 CI 执行，只有用户明确要求时才在本地运行。
+
+- Rust 修改检查格式；必要时对受影响 package/target 做编译或 Clippy 检查。
+- API 修改同步更新受影响调用方，按需编译这些调用方，不自动展开全部 feature 组合。
+- 测试过滤后应确认实际执行的用例；`0 passed` 不能作为验证通过的依据。
+- `tests/` 中的定向回归和进程内夹具可以用于本地验证；目录名称不决定验证范围。
+- 纯文档修改只检查改动与文档一致性，不运行 Rust 测试。
+- 分别报告本地验证和 CI 状态；CI 尚未运行时明确说明，不把它算成本地验证失败。
+  排查 CI 失败先读日志，本地复现仍遵循上述范围规则。
+
+例如，修改观察 delta 的 generation 传递时，在仓库根目录运行：
+
+```sh
+cargo fmt --all --check
+cargo test -p zhir-testing --no-default-features --features models,tools,memory,interaction \
+  --test session_runtime observer_deltas_preserve_generation_identity_and_session_scope \
+  --locked -- --exact
+```
+
+修改公开 DTO 时，本地更新并核对生成产物：
+
+```sh
+cargo run -p zhir-conformance --bin schemas --locked
+cargo run -p zhir-conformance --bin schemas --locked -- --check
+```
+
+提交生成的 `contracts/v5/schemas/`。其余变更按下面的测试入口选择直接相关的回归，
+不要把入口表当作每次本地都要执行的清单。
+
+`zhir-testing` 的 HTTP、WebSocket、WebRTC、SQLite、MySQL、Redis 依赖按 feature
+启用，内存运行时测试不编译这些依赖。测试 target 的最少 feature 声明在
+`crates/zhir-testing/Cargo.toml` 的 `required-features`；直接指定 target 却缺少 feature
+时 Cargo 会报错，避免整个文件被 cfg 跳过后得到 `0 passed`。
+同一 target 内的可选用例仍按各自 feature 启用，例如 `storage_stores` 的数据库用例。
+`provider_integration` 包含文件资源持久化用例，还需要 `resources-filesystem`。
+
+## CI：完整验证
+
+[CI](../.github/workflows/ci.yml) 在 PR 和 main 推送时运行完整检查。以下命令属于 CI
+验证范围，不是本地每次改动的必跑流程：
 
 ```sh
 mkdir -p test-results
@@ -18,16 +60,15 @@ cargo run -p zhir-conformance --bin zhir-conformance --locked
 cargo run -p zhir-conformance --bin schemas --locked -- --check
 ```
 
-修改公开 DTO 后先执行 `cargo run -p zhir-conformance --bin schemas`，提交生成的
-`contracts/v5/schemas/`，再运行 check。契约 runner 包含 41 个当前 v5 JSON 案例，
+契约 runner 包含 41 个当前 v5 JSON 案例，
 覆盖状态、资源、profile、工具结算和运行限制。原生会话时序及故障验收由 Rust 测试覆盖，
 不能用 JSON 案例数量或通过率代替这部分证据。
 
 | 测试入口（均位于测试模块） | 验收重点 |
 | --- | --- |
-| `conformance/tests/dependencies.rs` | 生产依赖图、feature 边界、接入包不直接依赖 webrtc/tokio-tungstenite、验收代码位置 |
+| `conformance/tests/dependencies.rs` | 生产依赖图、feature 边界、定向测试不引入未选用的重依赖、接入包不直接依赖 webrtc/tokio-tungstenite、验收代码位置 |
 | `core_values`、`core_boundaries` | 值、history（追加后共享已有条目）、wire、运行参数、目录与绑定 |
-| `session_runtime` | 原生会话早发工具、provider 任务、等待恢复、媒体封存 |
+| `session_runtime` | 原生会话早发工具、provider 任务、等待恢复、媒体封存；观察 delta 跨生成保留身份及会话级 None |
 | `session_semantics` | 委派与会话语义、委派恢复失败保持 Unknown、流归档；2000 条流不重扫归档链、慢存储下排队包合并为一段且提交少于包数、宿主媒体输入在包数上限处阻塞 |
 | `session_recovery` | 未确认 outbox 不重发、竞争恢复 CAS、跨轮 provider 完成、重复/冲突完成、双向流、中断及 SealUserInput；本地投影在建立中或 Generate 发出前崩溃后可续跑，已发出的生成需 AbandonGeneration，处置不符即失败，被放弃这一代的 provider 操作须先结算、之前各代的 provider 操作随重新生成继续，批内 profile 协商覆盖尚未提交的输出，连接被拒以 `http_connect` 失败 |
 | `runtime_deadlines` | catalog/model 建立阶段截止时间、未确认 commit 超时；虚拟时钟下空闲运行零轮询、取消无需推进时间即结算、截止时间由定时器触发 |
@@ -46,10 +87,10 @@ cargo run -p zhir-conformance --bin schemas --locked -- --check
 | `scenario_scale`、`http_fixture` | 本地并发 HTTP/SSE、密集事件、RPC 工作流及传输故障 |
 | `storage_stores` | 四种存储共享的原子提交、冲突、截止时间、历史与 96 个等待操作恢复；重写后只留当前一代历史、删除运行后无残留、`reachable` 覆盖历史/完成内容/活动游标/归档链、内容直接引用媒体节点时仍遍历其数据与前驱，并在节点缺失时失败；两个 SQLite 实例共享文件并发写全部提交、竞争首写一成一冲突 |
 
-## 独立 feature、示例与发布包
+## CI：独立 feature、示例与发布包
 
-完整 feature 矩阵以 [CI](../.github/workflows/ci.yml) 为准。逐个启用，不能用 all-features
-成功替代这些检查：
+完整 feature 矩阵以 [CI](../.github/workflows/ci.yml) 为准，由 CI 逐个启用，不能用
+all-features 成功替代这些检查。下面列出 CI 使用的独立构建、协议集成与示例烟测入口：
 
 ```sh
 cargo check -p zhir-core --no-default-features --locked
@@ -67,20 +108,23 @@ for feature in policies tools typed-tools typed-output models filesystem shell i
 done
 cargo run -p zhir --no-default-features --example custom_tool --features models,typed-tools
 cargo run -p zhir --no-default-features --example resume --features models,interaction,memory
-uv run conformance/package.py
+uv run conformance/package.py --all-features
 ```
 
 包验证脚本按 allowlist 只选择 10 个生产包，完成 archive 内源码编译，并检查归档文件、
 manifest 和 lockfile 均没有测试代码或测试包依赖。`zhir-testing` 与 `conformance` 都不发布。
 `publish = false` 不代替打包选择；不要用不带排除项的 `cargo package --workspace`。
 脚本每次生成独立临时 target-dir，防止同版本 registry 复用旧源码；结束后自动清理。
-无网络验证可使用 `uv run conformance/package.py --offline`；新增可选协议后使用
-`uv run conformance/package.py --offline --all-features` 同时编译归档中的可选实现。
+显式要求离线包验证时使用 `uv run conformance/package.py --offline --all-features`，
+同样编译归档中的可选实现。
 消费者最小 feature 测试运行在 `zhir-testing`；SDK feature 转发到门面，
 `minimax` 和 `openai-live` 分别启用独立接入包。CI 保留这些检查。
 SDK 示例在 `zhir/examples`，供应商示例在各自独立包的 `examples`，生产归档仅允许 src、examples、manifest、README 和 LICENSE（以及 Cargo 生成的元数据）。
 
-基准入口全部放在测试 crate：
+## 按需性能验证
+
+基准入口全部放在测试 crate。当前常规 CI 不自动运行这些入口；它们仅用于明确要求的
+性能验证，不属于日常本地变更检查：
 
 ```sh
 cargo bench -p zhir-testing --bench history
@@ -91,15 +135,16 @@ cargo test -p zhir-testing --all-features --release --test models_streaming stre
 这些入口观察 history 增长（条数与单条大小两个维度）、trace 校验与流式组装成本，打印规模/耗时，不用脆弱的耗时
 阈值作为普通回归断言。基准数据不是吞吐量或延迟保证。
 
-## 真实存储集成
+## CI：真实存储集成
 
-使用独立测试数据库；Memory 与 SQLite 在普通 workspace 测试中运行。MySQL、Redis
-仅在显式提供测试环境时运行：
+存储集成套件由 CI 执行，使用独立测试数据库；Memory 与 SQLite 包含在 CI 的 workspace
+测试中，MySQL、Redis 由 `stores` job 提供服务并显式运行 ignored 用例。下面是该 job 的
+环境与命令示意；用户明确要求本地复现时才在本地配置这些环境：
 
 ```sh
 export ZHIR_TEST_MYSQL_URL='mysql://root:password@127.0.0.1:3306/zhir_test'
 export ZHIR_TEST_REDIS_URL='redis://127.0.0.1:6379/'
-cargo test -p zhir-testing --all-features --test storage_stores -- --ignored
+cargo test -p zhir-testing --no-default-features --features mysql,redis --test storage_stores --locked -- --ignored
 ```
 
 CI 使用 MySQL 8.4 与 Redis 7。测试生成独立 run ID 和 Redis namespace，校验历史
@@ -110,7 +155,8 @@ SQL 数据库必须是当前格式或空库，Redis namespace 必须是当前格
 
 ## 外部服务验证范围
 
-普通测试只访问本地夹具；带 ignored 的模型测试需要凭据并会产生费用。
+普通 CI 使用进程内或回环网络夹具；带 ignored 的真实模型测试需要凭据并会产生费用，
+当前 CI 不自动执行这些用例。下面的命令是显式授权专项验收的入口，不属于日常本地验证。
 现有线上测试使用 DEEPSEEK_API_KEY，测试自己的端点扩展映射；它们不是 OpenAI Astra、
 Codex OAuth 或 MiniMax 视频的线上验收。MiniMax 语音由独立的显式测试验证。
 

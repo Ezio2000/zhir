@@ -1,9 +1,3 @@
-#![cfg(all(
-    feature = "models",
-    feature = "typed-tools",
-    feature = "typed-output",
-    feature = "memory"
-))]
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;

@@ -75,13 +75,12 @@ cargo run -p zhir --no-default-features --example resume --features models,inter
 
 ## 开发与验证
 
-```sh
-cargo fmt --all --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features --locked
-```
+本地只验证本次变更：新增或修改的测试、直接受影响的回归，以及必要的格式、编译和 schema 检查。
+使用明确的测试 target、过滤条件和最少所需 features；纯文档修改不运行 Rust 测试。
+全量 Clippy、workspace 测试、烟测与示例、feature 矩阵、完整契约、存储集成和发布包验证由 CI 执行。
 
-验收、故障注入、trace 校验和基准只放在不发布的 `zhir-testing` 与 `conformance`。独立 feature、契约、真实数据库和包验证方法见[测试说明](docs/testing.md)。
+验收、故障注入、trace 校验和基准只放在不发布的 `zhir-testing` 与 `conformance`。
+本地命令选择和 CI 验证范围见[测试说明](docs/testing.md)。
 
 [架构与职责](docs/architecture.md) · [研发接入](docs/developer-api.md) · [运行契约](contracts/v5/behavior/runtime.md) · [测试说明](docs/testing.md)
 

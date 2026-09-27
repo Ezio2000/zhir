@@ -20,13 +20,22 @@ zhir-openai = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["net", "io-util"] }
 serde_json.workspace = true
 
+# Cargo does not support optional dev-dependencies. These test capabilities stay
+# optional here so selecting one test does not compile unrelated transport/stores.
+webrtc = { version = "0.17.1", optional = true }
+bytes = { version = "1", optional = true }
+sqlx = { workspace = true, optional = true }
+redis = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true, features = ["multipart"] }
+tokio-tungstenite = { version = "0.30", optional = true, features = ["rustls-tls-native-roots"] }
+
 [features]
-webrtc = ["zhir-models/webrtc"]
-websocket = ["zhir-models/websocket"]
-openai-live = ["webrtc", "dep:zhir-openai"]
+webrtc = ["zhir-models/webrtc", "dep:webrtc", "dep:bytes"]
+websocket = ["zhir-models/websocket", "dep:tokio-tungstenite"]
+openai-live = ["webrtc", "http", "dep:zhir-openai"]
 minimax = ["websocket", "dep:zhir-minimax"]
 default = []
-http = []
+http = ["dep:reqwest"]
 typed-output = ["zhir/typed-output"]
 policies = ["zhir/policies"]
 tools = ["zhir/tools"]
@@ -41,10 +50,10 @@ openai-chat = ["http", "zhir/openai-chat"]
 openai-responses = ["http", "zhir/openai-responses"]
 anthropic = ["http", "zhir/anthropic"]
 memory = ["zhir/memory"]
-resources-filesystem = ["zhir/resources-filesystem"]
-sqlite = ["zhir/sqlite"]
-mysql = ["zhir/mysql"]
-redis = ["zhir/redis"]
+resources-filesystem = ["zhir/resources-filesystem", "zhir-storage/resources-filesystem"]
+sqlite = ["zhir/sqlite", "zhir-storage/sqlite", "dep:sqlx", "sqlx/sqlite"]
+mysql = ["zhir/mysql", "zhir-storage/mysql", "dep:sqlx", "sqlx/mysql"]
+redis = ["zhir/redis", "zhir-storage/redis", "dep:redis"]
 
 [[bench]]
 name = "trace"
@@ -55,8 +64,6 @@ name = "history"
 harness = false
 
 [dev-dependencies]
-webrtc = "0.17.1"
-bytes = "1"
 serde.workspace = true
 futures.workspace = true
 zhir.workspace = true
@@ -64,19 +71,14 @@ zhir-core = { workspace = true, features = ["schema"] }
 zhir-policies.workspace = true
 zhir-tools = { workspace = true, features = ["typed"] }
 zhir-builtins = { workspace = true, features = ["filesystem", "shell", "interaction", "agent-runtime"] }
-zhir-models = { workspace = true, features = ["openai-chat", "openai-responses", "anthropic"] }
-zhir-storage = { workspace = true, features = ["resources-filesystem", "sqlite", "mysql", "redis"] }
+zhir-storage.workspace = true
 zhir-kernel.workspace = true
 jsonschema.workspace = true
-sqlx = { workspace = true, features = ["sqlite", "mysql"] }
-redis.workspace = true
 uuid.workspace = true
 tokio = { workspace = true, features = ["fs", "test-util"] }
 schemars.workspace = true
 tempfile.workspace = true
-reqwest = { workspace = true, features = ["multipart"] }
 base64 = "0.22"
-tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
 
 [[test]]
 name = "live_protocols"
@@ -89,3 +91,83 @@ required-features = ["minimax"]
 [[test]]
 name = "gpt_live"
 required-features = ["openai-live"]
+
+[[test]]
+name = "builtins_agent"
+required-features = ["agent"]
+
+[[test]]
+name = "builtins_agent_runtime"
+required-features = ["agent-runtime"]
+
+[[test]]
+name = "builtins_tools"
+required-features = ["filesystem", "shell", "interaction", "agent-runtime"]
+
+[[test]]
+name = "consumer_six"
+required-features = ["openai-responses", "typed-tools", "memory"]
+
+[[test]]
+name = "consumer_ten"
+required-features = ["models", "typed-tools", "memory"]
+
+[[test]]
+name = "convenience"
+required-features = ["models", "typed-tools", "typed-output", "memory"]
+
+[[test]]
+name = "core_boundaries"
+required-features = ["models", "typed-tools", "memory"]
+
+[[test]]
+name = "developer_api"
+required-features = ["models", "typed-tools", "memory"]
+
+[[test]]
+name = "extensibility"
+required-features = ["openai-chat", "openai-responses", "anthropic"]
+
+[[test]]
+name = "http_fixture"
+required-features = ["openai-responses", "openai-chat", "anthropic"]
+
+[[test]]
+name = "live_subscription_probe"
+required-features = ["openai-live"]
+
+[[test]]
+name = "models_http"
+required-features = ["openai-chat", "openai-responses", "anthropic"]
+
+[[test]]
+name = "models_replay"
+required-features = ["openai-responses"]
+
+[[test]]
+name = "models_streaming"
+required-features = ["openai-chat", "anthropic"]
+
+[[test]]
+name = "profiles_credentials"
+required-features = ["openai-responses"]
+
+[[test]]
+name = "provider_integration"
+required-features = ["openai-responses", "typed-tools", "memory", "resources-filesystem"]
+
+[[test]]
+name = "scenario_scale"
+required-features = ["tools", "openai-chat", "openai-responses", "anthropic", "memory", "sqlite", "agent-runtime"]
+
+[[test]]
+name = "session_runtime"
+required-features = ["models", "tools", "memory", "interaction"]
+
+[[test]]
+name = "tools_typed"
+required-features = ["typed-tools"]
+
+[[test]]
+name = "webrtc_driver"
+required-features = ["webrtc"]

@@ -1,4 +1,3 @@
-#![cfg(feature = "agent")]
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},

@@ -1,8 +1,3 @@
-#![cfg(all(
-    feature = "openai-responses",
-    feature = "openai-chat",
-    feature = "anthropic"
-))]
 use serde_json::{Value, json};
 use std::{
     sync::{

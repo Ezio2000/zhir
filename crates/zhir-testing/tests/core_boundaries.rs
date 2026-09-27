@@ -1,4 +1,3 @@
-#![cfg(all(feature = "models", feature = "typed-tools", feature = "memory"))]
 use serde_json::json;
 use std::sync::{
     Arc,

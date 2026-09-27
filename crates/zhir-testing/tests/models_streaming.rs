@@ -1,4 +1,3 @@
-#![cfg(all(feature = "openai-chat", feature = "anthropic"))]
 use serde_json::{Value, json};
 use std::sync::Arc;
 use zhir_core::{

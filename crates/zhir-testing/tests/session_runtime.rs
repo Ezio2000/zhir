@@ -1,9 +1,3 @@
-#![cfg(all(
-    feature = "models",
-    feature = "tools",
-    feature = "memory",
-    feature = "interaction"
-))]
 use serde_json::json;
 use std::{sync::Arc, time::Duration};
 use zhir::{
@@ -59,6 +53,110 @@ async fn text_session_commits_and_settles() {
     assert!(checkpoint.active.commands.is_empty());
     model.verify().unwrap();
     store.verify_traces().unwrap();
+}
+
+#[tokio::test]
+async fn observer_deltas_preserve_generation_identity_and_session_scope() {
+    use futures::StreamExt;
+    use std::sync::Mutex;
+    use zhir::model::{ModelDelta, ResponseStatus, SessionCommandBody, SessionEventBody};
+    use zhir::run::{Event, EventData};
+
+    let generations = Arc::new(Mutex::new(Vec::new()));
+    let model = zhir_testing::SessionModel::new(zhir_testing::model_capabilities(), {
+        let generations = generations.clone();
+        move |_, mut peer| {
+            let generations = generations.clone();
+            async move {
+                for status in [ResponseStatus::Continuation, ResponseStatus::Completed] {
+                    let command = peer.command().await?.unwrap();
+                    let SessionCommandBody::Generate { generation_id, .. } = &command.body else {
+                        panic!("expected generation")
+                    };
+                    let generation_id = generation_id.clone();
+                    generations.lock().unwrap().push(generation_id.clone());
+                    peer.acknowledge(&command, None).await?;
+                    // A session-level delta stays unbound even while a generation is active.
+                    peer.event(SessionEventBody::Delta {
+                        generation_id: None,
+                        delta: ModelDelta::ProtocolEvent {
+                            output_index: 0,
+                            data: json!({"type":"session_progress"}),
+                        },
+                    })
+                    .await?;
+                    peer.event(SessionEventBody::Delta {
+                        generation_id: Some(generation_id.clone()),
+                        delta: ModelDelta::Text {
+                            output_index: 0,
+                            text: "answer".into(),
+                        },
+                    })
+                    .await?;
+                    peer.event(SessionEventBody::Output {
+                        generation_id: Some(generation_id.clone()),
+                        item_id: "answer".into(),
+                        caller_id: "assistant".into(),
+                        output: Output::text("answer"),
+                    })
+                    .await?;
+                    peer.finished(generation_id, status).await?;
+                }
+                peer.close().await
+            }
+        }
+    });
+    let runtime = Runtime::builder(Arc::new(model)).build().unwrap();
+    let mut invocation = runtime
+        .start(RunRequest::new([Message::user("test")]))
+        .unwrap();
+    let mut events = invocation.events().unwrap();
+    let (observed, completion) = tokio::time::timeout(Duration::from_secs(3), async {
+        let mut observed = Vec::new();
+        while let Some(event) = events.next().await {
+            let value = serde_json::to_value(&event).unwrap();
+            let restored: Event = serde_json::from_value(value.clone()).unwrap();
+            if let EventData::ModelDelta {
+                generation_id,
+                delta,
+            } = restored.data
+            {
+                assert_eq!(value["data"]["generation_id"], json!(generation_id));
+                let session_level = match delta {
+                    ModelDelta::ProtocolEvent { output_index, .. } => {
+                        assert_eq!(output_index, 0);
+                        true
+                    }
+                    ModelDelta::Text { output_index, text } => {
+                        assert_eq!(output_index, 0);
+                        assert_eq!(text, "answer");
+                        false
+                    }
+                    other => panic!("unexpected delta: {other:?}"),
+                };
+                observed.push((generation_id, session_level));
+            }
+        }
+        (observed, invocation.result().await.unwrap())
+    })
+    .await
+    .expect("observer stalled");
+    assert!(matches!(
+        completion.checkpoint().state,
+        State::Completed { .. }
+    ));
+    let generations = generations.lock().unwrap();
+    assert_eq!(generations.len(), 2);
+    assert_ne!(generations[0], generations[1]);
+    assert_eq!(
+        observed,
+        vec![
+            (None, true),
+            (Some(generations[0].clone()), false),
+            (None, true),
+            (Some(generations[1].clone()), false),
+        ]
+    );
 }
 
 #[tokio::test]

@@ -171,7 +171,7 @@ impl Events {
         self.ordered &= event.sequence > self.last_sequence;
         self.last_sequence = event.sequence;
         let kind = match &event.data {
-            EventData::ModelDelta { delta } => format!(
+            EventData::ModelDelta { delta, .. } => format!(
                 "delta_{}",
                 match delta {
                     ModelDelta::Text { .. } => "text",
